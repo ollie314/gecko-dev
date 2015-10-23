@@ -1,6 +1,11 @@
 config = {
     "log_name": "central_to_aurora",
-
+    "version_files": [
+        "browser/config/version.txt",
+        "browser/config/version_display.txt",
+        "config/milestone.txt",
+        "b2g/confvars.sh",
+    ],
     "replacements": [
         # File, from, to
         ("{}/{}".format(d, f),
@@ -49,6 +54,9 @@ config = {
          "MAR_CHANNEL_ID=firefox-mozilla-central",
          "MAR_CHANNEL_ID=firefox-mozilla-aurora"),
         ("browser/config/mozconfigs/macosx-universal/nightly",
+         "ac_add_options --with-branding=browser/branding/nightly",
+         "ac_add_options --with-branding=browser/branding/aurora"),
+        ("browser/config/mozconfigs/macosx-universal/l10n-mozconfig",
          "ac_add_options --with-branding=browser/branding/nightly",
          "ac_add_options --with-branding=browser/branding/aurora"),
         ("browser/config/mozconfigs/whitelist",

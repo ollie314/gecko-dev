@@ -29,15 +29,15 @@ want to export this environment variable from your shell's init scripts.
 NO_MERCURIAL_SETUP = '''
 *** MERCURIAL NOT CONFIGURED ***
 
-mach has detected that you have never run `mach mercurial-setup`.
+mach has detected that you have never run `{mach} mercurial-setup`.
 
 Running this command will ensure your Mercurial version control tool is up
 to date and optimally configured for a better, more productive experience
 when working on Mozilla projects.
 
-Please run `mach mercurial-setup` now.
+Please run `{mach} mercurial-setup` now.
 
-Note: `mach mercurial-setup` does not make any changes without prompting
+Note: `{mach} mercurial-setup` does not make any changes without prompting
 you first.
 '''.strip()
 
@@ -45,18 +45,18 @@ OLD_MERCURIAL_TOOLS = '''
 *** MERCURIAL CONFIGURATION POTENTIALLY OUT OF DATE ***
 
 mach has detected that it has been a while since you have run
-`mach mercurial-setup`.
+`{mach} mercurial-setup`.
 
 Having the latest Mercurial tools and configuration should lead to a better,
 more productive experience when working on Mozilla projects.
 
-Please run `mach mercurial-setup` now.
+Please run `{mach} mercurial-setup` now.
 
-Reminder: `mach mercurial-setup` does not make any changes without
+Reminder: `{mach} mercurial-setup` does not make any changes without
 prompting you first.
 
-To avoid this message in the future, run `mach mercurial-setup` once a month.
-Or, schedule `mach mercurial-setup --update-only` to run automatically in
+To avoid this message in the future, run `{mach} mercurial-setup` once a month.
+Or, schedule `{mach} mercurial-setup --update-only` to run automatically in
 the background at least once a month.
 '''.strip()
 
@@ -78,6 +78,7 @@ SEARCH_PATHS = [
     'python/pystache',
     'python/pyyaml/lib',
     'python/requests',
+    'python/slugid',
     'build',
     'build/pymake',
     'config',
@@ -102,6 +103,8 @@ SEARCH_PATHS = [
     'testing/mozbase/mozdevice',
     'testing/mozbase/mozfile',
     'testing/mozbase/mozhttpd',
+    'testing/mozbase/mozinfo',
+    'testing/mozbase/mozinstall',
     'testing/mozbase/mozleak',
     'testing/mozbase/mozlog',
     'testing/mozbase/moznetwork',
@@ -109,7 +112,6 @@ SEARCH_PATHS = [
     'testing/mozbase/mozprofile',
     'testing/mozbase/mozrunner',
     'testing/mozbase/mozsystemmonitor',
-    'testing/mozbase/mozinfo',
     'testing/mozbase/mozscreenshot',
     'testing/mozbase/moztest',
     'testing/mozbase/mozversion',
@@ -130,6 +132,7 @@ MACH_MODULES = [
     'python/mozbuild/mozbuild/mach_commands.py',
     'python/mozbuild/mozbuild/backend/mach_commands.py',
     'python/mozbuild/mozbuild/compilation/codecomplete.py',
+    'python/mozbuild/mozbuild/compilation/database.py',
     'python/mozbuild/mozbuild/frontend/mach_commands.py',
     'services/common/tests/mach_commands.py',
     'testing/luciddream/mach_commands.py',
@@ -144,6 +147,7 @@ MACH_MODULES = [
     'tools/docs/mach_commands.py',
     'tools/mercurial/mach_commands.py',
     'tools/mach_commands.py',
+    'tools/power/mach_commands.py',
     'mobile/android/mach_commands.py',
 ]
 
@@ -275,10 +279,10 @@ def bootstrap(topsrcdir, mozilla_dir=None):
 
         # No last run file means mercurial-setup has never completed.
         if mtime is None:
-            print(NO_MERCURIAL_SETUP, file=sys.stderr)
+            print(NO_MERCURIAL_SETUP.format(mach=sys.argv[0]), file=sys.stderr)
             sys.exit(2)
         elif time.time() - mtime > MERCURIAL_SETUP_FATAL_INTERVAL:
-            print(OLD_MERCURIAL_TOOLS, file=sys.stderr)
+            print(OLD_MERCURIAL_TOOLS.format(mach=sys.argv[0]), file=sys.stderr)
             sys.exit(2)
 
     def populate_context(context, key=None):

@@ -103,8 +103,8 @@ public:
     override;
   virtual bool RecvCaretOffset(const uint64_t& aID, int32_t* aOffset)
     override;
-  virtual bool RecvSetCaretOffset(const uint64_t& aID, const int32_t& aOffset,
-                                  bool* aValid) override;
+  virtual bool RecvSetCaretOffset(const uint64_t& aID, const int32_t& aOffset)
+    override;
 
   virtual bool RecvCharacterCount(const uint64_t& aID, int32_t* aCount)
      override;
@@ -363,6 +363,14 @@ public:
                                     const uint32_t& aRow) override;
   virtual bool RecvTableIsProbablyForLayout(const uint64_t& aID,
                                             bool* aForLayout) override;
+  virtual bool RecvAtkTableColumnHeader(const uint64_t& aID,
+                                        const int32_t& aCol,
+                                        uint64_t* aHeader,
+                                        bool* aOk) override;
+  virtual bool RecvAtkTableRowHeader(const uint64_t& aID,
+                                     const int32_t& aRow,
+                                     uint64_t* aHeader,
+                                     bool* aOk) override;
 
   virtual bool RecvSelectedItems(const uint64_t& aID,
                                  nsTArray<uint64_t>* aSelectedItemIDs) override;
@@ -393,6 +401,10 @@ public:
   virtual bool RecvUnselectAll(const uint64_t& aID,
                                bool* aSuccess) override;
 
+  virtual bool RecvTakeSelection(const uint64_t& aID) override;
+  virtual bool RecvSetSelected(const uint64_t& aID,
+                               const bool& aSelect) override;
+
   virtual bool RecvDoAction(const uint64_t& aID,
                             const uint8_t& aIndex,
                             bool* aSuccess) override;
@@ -416,6 +428,9 @@ public:
                                     uint32_t* aKey,
                                     uint32_t* aModifierMask) override;
 
+  virtual bool RecvAtkKeyBinding(const uint64_t& aID,
+                                 nsString* aResult) override;
+
   virtual bool RecvCurValue(const uint64_t& aID,
                             double* aValue) override;
 
@@ -434,6 +449,9 @@ public:
 
   virtual bool RecvTakeFocus(const uint64_t& aID) override;
 
+  virtual bool RecvEmbeddedChildCount(const uint64_t& aID, uint32_t* aCount)
+    override final;
+
   virtual bool RecvIndexOfEmbeddedChild(const uint64_t& aID,
                                         const uint64_t& aChildID,
                                         uint32_t* aChildIdx) override final;
@@ -445,15 +463,6 @@ public:
                                 uint64_t* aChild,
                                 bool* aOk) override;
 
-  virtual bool RecvChildAtPoint(const uint64_t& aID,
-                                const int32_t& aX,
-                                const int32_t& aY,
-                                const uint32_t& aWhich,
-                                uint64_t* aChild,
-                                bool* aOk) override;
-
-  virtual bool RecvBounds(const uint64_t& aID, nsIntRect* aRect) override;
-
   virtual bool RecvLanguage(const uint64_t& aID, nsString* aLocale) override;
   virtual bool RecvDocType(const uint64_t& aID, nsString* aType) override;
   virtual bool RecvTitle(const uint64_t& aID, nsString* aTitle) override;
@@ -463,6 +472,21 @@ public:
                                       nsString* aURL,
                                       nsString* aDocType,
                                       nsString* aMimeType) override;
+
+  virtual bool RecvAccessibleAtPoint(const uint64_t& aID,
+                                     const int32_t& aX,
+                                     const int32_t& aY,
+                                     const bool& aNeedsScreenCoords,
+                                     const uint32_t& aWhich,
+                                     uint64_t* aResult,
+                                     bool* aOk) override;
+
+  virtual bool RecvExtents(const uint64_t& aID,
+                           const bool& aNeedsScreenCoords,
+                           int32_t* aX,
+                           int32_t* aY,
+                           int32_t* aWidth,
+                           int32_t* aHeight) override;
 private:
 
   Accessible* IdToAccessible(const uint64_t& aID) const;

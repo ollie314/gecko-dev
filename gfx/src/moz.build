@@ -16,7 +16,6 @@ DEFINES['MOZ_APP_VERSION'] = '"%s"' % CONFIG['MOZ_APP_VERSION']
 EXPORTS += [
     'DriverCrashGuard.h',
     'FilterSupport.h',
-    'gfxCore.h',
     'gfxCrashReporterUtils.h',
     'gfxTelemetry.h',
     'nsBoundingMetrics.h',
@@ -75,8 +74,6 @@ SOURCES += [
     'nsDeviceContext.cpp',
 ]
 
-FAIL_ON_WARNINGS = True
-
 include('/ipc/chromium/chromium-config.mozbuild')
 
 LOCAL_INCLUDES += [
@@ -93,3 +90,6 @@ if CONFIG['MOZ_WIDGET_GTK']:
 
 if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'qt':
     CXXFLAGS += CONFIG['MOZ_QT_CFLAGS']
+
+if CONFIG['GNU_CXX']:
+    CXXFLAGS += ['-Wshadow']

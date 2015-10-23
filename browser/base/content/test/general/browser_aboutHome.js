@@ -18,7 +18,7 @@ XPCOMUtils.defineLazyModuleGetter(this, "AboutHomeUtils",
   "resource:///modules/AboutHome.jsm");
 
 const TEST_CONTENT_HELPER = "chrome://mochitests/content/browser/browser/base/content/test/general/aboutHome_content_script.js";
-let gRightsVersion = Services.prefs.getIntPref("browser.rights.version");
+var gRightsVersion = Services.prefs.getIntPref("browser.rights.version");
 
 registerCleanupFunction(function() {
   // Ensure we don't pollute prefs for next tests.
@@ -28,7 +28,7 @@ registerCleanupFunction(function() {
   Services.prefs.clearUserPref("browser.rights." + gRightsVersion + ".shown");
 });
 
-let gTests = [
+var gTests = [
 
 {
   desc: "Check that clearing cookies does not clear storage",
@@ -275,7 +275,7 @@ let gTests = [
       Services.obs.removeObserver(searchObserver, "browser-search-engine-modified");
     });
     Services.search.addEngine("http://test:80/browser/browser/base/content/test/general/POSTSearchEngine.xml",
-                              Ci.nsISearchEngine.DATA_XML, null, false);
+                              null, null, false);
     return deferred.promise;
   }
 },
@@ -420,6 +420,23 @@ let gTests = [
   }
 },
 {
+  desc: "Pressing any key should focus the search box in the page, and send the key to it",
+  setup: function () {},
+  run: Task.async(function* () {
+    let doc = gBrowser.selectedBrowser.contentDocument;
+    let logo = doc.getElementById("brandLogo");
+    let searchInput = doc.getElementById("searchText");
+
+    EventUtils.synthesizeMouseAtCenter(logo, {});
+    isnot(searchInput, doc.activeElement, "Search input should not be the active element.");
+
+    EventUtils.synthesizeKey("a", {});
+    yield promiseWaitForCondition(() => doc.activeElement === searchInput);
+    is(searchInput, doc.activeElement, "Search input should be the active element.");
+    is(searchInput.value, "a", "Search input should be 'a'.");
+  })
+},
+{
   desc: "Cmd+k should focus the search box in the page when the search box in the toolbar is absent",
   setup: function () {
     // Remove the search bar from toolbar
@@ -456,15 +473,43 @@ let gTests = [
   })
 },
 {
-  desc: "Sync button should open about:accounts page with `abouthome` entrypoint",
+  desc: "Sync button should open about:preferences#sync",
   setup: function () {},
   run: Task.async(function* () {
     let syncButton = gBrowser.selectedBrowser.contentDocument.getElementById("sync");
+    let oldOpenPrefs = window.openPreferences;
+    let openPrefsPromise = new Promise(resolve => {
+      window.openPreferences = function (pane, params) {
+        resolve({ pane: pane, params: params });
+      };
+    });
+
     yield EventUtils.synthesizeMouseAtCenter(syncButton, {}, gBrowser.contentWindow);
 
-    yield promiseTabLoadEvent(gBrowser.selectedTab, null, "load");
-    is(gBrowser.currentURI.spec, "about:accounts?entrypoint=abouthome",
-      "Entry point should be `abouthome`.");
+    let result = yield openPrefsPromise;
+    window.openPreferences = oldOpenPrefs;
+
+    is(result.pane, "paneSync", "openPreferences should be called with paneSync");
+    is(result.params.urlParams.entrypoint, "abouthome", "openPreferences should be called with abouthome entrypoint");
+  })
+},
+{
+  desc: "Pressing Space while the Addons button is focussed should activate it",
+  setup: function () {},
+  run: Task.async(function* () {
+    // Skip this test on Mac, because Space doesn't activate the button there.
+    if (navigator.platform.indexOf("Mac") == 0) {
+      return Promise.resolve();
+    }
+
+    info("Waiting for about:addons tab to open...");
+    let promiseTabOpened = BrowserTestUtils.waitForNewTab(gBrowser, "about:addons");
+    let addOnsButton = gBrowser.selectedBrowser.contentDocument.getElementById("addons");
+    addOnsButton.focus();
+    EventUtils.synthesizeKey(" ", {});
+    let tab = yield promiseTabOpened;
+    is(tab.linkedBrowser.currentURI.spec, "about:addons", "Should have seen the about:addons tab");
+    yield BrowserTestUtils.removeTab(tab);
   })
 }
 
@@ -618,34 +663,13 @@ function promiseWaitForEvent(node, type, capturing) {
   });
 }
 
-let promisePrefsOpen = Task.async(function*() {
-  if (Services.prefs.getBoolPref("browser.preferences.inContent")) {
-    info("Waiting for the preferences tab to open...");
-    let event = yield promiseWaitForEvent(gBrowser.tabContainer, "TabOpen", true);
-    let tab = event.target;
-    yield promiseTabLoadEvent(tab);
-    is(tab.linkedBrowser.currentURI.spec, "about:preferences#search", "Should have seen the prefs tab");
-    gBrowser.removeTab(tab);
-  } else {
-    info("Waiting for the preferences window to open...");
-    yield new Promise(resolve => {
-      let winWatcher = Cc["@mozilla.org/embedcomp/window-watcher;1"].
-                       getService(Ci.nsIWindowWatcher);
-      winWatcher.registerNotification(function onWin(subj, topic, data) {
-        if (topic == "domwindowopened" && subj instanceof Ci.nsIDOMWindow) {
-          subj.addEventListener("load", function onLoad() {
-            subj.removeEventListener("load", onLoad);
-            is(subj.document.documentURI, "chrome://browser/content/preferences/preferences.xul", "Should have seen the prefs window");
-            winWatcher.unregisterNotification(onWin);
-            executeSoon(() => {
-              subj.close();
-              resolve();
-            });
-          });
-        }
-      });
-    });
-  }
+var promisePrefsOpen = Task.async(function*() {
+  info("Waiting for the preferences tab to open...");
+  let event = yield promiseWaitForEvent(gBrowser.tabContainer, "TabOpen", true);
+  let tab = event.target;
+  yield promiseTabLoadEvent(tab);
+  is(tab.linkedBrowser.currentURI.spec, "about:preferences#search", "Should have seen the prefs tab");
+  gBrowser.removeTab(tab);
 });
 
 function promiseContentSearchChange(newEngineName) {
@@ -664,7 +688,7 @@ function promiseNewEngine(basename) {
   info("Waiting for engine to be added: " + basename);
   let addDeferred = Promise.defer();
   let url = getRootDirectory(gTestPath) + basename;
-  Services.search.addEngine(url, Ci.nsISearchEngine.TYPE_MOZSEARCH, "", false, {
+  Services.search.addEngine(url, null, "", false, {
     onSuccess: function (engine) {
       info("Search engine added: " + basename);
       registerCleanupFunction(() => {

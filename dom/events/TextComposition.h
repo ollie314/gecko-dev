@@ -160,7 +160,7 @@ public:
     }
 
   private:
-    nsRefPtr<TextComposition> mComposition;
+    RefPtr<TextComposition> mComposition;
     CompositionChangeEventHandlingMarker();
     CompositionChangeEventHandlingMarker(
       const CompositionChangeEventHandlingMarker& aOther);
@@ -183,11 +183,11 @@ private:
   // this instance.
   nsPresContext* mPresContext;
   nsCOMPtr<nsINode> mNode;
-  nsRefPtr<TabParent> mTabParent;
+  RefPtr<TabParent> mTabParent;
 
   // This is the clause and caret range information which is managed by
   // the focused editor.  This may be null if there is no clauses or caret.
-  nsRefPtr<TextRangeArray> mRanges;
+  RefPtr<TextRangeArray> mRanges;
 
   // mNativeContext stores a opaque pointer.  This works as the "ID" for this
   // composition.  Don't access the instance, it may not be available.
@@ -319,7 +319,7 @@ private:
    */
   BaseEventFlags CloneAndDispatchAs(
                    const WidgetCompositionEvent* aCompositionEvent,
-                   uint32_t aMessage,
+                   EventMessage aMessage,
                    nsEventStatus* aStatus = nullptr,
                    EventDispatchingCallback* aCallBack = nullptr);
 
@@ -353,16 +353,16 @@ private:
   public:
     CompositionEventDispatcher(TextComposition* aTextComposition,
                                nsINode* aEventTarget,
-                               uint32_t aEventMessage,
+                               EventMessage aEventMessage,
                                const nsAString& aData,
                                bool aIsSynthesizedEvent = false);
     NS_IMETHOD Run() override;
 
   private:
-    nsRefPtr<TextComposition> mTextComposition;
+    RefPtr<TextComposition> mTextComposition;
     nsCOMPtr<nsINode> mEventTarget;
-    uint32_t mEventMessage;
     nsString mData;
+    EventMessage mEventMessage;
     bool mIsSynthesizedEvent;
 
     CompositionEventDispatcher() {};
@@ -381,7 +381,7 @@ private:
    *                                commit or cancel composition.  Otherwise,
    *                                false.
    */
-  void DispatchCompositionEventRunnable(uint32_t aEventMessage,
+  void DispatchCompositionEventRunnable(EventMessage aEventMessage,
                                         const nsAString& aData,
                                         bool aIsSynthesizingCommit = false);
 };
@@ -397,7 +397,7 @@ private:
  */
 
 class TextCompositionArray final :
-  public nsAutoTArray<nsRefPtr<TextComposition>, 2>
+  public nsAutoTArray<RefPtr<TextComposition>, 2>
 {
 public:
   index_type IndexOf(nsIWidget* aWidget);

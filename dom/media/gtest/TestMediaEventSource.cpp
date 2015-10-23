@@ -6,6 +6,7 @@
 #include "gtest/gtest.h"
 
 #include "mozilla/TaskQueue.h"
+#include "mozilla/UniquePtr.h"
 #include "MediaEventSource.h"
 #include "VideoUtils.h"
 
@@ -16,7 +17,7 @@ using namespace mozilla;
  */
 TEST(MediaEventSource, SingleListener)
 {
-  nsRefPtr<TaskQueue> queue = new TaskQueue(
+  RefPtr<TaskQueue> queue = new TaskQueue(
     GetMediaThreadPool(MediaThreadType::PLAYBACK));
 
   MediaEventProducer<int> source;
@@ -40,7 +41,7 @@ TEST(MediaEventSource, SingleListener)
 
 TEST(MediaEventSource, MultiListener)
 {
-  nsRefPtr<TaskQueue> queue = new TaskQueue(
+  RefPtr<TaskQueue> queue = new TaskQueue(
     GetMediaThreadPool(MediaThreadType::PLAYBACK));
 
   MediaEventProducer<int> source;
@@ -71,7 +72,7 @@ TEST(MediaEventSource, MultiListener)
  */
 TEST(MediaEventSource, DisconnectAfterNotification)
 {
-  nsRefPtr<TaskQueue> queue = new TaskQueue(
+  RefPtr<TaskQueue> queue = new TaskQueue(
     GetMediaThreadPool(MediaThreadType::PLAYBACK));
 
   MediaEventProducer<int> source;
@@ -95,7 +96,7 @@ TEST(MediaEventSource, DisconnectAfterNotification)
 
 TEST(MediaEventSource, DisconnectBeforeNotification)
 {
-  nsRefPtr<TaskQueue> queue = new TaskQueue(
+  RefPtr<TaskQueue> queue = new TaskQueue(
     GetMediaThreadPool(MediaThreadType::PLAYBACK));
 
   MediaEventProducer<int> source;
@@ -126,7 +127,7 @@ TEST(MediaEventSource, DisconnectBeforeNotification)
  */
 TEST(MediaEventSource, VoidEventType)
 {
-  nsRefPtr<TaskQueue> queue = new TaskQueue(
+  RefPtr<TaskQueue> queue = new TaskQueue(
     GetMediaThreadPool(MediaThreadType::PLAYBACK));
 
   MediaEventProducer<void> source;
@@ -165,7 +166,7 @@ TEST(MediaEventSource, VoidEventType)
  */
 TEST(MediaEventSource, ListenerType1)
 {
-  nsRefPtr<TaskQueue> queue = new TaskQueue(
+  RefPtr<TaskQueue> queue = new TaskQueue(
     GetMediaThreadPool(MediaThreadType::PLAYBACK));
 
   MediaEventProducer<int> source;
@@ -193,7 +194,7 @@ TEST(MediaEventSource, ListenerType1)
 
 TEST(MediaEventSource, ListenerType2)
 {
-  nsRefPtr<TaskQueue> queue = new TaskQueue(
+  RefPtr<TaskQueue> queue = new TaskQueue(
     GetMediaThreadPool(MediaThreadType::PLAYBACK));
 
   MediaEventProducer<int> source;
@@ -244,7 +245,7 @@ struct SomeEvent {
  */
 TEST(MediaEventSource, CopyEvent1)
 {
-  nsRefPtr<TaskQueue> queue = new TaskQueue(
+  RefPtr<TaskQueue> queue = new TaskQueue(
     GetMediaThreadPool(MediaThreadType::PLAYBACK));
 
   MediaEventProducer<SomeEvent> source;
@@ -271,7 +272,7 @@ TEST(MediaEventSource, CopyEvent1)
 
 TEST(MediaEventSource, CopyEvent2)
 {
-  nsRefPtr<TaskQueue> queue = new TaskQueue(
+  RefPtr<TaskQueue> queue = new TaskQueue(
     GetMediaThreadPool(MediaThreadType::PLAYBACK));
 
   MediaEventProducer<SomeEvent> source;
@@ -293,4 +294,30 @@ TEST(MediaEventSource, CopyEvent2)
   EXPECT_EQ(i, 0);
   listener1.Disconnect();
   listener2.Disconnect();
+}
+
+/*
+ * Test move-only types.
+ */
+TEST(MediaEventSource, MoveOnly)
+{
+  RefPtr<TaskQueue> queue = new TaskQueue(
+    GetMediaThreadPool(MediaThreadType::PLAYBACK));
+
+  MediaEventProducer<UniquePtr<int>, ListenerMode::Exclusive> source;
+
+  auto func = [] (UniquePtr<int>&& aEvent) {
+    EXPECT_EQ(*aEvent, 20);
+  };
+  MediaEventListener listener = source.Connect(queue, func);
+
+  // It is OK to pass an rvalue which is move-only.
+  source.Notify(UniquePtr<int>(new int(20)));
+  // It is an error to pass an lvalue which is move-only.
+  // UniquePtr<int> event(new int(30));
+  // source.Notify(event);
+
+  queue->BeginShutdown();
+  queue->AwaitShutdownAndIdle();
+  listener.Disconnect();
 }

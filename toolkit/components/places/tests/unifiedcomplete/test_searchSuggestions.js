@@ -6,8 +6,8 @@ const SUGGEST_PREF = "browser.urlbar.suggest.searches";
 const SUGGEST_ENABLED_PREF = "browser.search.suggest.enabled";
 const SUGGEST_RESTRICT_TOKEN = "$";
 
-let suggestionsFn;
-let previousSuggestionsFn;
+var suggestionsFn;
+var previousSuggestionsFn;
 
 function setSuggestionsFn(fn) {
   previousSuggestionsFn = suggestionsFn;
@@ -478,6 +478,34 @@ add_task(function* prohibit_suggestions() {
   yield check_autocomplete({
     search: "a",
     matches: [],
+  });
+
+  yield cleanUpSuggestions();
+});
+
+add_task(function* avoid_url_suggestions() {
+  Services.prefs.setBoolPref(SUGGEST_PREF, true);
+
+  setSuggestionsFn(searchStr => {
+    let suffixes = [".com", "/test", ":1]", "@test", ". com"];
+    return suffixes.map(s => searchStr + s);
+  });
+
+  yield check_autocomplete({
+    search: "test",
+    matches: [
+      {
+        uri: makeActionURI(("searchengine"), {
+          engineName: ENGINE_NAME,
+          input: "test. com",
+          searchQuery: "test",
+          searchSuggestion: "test. com",
+        }),
+        title: ENGINE_NAME,
+        style: ["action", "searchengine"],
+        icon: "",
+      },
+    ],
   });
 
   yield cleanUpSuggestions();

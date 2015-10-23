@@ -4,9 +4,9 @@
 
 "use strict";
 
-let Ci = Components.interfaces;
-let Cc = Components.classes;
-let Cu = Components.utils;
+var Ci = Components.interfaces;
+var Cc = Components.classes;
+var Cu = Components.utils;
 
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
@@ -17,18 +17,18 @@ Cu.import("resource://gre/modules/ForgetAboutSite.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "PluralForm",
                                   "resource://gre/modules/PluralForm.jsm");
 
-let gSecMan = Cc["@mozilla.org/scriptsecuritymanager;1"].
+var gSecMan = Cc["@mozilla.org/scriptsecuritymanager;1"].
               getService(Ci.nsIScriptSecurityManager);
 
-let gFaviconService = Cc["@mozilla.org/browser/favicon-service;1"].
+var gFaviconService = Cc["@mozilla.org/browser/favicon-service;1"].
                       getService(Ci.nsIFaviconService);
 
-let gPlacesDatabase = Cc["@mozilla.org/browser/nav-history-service;1"].
+var gPlacesDatabase = Cc["@mozilla.org/browser/nav-history-service;1"].
                       getService(Ci.nsPIPlacesDatabase).
                       DBConnection.
                       clone(true);
 
-let gSitesStmt = gPlacesDatabase.createAsyncStatement(
+var gSitesStmt = gPlacesDatabase.createAsyncStatement(
                   "SELECT url " +
                   "FROM moz_places " +
                   "WHERE rev_host > '.' " +
@@ -37,7 +37,7 @@ let gSitesStmt = gPlacesDatabase.createAsyncStatement(
                   "ORDER BY MAX(frecency) DESC " +
                   "LIMIT :limit");
 
-let gVisitStmt = gPlacesDatabase.createAsyncStatement(
+var gVisitStmt = gPlacesDatabase.createAsyncStatement(
                   "SELECT SUM(visit_count) AS count " +
                   "FROM moz_places " +
                   "WHERE rev_host = :rev_host");
@@ -46,7 +46,7 @@ let gVisitStmt = gPlacesDatabase.createAsyncStatement(
  * Permission types that should be tested with testExactPermission, as opposed
  * to testPermission. This is based on what consumers use to test these permissions.
  */
-let TEST_EXACT_PERM_TYPES = ["geo", "camera", "microphone"];
+var TEST_EXACT_PERM_TYPES = ["geo", "camera", "microphone", "desktop-notification"];
 
 /**
  * Site object represents a single site, uniquely identified by a principal.
@@ -242,7 +242,7 @@ Site.prototype = {
  *
  * Inspired by pageinfo/permissions.js
  */
-let PermissionDefaults = {
+var PermissionDefaults = {
   UNKNOWN: Ci.nsIPermissionManager.UNKNOWN_ACTION, // 0
   ALLOW: Ci.nsIPermissionManager.ALLOW_ACTION, // 1
   DENY: Ci.nsIPermissionManager.DENY_ACTION, // 2
@@ -321,24 +321,21 @@ let PermissionDefaults = {
     Services.prefs.setBoolPref("dom.disable_open_during_load", value);
   },
 
-  get push() {
-    if (!Services.prefs.getBoolPref("dom.push.enabled")) {
-      return this.DENY;
-    }
+  get ["desktop-notification"]() {
     return this.UNKNOWN;
   },
-  set push(aValue) {
-    let value = (aValue != this.DENY);
-    Services.prefs.setBoolPref("dom.push.enabled", value);
+  get camera() {
+    return this.UNKNOWN;
   },
-  get camera() this.UNKNOWN,
-  get microphone() this.UNKNOWN
+  get microphone() {
+    return this.UNKNOWN;
+  }
 };
 
 /**
  * AboutPermissions manages the about:permissions page.
  */
-let AboutPermissions = {
+var AboutPermissions = {
   /**
    * Number of sites to return from the places database.
    */
@@ -354,6 +351,14 @@ let AboutPermissions = {
    * Stores a mapping of origin strings to Site objects.
    */
   _sites: {},
+
+  /**
+   * Using a getter for sitesFilter to avoid races with tests.
+   */
+  get sitesFilter () {
+    delete this.sitesFilter;
+    return this.sitesFilter = document.getElementById("sites-filter");
+  },
 
   sitesList: null,
   _selectedSite: null,
@@ -372,17 +377,18 @@ let AboutPermissions = {
    * Potential future additions: "sts/use", "sts/subd"
    */
   _supportedPermissions: ["password", "cookie", "geo", "indexedDB", "popup",
-                          "camera", "microphone", "push"],
+                          "camera", "microphone", "desktop-notification"],
 
   /**
    * Permissions that don't have a global "Allow" option.
    */
-  _noGlobalAllow: ["geo", "indexedDB", "camera", "microphone", "push"],
+  _noGlobalAllow: ["geo", "indexedDB", "camera", "microphone",
+                   "desktop-notification"],
 
   /**
    * Permissions that don't have a global "Deny" option.
    */
-  _noGlobalDeny: ["camera", "microphone"],
+  _noGlobalDeny: ["camera", "microphone", "desktop-notification"],
 
   _stringBundle: Services.strings.
                  createBundle("chrome://browser/locale/preferences/aboutPermissions.properties"),
@@ -497,7 +503,7 @@ let AboutPermissions = {
         while (row = aResults.getNextRow()) {
           let spec = row.getResultByName("url");
           let uri = NetUtil.newURI(spec);
-          let principal = gSecMan.getNoAppCodebasePrincipal(uri);
+          let principal = gSecMan.createCodebasePrincipal(uri, {});
 
           AboutPermissions.addPrincipal(principal);
         }
@@ -548,7 +554,7 @@ let AboutPermissions = {
       try {
         // aLogin.hostname is a string in origin URL format (e.g. "http://foo.com")
         let uri = NetUtil.newURI(aLogin.hostname);
-        let principal = gSecMan.getNoAppCodebasePrincipal(uri);
+        let principal = gSecMan.createCodebasePrincipal(uri, {});
         this.addPrincipal(principal);
       } catch (e) {
         // newURI will throw for add-ons logins stored in chrome:// URIs
@@ -564,7 +570,7 @@ let AboutPermissions = {
       try {
         // aHostname is a string in origin URL format (e.g. "http://foo.com")
         let uri = NetUtil.newURI(aHostname);
-        let principal = gSecMan.getNoAppCodebasePrincipal(uri);
+        let principal = gSecMan.createCodebasePrincipal(uri, {});
         this.addPrincipal(principal);
       } catch (e) {
         // newURI will throw for add-ons logins stored in chrome:// URIs
@@ -620,7 +626,7 @@ let AboutPermissions = {
     aSite.listitem = item;
 
     // Make sure to only display relevant items when list is filtered
-    let filterValue = document.getElementById("sites-filter").value.toLowerCase();
+    let filterValue = this.sitesFilter.value.toLowerCase();
     item.collapsed = aSite.principal.origin.toLowerCase().indexOf(filterValue) == -1;
 
     (this._listFragment || this.sitesList).appendChild(item);
@@ -643,7 +649,7 @@ let AboutPermissions = {
    */
   filterSitesList: function() {
     let siteItems = this.sitesList.children;
-    let filterValue = document.getElementById("sites-filter").value.toLowerCase();
+    let filterValue = this.sitesFilter.value.toLowerCase();
 
     if (filterValue == "") {
       for (let i = 0; i < siteItems.length; i++) {
@@ -880,6 +886,13 @@ let AboutPermissions = {
       window.openDialog("chrome://browser/content/preferences/cookies.xul",
                         "Browser:Cookies", "", {filterString : selectedHost});
     }
+  },
+
+  /**
+   * Focusses the filter box.
+   */
+  focusFilterBox: function() {
+    this.sitesFilter.focus();
   }
 }
 

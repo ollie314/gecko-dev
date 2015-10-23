@@ -74,6 +74,10 @@ class StubReadingListAccessor implements ReadingListAccessor {
     }
 
     @Override
+    public void markAsUnread(ContentResolver cr, long itemID) {
+    }
+
+    @Override
     public void updateContent(ContentResolver cr, long itemID, String resolvedTitle, String resolvedURL, String excerpt) {
     }
 
@@ -217,6 +221,11 @@ public class StubBrowserDB implements BrowserDB {
     }
 
     public Cursor getRecentHistory(ContentResolver cr, int limit) {
+        return null;
+    }
+
+    @Override
+    public Cursor getRecentHistoryBetweenTime(ContentResolver cr, int limit, long time, long end) {
         return null;
     }
 

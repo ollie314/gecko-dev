@@ -12,6 +12,11 @@
 var express = require("express");
 var app = express();
 
+// make dev-server performance more similar to the production server by using
+// gzip compression
+var compression = require("compression");
+app.use(compression());
+
 var path = require("path");
 
 var port = process.env.PORT || 3000;
@@ -19,6 +24,10 @@ var feedbackApiUrl = process.env.LOOP_FEEDBACK_API_URL ||
                      "https://input.allizom.org/api/v1/feedback";
 var feedbackProductName = process.env.LOOP_FEEDBACK_PRODUCT_NAME || "Loop";
 var loopServerUrl = process.env.LOOP_SERVER_URL || "http://localhost:5000";
+
+// This is typically overridden with "dist" so that it's possible to test the
+// optimized version, once it's been built to the "dist" directory
+var standaloneContentDir = process.env.LOOP_CONTENT_DIR || "content";
 
 // Remove trailing slashes as double slashes in the url can confuse the server
 // responses.
@@ -36,17 +45,10 @@ function getConfigFile(req, res) {
     "loop.config.serverUrl = '" + loopServerUrl + "/v0';",
     "loop.config.feedbackApiUrl = '" + feedbackApiUrl + "';",
     "loop.config.feedbackProductName = '" + feedbackProductName + "';",
-    // XXX Update with the real marketplace url once the FxOS Loop app is
-    //     uploaded to the marketplace bug 1053424
-    "loop.config.marketplaceUrl = 'http://fake-market.herokuapp.com/iframe-install.html'",
     "loop.config.downloadFirefoxUrl = 'https://www.mozilla.org/firefox/new/?scene=2&utm_source=hello.firefox.com&utm_medium=referral&utm_campaign=non-webrtc-browser#download-fx';",
     "loop.config.privacyWebsiteUrl = 'https://www.mozilla.org/privacy/firefox-hello/';",
     "loop.config.learnMoreUrl = 'https://www.mozilla.org/hello/';",
     "loop.config.legalWebsiteUrl = 'https://www.mozilla.org/about/legal/terms/firefox-hello/';",
-    "loop.config.fxosApp = loop.config.fxosApp || {};",
-    "loop.config.fxosApp.name = 'Loop';",
-    "loop.config.fxosApp.rooms = true;",
-    "loop.config.fxosApp.manifestUrl = 'http://fake-market.herokuapp.com/apps/packagedApp/manifest.webapp';",
     "loop.config.roomsSupportUrl = 'https://support.mozilla.org/kb/group-conversations-firefox-hello-webrtc';",
     "loop.config.tilesIframeUrl = 'https://tiles.cdn.mozilla.net/iframe.html';",
     "loop.config.tilesSupportUrl = 'https://support.mozilla.org/tiles-firefox-hello';",
@@ -77,10 +79,11 @@ app.use("/standalone/content", express.static(path.join(__dirname, "content")));
 // does what we need for running in the github loop-client context, the second one
 // handles running in the hg repo under mozilla-central and is used so that the shared
 // files are in the right location.
-app.use("/content", express.static(path.join(__dirname, "content")));
+app.use("/content", express.static(path.join(__dirname, standaloneContentDir)));
 app.use("/content", express.static(path.join(__dirname, "..", "content")));
 // These two are based on the above, but handle call urls, that have a /c/ in them.
-app.use("/content/c", express.static(path.join(__dirname, "content")));
+app.use("/content/c", express.static(path.join(__dirname,
+  standaloneContentDir)));
 app.use("/content/c", express.static(path.join(__dirname, "..", "content")));
 
 // Two lines for the same reason as /content above.
@@ -92,7 +95,7 @@ app.use("/test", express.static(path.join(__dirname, "..", "test")));
 function serveIndex(req, res) {
   "use strict";
 
-  return res.sendfile(path.join(__dirname, "content", "index.html"));
+  return res.sendFile(path.join(__dirname, standaloneContentDir, "index.html"));
 }
 
 app.get(/^\/content\/[\w\-]+$/, serveIndex);
@@ -111,7 +114,7 @@ function shutdown(cb) {
   "use strict";
 
   try {
-    server.close(function () {
+    server.close(function() {
       process.exit(0);
       if (cb !== undefined) {
         cb();

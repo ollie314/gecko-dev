@@ -1,7 +1,7 @@
 /* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
 /* vim:set ts=2 sw=2 sts=2 et: */
 
-const { classes: Cc, interfaces: Ci, utils: Cu, results: Cr } = Components;
+var { classes: Cc, interfaces: Ci, utils: Cu, results: Cr } = Components;
 
 Cu.import("resource://gre/modules/FileUtils.jsm");
 Cu.import("resource://gre/modules/osfile.jsm");
@@ -74,20 +74,16 @@ function dumpn(text)
 /**
  * Configure preferences to load engines from
  * chrome://testsearchplugin/locale/searchplugins/
- * unless the loadFromJars parameter is set to false.
  */
-function configureToLoadJarEngines(loadFromJars = true)
+function configureToLoadJarEngines()
 {
   let defaultBranch = Services.prefs.getDefaultBranch(null);
 
   let url = "chrome://testsearchplugin/locale/searchplugins/";
-  defaultBranch.setCharPref("browser.search.jarURIs", url);
-
-  defaultBranch.setBoolPref("browser.search.loadFromJars", loadFromJars);
-
-  // Give the pref a user set value that is the opposite of the default,
-  // to ensure user set values are ignored.
-  Services.prefs.setBoolPref("browser.search.loadFromJars", !loadFromJars)
+  let resProt = Services.io.getProtocolHandler("resource")
+                        .QueryInterface(Ci.nsIResProtocolHandler);
+  resProt.setSubstitution("search-plugins",
+                          Services.io.newURI(url, null, null));
 
   // Ensure a test engine exists in the app dir anyway.
   let dir = Services.dirsvc.get(NS_APP_SEARCH_DIR, Ci.nsIFile);
@@ -208,6 +204,34 @@ function getSearchMetadata()
   do_print("Parsing metadata");
   return readJSONFile(metadata);
 }
+
+function promiseGlobalMetadata() {
+  return new Promise(resolve => Task.spawn(function* () {
+    let path = OS.Path.join(OS.Constants.Path.profileDir, "search-metadata.json");
+    let bytes = yield OS.File.read(path);
+    resolve(JSON.parse(new TextDecoder().decode(bytes))["[global]"]);
+  }));
+}
+
+function promiseSaveGlobalMetadata(globalData) {
+  return new Promise(resolve => Task.spawn(function* () {
+    let path = OS.Path.join(OS.Constants.Path.profileDir, "search-metadata.json");
+    let bytes = yield OS.File.read(path);
+    let data = JSON.parse(new TextDecoder().decode(bytes));
+    data["[global]"] = globalData;
+    yield OS.File.writeAtomic(path,
+                              new TextEncoder().encode(JSON.stringify(data)));
+    resolve();
+  }));
+}
+
+var forceExpiration = Task.async(function* () {
+  let metadata = yield promiseGlobalMetadata();
+
+  // Make the current geodefaults expire 1s ago.
+  metadata.searchdefaultexpir = Date.now() - 1000;
+  yield promiseSaveGlobalMetadata(metadata);
+});
 
 function removeCacheFile()
 {
@@ -341,7 +365,7 @@ if (!isChild) {
  * After useHttpServer() is called, this string contains the URL of the "data"
  * directory, including the final slash.
  */
-let gDataUrl;
+var gDataUrl;
 
 /**
  * Initializes the HTTP server and ensures that it is terminated when tests end.
@@ -367,13 +391,11 @@ function useHttpServer() {
  *        {
  *          name: Engine name, used to wait for it to be loaded.
  *          xmlFileName: Name of the XML file in the "data" folder.
- *          srcFileName: Name of the SRC file in the "data" folder.
- *          iconFileName: Name of the icon associated to the SRC file.
  *          details: Array containing the parameters of addEngineWithDetails,
  *                   except for the engine name.  Alternative to xmlFileName.
  *        }
  */
-let addTestEngines = Task.async(function* (aItems) {
+var addTestEngines = Task.async(function* (aItems) {
   if (!gDataUrl) {
     do_throw("useHttpServer must be called before addTestEngines.");
   }
@@ -401,11 +423,7 @@ let addTestEngines = Task.async(function* (aItems) {
 
       if (item.xmlFileName) {
         Services.search.addEngine(gDataUrl + item.xmlFileName,
-                                  Ci.nsISearchEngine.DATA_XML, null, false);
-      } else if (item.srcFileName) {
-        Services.search.addEngine(gDataUrl + item.srcFileName,
-                                  Ci.nsISearchEngine.DATA_TEXT,
-                                  gDataUrl + item.iconFileName, false);
+                                  null, null, false);
       } else {
         Services.search.addEngineWithDetails(item.name, ...item.details);
       }

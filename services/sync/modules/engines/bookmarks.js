@@ -6,9 +6,9 @@ this.EXPORTED_SYMBOLS = ['BookmarksEngine', "PlacesItem", "Bookmark",
                          "BookmarkFolder", "BookmarkQuery",
                          "Livemark", "BookmarkSeparator"];
 
-const Cc = Components.classes;
-const Ci = Components.interfaces;
-const Cu = Components.utils;
+var Cc = Components.classes;
+var Ci = Components.interfaces;
+var Cu = Components.utils;
 
 Cu.import("resource://gre/modules/PlacesUtils.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
@@ -135,7 +135,7 @@ BookmarkSeparator.prototype = {
 Utils.deferGetSet(BookmarkSeparator, "cleartext", "pos");
 
 
-let kSpecialIds = {
+var kSpecialIds = {
 
   // Special IDs. Note that mobile can attempt to create a record on
   // dereference; special accessors are provided to prevent recursion within
@@ -256,7 +256,7 @@ BookmarksEngine.prototype = {
       stmt.params.id = id;
       let rows = Async.querySpinningly(stmt, ["url"]);
       url = rows.length == 0 ? "<not found>" : rows[0].url;
-    } catch (ex) {
+    } catch (ex if !Async.isShutdownException(ex)) {
       if (ex instanceof Ci.mozIStorageError) {
         url = `<failed: Storage error: ${ex.message} (${ex.result})>`;
       } else {
@@ -441,7 +441,7 @@ BookmarksEngine.prototype = {
       let guidMap;
       try {
         guidMap = this._buildGUIDMap();
-      } catch (ex) {
+      } catch (ex if !Async.isShutdownException(ex)) {
         this._log.warn("Got exception \"" + Utils.exceptionStr(ex) +
                        "\" building GUID map." +
                        " Skipping all other incoming items.");
@@ -1352,7 +1352,15 @@ BookmarksStore.prototype = {
 
   getAllIDs: function BStore_getAllIDs() {
     let items = {"menu": true,
-                 "toolbar": true};
+                 "toolbar": true,
+                 "unfiled": true,
+                };
+    // We also want "mobile" but only if a local mobile folder already exists
+    // (otherwise we'll later end up creating it, which we want to avoid until
+    // we actually need it.)
+    if (kSpecialIds.findMobileRoot(false)) {
+      items["mobile"] = true;
+    }
     for each (let guid in kSpecialIds.guids) {
       if (guid != "places" && guid != "tags")
         this._getChildren(guid, items);

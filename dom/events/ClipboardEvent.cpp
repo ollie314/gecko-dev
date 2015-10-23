@@ -16,7 +16,7 @@ ClipboardEvent::ClipboardEvent(EventTarget* aOwner,
                                nsPresContext* aPresContext,
                                InternalClipboardEvent* aEvent)
   : Event(aOwner, aPresContext,
-          aEvent ? aEvent : new InternalClipboardEvent(false, 0))
+          aEvent ? aEvent : new InternalClipboardEvent(false, eVoidEvent))
 {
   if (aEvent) {
     mEventIsInternal = false;
@@ -69,17 +69,17 @@ ClipboardEvent::Constructor(const GlobalObject& aGlobal,
                             ErrorResult& aRv)
 {
   nsCOMPtr<EventTarget> t = do_QueryInterface(aGlobal.GetAsSupports());
-  nsRefPtr<ClipboardEvent> e = new ClipboardEvent(t, nullptr, nullptr);
+  RefPtr<ClipboardEvent> e = new ClipboardEvent(t, nullptr, nullptr);
   bool trusted = e->Init(t);
 
-  nsRefPtr<DataTransfer> clipboardData;
+  RefPtr<DataTransfer> clipboardData;
   if (e->mEventIsInternal) {
     InternalClipboardEvent* event = e->mEvent->AsClipboardEvent();
     if (event) {
       // Always create a clipboardData for the copy event. If this is changed to
       // support other types of events, make sure that read/write privileges are
       // checked properly within DataTransfer.
-      clipboardData = new DataTransfer(ToSupports(e), NS_COPY, false, -1);
+      clipboardData = new DataTransfer(ToSupports(e), eCopy, false, -1);
       clipboardData->SetData(aParam.mDataType, aParam.mData);
     }
   }
@@ -105,11 +105,11 @@ ClipboardEvent::GetClipboardData()
   if (!event->clipboardData) {
     if (mEventIsInternal) {
       event->clipboardData =
-        new DataTransfer(ToSupports(this), NS_COPY, false, -1);
+        new DataTransfer(ToSupports(this), eCopy, false, -1);
     } else {
       event->clipboardData =
-        new DataTransfer(ToSupports(this), event->message,
-                         event->message == NS_PASTE,
+        new DataTransfer(ToSupports(this), event->mMessage,
+                         event->mMessage == ePaste,
                          nsIClipboard::kGlobalClipboard);
     }
   }
@@ -128,7 +128,7 @@ NS_NewDOMClipboardEvent(EventTarget* aOwner,
                         nsPresContext* aPresContext,
                         InternalClipboardEvent* aEvent)
 {
-  nsRefPtr<ClipboardEvent> it =
+  RefPtr<ClipboardEvent> it =
     new ClipboardEvent(aOwner, aPresContext, aEvent);
   return it.forget();
 }

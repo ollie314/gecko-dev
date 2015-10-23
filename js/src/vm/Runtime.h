@@ -15,6 +15,7 @@
 #include "mozilla/Scoped.h"
 #include "mozilla/ThreadLocal.h"
 #include "mozilla/UniquePtr.h"
+#include "mozilla/Vector.h"
 
 #include <setjmp.h>
 
@@ -22,7 +23,7 @@
 #include "jsclist.h"
 #include "jsscript.h"
 
-#ifdef XP_MACOSX
+#ifdef XP_DARWIN
 # include "asmjs/AsmJSSignalHandlers.h"
 #endif
 #include "builtin/AtomicsObject.h"
@@ -38,11 +39,13 @@
 #endif
 #include "js/TraceableVector.h"
 #include "js/Vector.h"
+#include "vm/CodeCoverage.h"
 #include "vm/CommonPropertyNames.h"
 #include "vm/DateTime.h"
 #include "vm/MallocProvider.h"
 #include "vm/SPSProfiler.h"
 #include "vm/Stack.h"
+#include "vm/Stopwatch.h"
 #include "vm/Symbol.h"
 
 #ifdef _MSC_VER
@@ -443,6 +446,7 @@ struct WellKnownSymbols
     js::ImmutableSymbolPtr iterator;
     js::ImmutableSymbolPtr match;
     js::ImmutableSymbolPtr species;
+    js::ImmutableSymbolPtr toPrimitive;
 
     const ImmutableSymbolPtr& get(size_t u) const {
         MOZ_ASSERT(u < JS::WellKnownSymbolLimit);
@@ -629,6 +633,9 @@ struct JSRuntime : public JS::shadow::Runtime,
     mozilla::Atomic<uintptr_t, mozilla::Relaxed> jitStackLimit_;
     void resetJitStackLimit();
 
+    // Like jitStackLimit_, but not reset to trigger interrupts.
+    uintptr_t jitStackLimitNoInterrupt_;
+
   public:
     void initJitStackLimit();
 
@@ -637,6 +644,8 @@ struct JSRuntime : public JS::shadow::Runtime,
     // For read-only JIT use:
     void* addressOfJitStackLimit() { return &jitStackLimit_; }
     static size_t offsetOfJitStackLimit() { return offsetof(JSRuntime, jitStackLimit_); }
+
+    void* addressOfJitStackLimitNoInterrupt() { return &jitStackLimitNoInterrupt_; }
 
     // Information about the heap allocated backtrack stack used by RegExp JIT code.
     js::irregexp::RegExpStack regexpStack;
@@ -1026,10 +1035,6 @@ struct JSRuntime : public JS::shadow::Runtime,
     /* Garbage collector state has been sucessfully initialized. */
     bool                gcInitialized;
 
-    bool isHeapMajorCollecting() const { return heapState_ == JS::HeapState::MajorCollecting; }
-    bool isHeapMinorCollecting() const { return heapState_ == JS::HeapState::MinorCollecting; }
-    bool isHeapCollecting() const { return isHeapMinorCollecting() || isHeapMajorCollecting(); }
-
     int gcZeal() { return gc.zeal(); }
 
     void lockGC() {
@@ -1053,6 +1058,9 @@ struct JSRuntime : public JS::shadow::Runtime,
 
     /* Strong references on scripts held for PCCount profiling API. */
     JS::PersistentRooted<js::ScriptAndCountsVector>* scriptAndCountsVector;
+
+    /* Code coverage output. */
+    js::coverage::LCovRuntime lcovOutput;
 
     /* Well-known numbers held for use by this runtime's contexts. */
     const js::Value     NaNValue;
@@ -1118,7 +1126,7 @@ struct JSRuntime : public JS::shadow::Runtime,
     /* Client opaque pointers */
     void*               data;
 
-#if defined(XP_MACOSX) && defined(ASMJS_MAY_USE_SIGNAL_HANDLERS_FOR_OOB)
+#if defined(XP_DARWIN) && defined(ASMJS_MAY_USE_SIGNAL_HANDLERS_FOR_OOB)
     js::AsmJSMachExceptionHandler asmJSMachExceptionHandler;
 #endif
 
@@ -1152,9 +1160,7 @@ struct JSRuntime : public JS::shadow::Runtime,
     const JSSecurityCallbacks* securityCallbacks;
     const js::DOMCallbacks* DOMcallbacks;
     JSDestroyPrincipalsOp destroyPrincipals;
-
-    /* Structured data callbacks are runtime-wide. */
-    const JSStructuredCloneCallbacks* structuredCloneCallbacks;
+    JSReadPrincipalsOp readPrincipals;
 
     /* Optional error reporter. */
     JSErrorReporter     errorReporter;
@@ -1456,11 +1462,12 @@ struct JSRuntime : public JS::shadow::Runtime,
         T* p = pod_calloc<T>(numElems);
         if (MOZ_LIKELY(!!p))
             return p;
-        if (numElems & mozilla::tl::MulOverflowMask<sizeof(T)>::value) {
+        size_t bytes;
+        if (MOZ_UNLIKELY(!js::CalculateAllocSize<T>(numElems, &bytes))) {
             reportAllocationOverflow();
             return nullptr;
         }
-        return (T*)onOutOfMemoryCanGC(js::AllocFunction::Calloc, numElems * sizeof(T));
+        return static_cast<T*>(onOutOfMemoryCanGC(js::AllocFunction::Calloc, bytes));
     }
 
     template <typename T>
@@ -1468,11 +1475,12 @@ struct JSRuntime : public JS::shadow::Runtime,
         T* p2 = pod_realloc<T>(p, oldSize, newSize);
         if (MOZ_LIKELY(!!p2))
             return p2;
-        if (newSize & mozilla::tl::MulOverflowMask<sizeof(T)>::value) {
+        size_t bytes;
+        if (MOZ_UNLIKELY(!js::CalculateAllocSize<T>(newSize, &bytes))) {
             reportAllocationOverflow();
             return nullptr;
         }
-        return (T*)onOutOfMemoryCanGC(js::AllocFunction::Realloc, newSize * sizeof(T), p);
+        return static_cast<T*>(onOutOfMemoryCanGC(js::AllocFunction::Realloc, bytes, p));
     }
 
     /*
@@ -1485,186 +1493,7 @@ struct JSRuntime : public JS::shadow::Runtime,
     int64_t lastAnimationTime;
 
   public:
-
-    /* ------------------------------------------
-       Performance measurements
-       ------------------------------------------ */
-    struct Stopwatch {
-        /**
-         * A map used to collapse compartments belonging to the same
-         * add-on (respectively to the same webpage, to the platform)
-         * into a single group.
-         *
-         * Keys: for system compartments, a `JSAddonId*` (which may be
-         * `nullptr`), and for webpages, a `JSPrincipals*` (which may
-         * not). Note that compartments may start as non-system
-         * compartments and become compartments later during their
-         * lifetime, which requires an invalidation.
-         *
-         * This map is meant to be accessed only by instances of
-         * PerformanceGroupHolder, which handle both reference-counting
-         * of the values and invalidation of the key/value pairs.
-         */
-        typedef js::HashMap<void*, js::PerformanceGroup*,
-                            js::DefaultHasher<void*>,
-                            js::SystemAllocPolicy> Groups;
-
-        Groups& groups() {
-            return groups_;
-        }
-
-        /**
-         * Performance data on the entire runtime.
-         */
-        js::PerformanceGroupHolder performance;
-
-        /**
-         * The number of times we have entered the event loop.
-         * Used to reset counters whenever we enter the loop,
-         * which may be caused either by having completed the
-         * previous run of the event loop, or by entering a
-         * nested loop.
-         *
-         * Always incremented by 1, may safely overflow.
-         */
-        uint64_t iteration;
-
-        /**
-         * Callback used to ask the embedding to determine in which
-         * Performance Group the current execution belongs. Typically, this is
-         * used to regroup JSCompartments from several iframes from the same
-         * page or from several compartments of the same addon into a single
-         * Performance Group.
-         *
-         * May be `nullptr`, in which case we put all the JSCompartments
-         * in the same PerformanceGroup.
-         */
-        JSCurrentPerfGroupCallback currentPerfGroupCallback;
-
-        explicit Stopwatch(JSRuntime* runtime)
-          : performance(runtime)
-          , iteration(0)
-          , currentPerfGroupCallback(nullptr)
-          , isMonitoringJank_(false)
-          , isMonitoringCPOW_(false)
-          , isMonitoringPerCompartment_(false)
-          , idCounter_(0)
-        { }
-
-        /**
-         * Reset the stopwatch.
-         *
-         * This method is meant to be called whenever we start processing
-         * an event, to ensure that stop any ongoing measurement that would
-         * otherwise provide irrelevant results.
-         */
-        void reset() {
-            ++iteration;
-        }
-        /**
-         * Activate/deactivate stopwatch measurement of jank.
-         *
-         * Noop if `value` is `true` and the stopwatch is already active,
-         * or if `value` is `false` and the stopwatch is already inactive.
-         *
-         * Otherwise, any pending measurements are dropped, but previous
-         * measurements remain stored.
-         *
-         * May return `false` if the underlying hashtable cannot be allocated.
-         */
-        bool setIsMonitoringJank(bool value) {
-            if (isMonitoringJank_ != value)
-                reset();
-
-            if (value && !groups_.initialized()) {
-                if (!groups_.init(128))
-                    return false;
-            }
-
-            isMonitoringJank_ = value;
-            return true;
-        }
-        bool isMonitoringJank() const {
-            return isMonitoringJank_;
-        }
-
-        bool setIsMonitoringPerCompartment(bool value) {
-            if (isMonitoringPerCompartment_ != value)
-                reset();
-
-            if (value && !groups_.initialized()) {
-                if (!groups_.init(128))
-                    return false;
-            }
-
-            isMonitoringPerCompartment_ = value;
-            return true;
-        }
-        bool isMonitoringPerCompartment() const {
-            return isMonitoringPerCompartment_;
-        }
-
-        /**
-         * Activate/deactivate stopwatch measurement of CPOW.
-         */
-        bool setIsMonitoringCPOW(bool value) {
-            isMonitoringCPOW_ = value;
-            return true;
-        }
-
-        bool isMonitoringCPOW() const {
-            return isMonitoringCPOW_;
-        }
-
-        /**
-         * Return a identifier for a group, unique to the runtime.
-         */
-        uint64_t uniqueId() {
-            return idCounter_++;
-        }
-
-        // Some systems have non-monotonic clocks. While we cannot
-        // improve the precision, we can make sure that our measures
-        // are monotonic nevertheless. We do this by storing the
-        // result of the latest call to the clock and making sure
-        // that the next timestamp is greater or equal.
-        struct MonotonicTimeStamp {
-            MonotonicTimeStamp()
-              : latestGood_(0)
-            {}
-            inline uint64_t monotonize(uint64_t stamp)
-            {
-                if (stamp <= latestGood_)
-                    return latestGood_;
-                latestGood_ = stamp;
-                return stamp;
-            }
-          private:
-            uint64_t latestGood_;
-        };
-        MonotonicTimeStamp systemTimeFix;
-        MonotonicTimeStamp userTimeFix;
-
-    private:
-        Stopwatch(const Stopwatch&) = delete;
-        Stopwatch& operator=(const Stopwatch&) = delete;
-
-        Groups groups_;
-        friend struct js::PerformanceGroupHolder;
-
-        /**
-         * `true` if stopwatch monitoring is active, `false` otherwise.
-         */
-        bool isMonitoringJank_;
-        bool isMonitoringCPOW_;
-        bool isMonitoringPerCompartment_;
-
-        /**
-         * A counter used to generate unique identifiers for groups.
-         */
-        uint64_t idCounter_;
-    };
-    Stopwatch stopwatch;
+    js::PerformanceMonitoring performanceMonitoring;
 };
 
 namespace js {
@@ -1737,8 +1566,9 @@ FreeOp::freeLater(void* p)
     // and won't hold onto the pointers to free indefinitely.
     MOZ_ASSERT(this != runtime()->defaultFreeOp());
 
+    AutoEnterOOMUnsafeRegion oomUnsafe;
     if (!freeLaterList.append(p))
-        CrashAtUnhandlableOOM("FreeOp::freeLater");
+        oomUnsafe.crash("FreeOp::freeLater");
 }
 
 /*
@@ -1747,7 +1577,7 @@ FreeOp::freeLater(void* p)
  * Note that the lock may be temporarily released by use of AutoUnlockGC when
  * passed a non-const reference to this class.
  */
-class MOZ_STACK_CLASS AutoLockGC
+class MOZ_RAII AutoLockGC
 {
   public:
     explicit AutoLockGC(JSRuntime* rt
@@ -1786,7 +1616,7 @@ class MOZ_STACK_CLASS AutoLockGC
     AutoLockGC& operator=(const AutoLockGC&) = delete;
 };
 
-class MOZ_STACK_CLASS AutoUnlockGC
+class MOZ_RAII AutoUnlockGC
 {
   public:
     explicit AutoUnlockGC(AutoLockGC& lock
@@ -1809,7 +1639,7 @@ class MOZ_STACK_CLASS AutoUnlockGC
     AutoUnlockGC& operator=(const AutoUnlockGC&) = delete;
 };
 
-class MOZ_STACK_CLASS AutoKeepAtoms
+class MOZ_RAII AutoKeepAtoms
 {
     PerThreadData* pt;
     MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
@@ -1956,6 +1786,21 @@ class RuntimeAllocPolicy
     MOZ_IMPLICIT RuntimeAllocPolicy(JSRuntime* rt) : runtime(rt) {}
 
     template <typename T>
+    T* maybe_pod_malloc(size_t numElems) {
+        return runtime->maybe_pod_malloc<T>(numElems);
+    }
+
+    template <typename T>
+    T* maybe_pod_calloc(size_t numElems) {
+        return runtime->maybe_pod_calloc<T>(numElems);
+    }
+
+    template <typename T>
+    T* maybe_pod_realloc(T* p, size_t oldSize, size_t newSize) {
+        return runtime->maybe_pod_realloc<T>(p, oldSize, newSize);
+    }
+
+    template <typename T>
     T* pod_malloc(size_t numElems) {
         return runtime->pod_malloc<T>(numElems);
     }
@@ -1972,13 +1817,17 @@ class RuntimeAllocPolicy
 
     void free_(void* p) { js_free(p); }
     void reportAllocOverflow() const {}
+
+    bool checkSimulatedOOM() const {
+        return !js::oom::ShouldFailWithOOM();
+    }
 };
 
 extern const JSSecurityCallbacks NullSecurityCallbacks;
 
 // Debugging RAII class which marks the current thread as performing an Ion
 // compilation, for use by CurrentThreadCan{Read,Write}CompilationData
-class AutoEnterIonCompilation
+class MOZ_RAII AutoEnterIonCompilation
 {
   public:
     explicit AutoEnterIonCompilation(bool safeForMinorGC
@@ -2052,15 +1901,19 @@ class MOZ_STACK_CLASS AutoInitGCManagedObject
     }
 
     T& operator*() const {
-        return *ptr_.get();
+        return *get();
     }
 
     T* operator->() const {
-        return ptr_.get();
+        return get();
     }
 
     explicit operator bool() const {
-        return ptr_.get() != nullptr;
+        return get() != nullptr;
+    }
+
+    T* get() const {
+        return ptr_.get();
     }
 
     T* release() {

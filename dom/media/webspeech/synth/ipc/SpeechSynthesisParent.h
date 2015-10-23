@@ -56,7 +56,7 @@ public:
   explicit SpeechSynthesisRequestParent(SpeechTaskParent* aTask);
   virtual ~SpeechSynthesisRequestParent();
 
-  nsRefPtr<SpeechTaskParent> mTask;
+  RefPtr<SpeechTaskParent> mTask;
 
 protected:
 
@@ -69,6 +69,8 @@ protected:
   virtual bool RecvCancel() override;
 
   virtual bool RecvForceEnd() override;
+
+  virtual bool RecvSetAudioOutputVolume(const float& aVolume) override;
 };
 
 class SpeechTaskParent : public nsSpeechTask

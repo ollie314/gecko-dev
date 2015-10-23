@@ -414,6 +414,18 @@ var LoginManagerContent = {
       return null;
     };
 
+    // Returns true if this window or any subframes have insecure login forms.
+    let hasInsecureLoginForms = (thisWindow, parentIsInsecure) => {
+      let doc = thisWindow.document;
+      let isInsecure =
+          parentIsInsecure ||
+          !this.checkIfURIisSecure(doc.documentURIObject);
+      let hasLoginForm = !!this.stateForDocument(doc).loginForm;
+      return (hasLoginForm && isInsecure) ||
+             Array.some(thisWindow.frames,
+                        frame => hasInsecureLoginForms(frame, isInsecure));
+    };
+
     // Store the actual form to use on the state for the top-level document.
     let topState = this.stateForDocument(topWindow.document);
     topState.loginFormForFill = getFirstLoginForm(topWindow);
@@ -423,6 +435,7 @@ var LoginManagerContent = {
     messageManager.sendAsyncMessage("RemoteLogins:updateLoginFormPresence", {
       loginFormOrigin,
       loginFormPresent: !!topState.loginFormForFill,
+      hasInsecureLoginForms: hasInsecureLoginForms(topWindow, false),
     });
   },
 
@@ -476,7 +489,9 @@ var LoginManagerContent = {
     // If we have a target input, fills it's form.
     if (inputElement) {
       form = FormLikeFactory.createFromField(inputElement);
-      clobberUsername = false;
+      if (inputElement.type == "password") {
+        clobberUsername = false;
+      }
     }
     this._fillForm(form, true, clobberUsername, true, true, loginsFound, recipes, options);
   },
@@ -521,10 +536,16 @@ var LoginManagerContent = {
 
     log("onUsernameInput from", event.type);
 
+    let doc = acForm.ownerDocument;
+    let messageManager = messageManagerFromWindow(doc.defaultView);
+    let recipes = messageManager.sendSyncMessage("RemoteLogins:findRecipes", {
+      formOrigin: LoginUtils._getPasswordOrigin(doc.documentURI),
+    })[0];
+
     // Make sure the username field fillForm will use is the
     // same field as the autocomplete was activated on.
     var [usernameField, passwordField, ignored] =
-        this._getFormFields(acForm, false);
+        this._getFormFields(acForm, false, recipes);
     if (usernameField == acInputField && passwordField) {
       this._getLoginDataFromParent(acForm, { showMasterPassword: false })
           .then(({ form, loginsFound, recipes }) => {
@@ -706,7 +727,8 @@ var LoginManagerContent = {
     }
 
     log("Password field (new) id/name is: ", newPasswordField.id, " / ", newPasswordField.name);
-    log("Password field (old) id/name is: ", oldPasswordField.id, " / ", oldPasswordField.name);
+    if (oldPasswordField)
+      log("Password field (old) id/name is: ", oldPasswordField.id, " / ", oldPasswordField.name);
     return [usernameField, newPasswordField, oldPasswordField];
   },
 
@@ -751,10 +773,9 @@ var LoginManagerContent = {
     let formSubmitURL = LoginUtils._getActionOrigin(form);
     let messageManager = messageManagerFromWindow(win);
 
-    let recipesArray = messageManager.sendSyncMessage("RemoteLogins:findRecipes", {
+    let recipes = messageManager.sendSyncMessage("RemoteLogins:findRecipes", {
       formOrigin: hostname,
     })[0];
-    let recipes = new Set(recipesArray);
 
     // Get the appropriate fields from the form.
     var [usernameField, newPasswordField, oldPasswordField] =
@@ -807,8 +828,11 @@ var LoginManagerContent = {
    *
    * @param {HTMLFormElement} form
    * @param {bool} autofillForm denotes if we should fill the form in automatically
-   * @param {bool} clobberUsername controls if an existing username can be
-   *                               overwritten
+   * @param {bool} clobberUsername controls if an existing username can be overwritten.
+   *                               If this is false and an inputElement of type password
+   *                               is also passed, the username field will be ignored.
+   *                               If this is false and no inputElement is passed, if the username
+   *                               field value is not found in foundLogins, it will not fill the password.
    * @param {bool} clobberPassword controls if an existing password value can be
    *                               overwritten
    * @param {bool} userTriggered is an indication of whether this filling was triggered by
@@ -862,11 +886,16 @@ var LoginManagerContent = {
       // the same as the one heuristically found, use the parameter
       // one instead.
       if (inputElement) {
-        if (inputElement.type != "password") {
+        if (inputElement.type == "password") {
+          passwordField = inputElement;
+          if (!clobberUsername) {
+            usernameField = null;
+          }
+        } else if (LoginHelper.isUsernameFieldType(inputElement)) {
+          usernameField = inputElement;
+        } else {
           throw new Error("Unexpected input element type.");
         }
-        passwordField = inputElement;
-        usernameField = null;
       }
 
       // Need a valid password field to do anything.
@@ -940,7 +969,7 @@ var LoginManagerContent = {
         // password if we find a matching login.
         var username = usernameField.value.toLowerCase();
 
-        let matchingLogins = logins.filter(function(l)
+        let matchingLogins = logins.filter(l =>
                                            l.username.toLowerCase() == username);
         if (matchingLogins.length == 0) {
           log("Password not filled. None of the stored logins match the username already present.");
@@ -967,9 +996,9 @@ var LoginManagerContent = {
         // (user+pass or pass-only) when there's exactly one that matches.
         let matchingLogins;
         if (usernameField)
-          matchingLogins = logins.filter(function(l) l.username);
+          matchingLogins = logins.filter(l => l.username);
         else
-          matchingLogins = logins.filter(function(l) !l.username);
+          matchingLogins = logins.filter(l => !l.username);
 
         if (matchingLogins.length != 1) {
           log("Multiple logins for form, so not filling any.");
@@ -1026,6 +1055,96 @@ var LoginManagerContent = {
     }
   },
 
+  /**
+   * Verify if a field is a valid login form field and
+   * returns some information about it's FormLike.
+   *
+   * @param {Element} aField
+   *                  A form field we want to verify.
+   *
+   * @returns {Object} an object with information about the
+   *                   FormLike username and password field
+   *                   or null if the passed field is invalid.
+   */
+  getFieldContext(aField) {
+    // If the element is not a proper form field, return null.
+    if (!(aField instanceof Ci.nsIDOMHTMLInputElement) ||
+        (aField.type != "password" && !LoginHelper.isUsernameFieldType(aField)) ||
+        !aField.ownerDocument) {
+      return null;
+    }
+    let form = FormLikeFactory.createFromField(aField);
+
+    let doc = aField.ownerDocument;
+    let messageManager = messageManagerFromWindow(doc.defaultView);
+    let recipes = messageManager.sendSyncMessage("RemoteLogins:findRecipes", {
+      formOrigin: LoginUtils._getPasswordOrigin(doc.documentURI),
+    })[0];
+
+    let [usernameField, newPasswordField, oldPasswordField] =
+          this._getFormFields(form, false, recipes);
+
+    // If we are not verifying a password field, we want
+    // to use aField as the username field.
+    if (aField.type != "password") {
+      usernameField = aField;
+    }
+
+    return {
+      usernameField: {
+        found: !!usernameField,
+        disabled: usernameField && (usernameField.disabled || usernameField.readOnly),
+      },
+      passwordField: {
+        found: !!newPasswordField,
+        disabled: newPasswordField && (newPasswordField.disabled || newPasswordField.readOnly),
+      },
+    };
+  },
+
+  /*
+   * Checks whether the passed uri is secure
+   * Check Protocol Flags to determine if scheme is secure:
+   * URI_DOES_NOT_RETURN_DATA - e.g.
+   *   "mailto"
+   * URI_IS_LOCAL_RESOURCE - e.g.
+   *   "data",
+   *   "resource",
+   *   "moz-icon"
+   * URI_INHERITS_SECURITY_CONTEXT - e.g.
+   *   "javascript"
+   * URI_SAFE_TO_LOAD_IN_SECURE_CONTEXT - e.g.
+   *   "https",
+   *   "moz-safe-about"
+   *
+   *   The use of this logic comes directly from nsMixedContentBlocker.cpp
+   *   At the time it was decided to include these protocols since a secure
+   *   uri for mixed content blocker means that the resource can't be
+   *   easily tampered with because 1) it is sent over an encrypted channel or
+   *   2) it is a local resource that never hits the network
+   *   or 3) it is a request sent without any response that could alter
+   *   the behavior of the page. It was decided to include the same logic
+   *   here both to be consistent with MCB and to make sure we cover all
+   *   "safe" protocols. Eventually, the code here and the code in MCB
+   *   will be moved to a common location that will be referenced from
+   *   both places. Look at
+   *   https://bugzilla.mozilla.org/show_bug.cgi?id=899099 for more info.
+   */
+  checkIfURIisSecure : function(uri) {
+    let isSafe = false;
+    let netutil = Cc["@mozilla.org/network/util;1"].getService(Ci.nsINetUtil);
+    let ph = Ci.nsIProtocolHandler;
+
+    if (netutil.URIChainHasFlags(uri, ph.URI_IS_LOCAL_RESOURCE) ||
+        netutil.URIChainHasFlags(uri, ph.URI_DOES_NOT_RETURN_DATA) ||
+        netutil.URIChainHasFlags(uri, ph.URI_INHERITS_SECURITY_CONTEXT) ||
+        netutil.URIChainHasFlags(uri, ph.URI_SAFE_TO_LOAD_IN_SECURE_CONTEXT)) {
+
+      isSafe = true;
+    }
+
+    return isSafe;
+  },
 };
 
 var LoginUtils = {
@@ -1168,7 +1287,7 @@ UserAutoCompleteResult.prototype = {
  * A factory to generate FormLike objects that represent a set of login fields
  * which aren't necessarily marked up with a <form> element.
  */
-let FormLikeFactory = {
+var FormLikeFactory = {
   _propsFromForm: [
     "autocomplete",
     "ownerDocument",

@@ -4,10 +4,10 @@
 
 "use strict";
 
-let Cu = Components.utils;
-let Ci = Components.interfaces;
-let Cc = Components.classes;
-let Cr = Components.results;
+var Cu = Components.utils;
+var Ci = Components.interfaces;
+var Cc = Components.classes;
+var Cr = Components.results;
 
 /* BrowserElementParent injects script to listen for certain events in the
  * child.  We then listen to messages from the child script and take
@@ -161,10 +161,17 @@ BrowserElementParent.prototype = {
 
   _setupMessageListener: function() {
     this._mm = this._frameLoader.messageManager;
-    let self = this;
-    let isWidget = this._frameLoader
-                       .QueryInterface(Ci.nsIFrameLoader)
-                       .ownerIsWidget;
+    this._isWidget = this._frameLoader
+                         .QueryInterface(Ci.nsIFrameLoader)
+                         .ownerIsWidget;
+    this._mm.addMessageListener('browser-element-api:call', this);
+    this._mm.loadFrameScript("chrome://global/content/extensions.js", true);
+  },
+
+  receiveMessage: function(aMsg) {
+    if (!this._isAlive()) {
+      return;
+    }
 
     // Messages we receive are handed to functions which take a (data) argument,
     // where |data| is the message manager's data object.
@@ -201,7 +208,8 @@ BrowserElementParent.prototype = {
       "got-set-audio-channel-volume": this._gotDOMRequestResult,
       "got-audio-channel-muted": this._gotDOMRequestResult,
       "got-set-audio-channel-muted": this._gotDOMRequestResult,
-      "got-is-audio-channel-active": this._gotDOMRequestResult
+      "got-is-audio-channel-active": this._gotDOMRequestResult,
+      "got-structured-data": this._gotDOMRequestResult
     };
 
     let mmSecuritySensitiveCalls = {
@@ -222,18 +230,15 @@ BrowserElementParent.prototype = {
       "opentab": this._fireEventFromMsg
     };
 
-    this._mm.addMessageListener('browser-element-api:call', function(aMsg) {
-      if (!self._isAlive()) {
-        return;
-      }
+    if (aMsg.data.msg_name in mmCalls) {
+      return mmCalls[aMsg.data.msg_name].apply(this, arguments);
+    } else if (!this._isWidget && aMsg.data.msg_name in mmSecuritySensitiveCalls) {
+      return mmSecuritySensitiveCalls[aMsg.data.msg_name].apply(this, arguments);
+    }
+  },
 
-      if (aMsg.data.msg_name in mmCalls) {
-        return mmCalls[aMsg.data.msg_name].apply(self, arguments);
-      } else if (!isWidget && aMsg.data.msg_name in mmSecuritySensitiveCalls) {
-        return mmSecuritySensitiveCalls[aMsg.data.msg_name]
-                 .apply(self, arguments);
-      }
-    });
+  _removeMessageListener: function() {
+    this._mm.removeMessageListener('browser-element-api:call', this);
   },
 
   /**
@@ -453,6 +458,8 @@ BrowserElementParent.prototype = {
   //  - caretVisible: Indicate the caret visiibility.
   //  - selectionVisible: Indicate current selection is visible or not.
   //  - selectionEditable: Indicate current selection is editable or not.
+  //  - selectedTextContent: Contains current selected text content, which is
+  //                         equivalent to the string returned by Selection.toString().
   _handleCaretStateChanged: function(data) {
     let evt = this._createEvent('caretstatechanged', data.json,
                                 /* cancelable = */ false);
@@ -831,14 +838,13 @@ BrowserElementParent.prototype = {
       catch(e) {
         debug('Malformed referrer -- ' + e);
       }
+
       // This simply returns null if there is no principal available
       // for the requested uri. This is an acceptable fallback when
       // calling newChannelFromURI2.
-      principal = 
-        Services.scriptSecurityManager.getAppCodebasePrincipal(
-          referrer, 
-          this._frameLoader.loadContext.appId, 
-          this._frameLoader.loadContext.isInBrowserElement);
+      principal =
+        Services.scriptSecurityManager.createCodebasePrincipal(
+          referrer, this._frameLoader.loadContext.originAttributes);
     }
 
     debug('Using principal? ' + !!principal);
@@ -992,7 +998,7 @@ BrowserElementParent.prototype = {
     try {
       let nfcContentHelper =
         Cc["@mozilla.org/nfc/content-helper;1"].getService(Ci.nsINfcBrowserAPI);
-      nfcContentHelper.setFocusApp(tabId, isFocus);
+      nfcContentHelper.setFocusTab(tabId, isFocus);
     } catch(e) {
       // Not all platforms support NFC
     }
@@ -1024,6 +1030,8 @@ BrowserElementParent.prototype = {
     return this._sendDOMRequest('get-is-audio-channel-active',
                                 {audioChannel: aAudioChannel});
   },
+
+  getStructuredData: defineDOMRequestMethod('get-structured-data'),
 
   /**
    * Called when the visibility of the window which owns this iframe changes.

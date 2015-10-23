@@ -5,9 +5,13 @@
 
 const {PushDB, PushService, PushServiceWebSocket} = serviceExports;
 
+const userAgentID = '3c7462fc-270f-45be-a459-b9d631b0d093';
+
 function run_test() {
   do_get_profile();
-  setPrefs();
+  setPrefs({
+    userAgentID: userAgentID,
+  });
   disableServiceWorkerEvents(
     'https://example.com/a',
     'https://example.com/b',
@@ -58,8 +62,8 @@ add_task(function* test_notification_error() {
     )
   ]);
 
-  let ackDefer = Promise.defer();
-  let ackDone = after(records.length, ackDefer.resolve);
+  let ackDone;
+  let ackPromise = new Promise(resolve => ackDone = after(records.length, resolve));
   PushService.init({
     serverURI: "wss://push.example.org/",
     networkInfo: new MockDesktopNetworkInfo(),
@@ -82,7 +86,7 @@ add_task(function* test_notification_error() {
           this.serverSendMsg(JSON.stringify({
             messageType: 'hello',
             status: 200,
-            uaid: '3c7462fc-270f-45be-a459-b9d631b0d093'
+            uaid: userAgentID,
           }));
           this.serverSendMsg(JSON.stringify({
             messageType: 'notification',
@@ -112,7 +116,7 @@ add_task(function* test_notification_error() {
     'Wrong endpoint for notification C');
   equal(cPush.version, 4, 'Wrong version for notification C');
 
-  yield waitForPromise(ackDefer.promise, DEFAULT_TIMEOUT,
+  yield waitForPromise(ackPromise, DEFAULT_TIMEOUT,
     'Timed out waiting for acknowledgements');
 
   let aRecord = yield db.getByIdentifiers({scope: 'https://example.com/a',

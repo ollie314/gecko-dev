@@ -36,6 +36,7 @@
 #include "mozilla/dom/TouchEvent.h"
 #include "mozilla/dom/TransitionEvent.h"
 #include "mozilla/dom/WheelEvent.h"
+#include "mozilla/dom/WorkerPrivate.h"
 #include "mozilla/dom/XULCommandEvent.h"
 #include "mozilla/EventDispatcher.h"
 #include "mozilla/EventListenerManager.h"
@@ -239,7 +240,7 @@ public:
   // Event retargeting must happen whenever mNewTarget is non-null.
   nsCOMPtr<EventTarget>             mNewTarget;
   // Cache mTarget's event listener manager.
-  nsRefPtr<EventListenerManager>    mManager;
+  RefPtr<EventListenerManager>    mManager;
 };
 
 EventTargetChainItem::EventTargetChainItem(EventTarget* aTarget)
@@ -420,12 +421,12 @@ EventDispatcher::Dispatch(nsISupports* aTarget,
   NS_ASSERTION(aEvent, "Trying to dispatch without WidgetEvent!");
   NS_ENSURE_TRUE(!aEvent->mFlags.mIsBeingDispatched,
                  NS_ERROR_DOM_INVALID_STATE_ERR);
-  NS_ASSERTION(!aTargets || !aEvent->message, "Wrong parameters!");
+  NS_ASSERTION(!aTargets || !aEvent->mMessage, "Wrong parameters!");
 
   // If we're dispatching an already created DOMEvent object, make
   // sure it is initialized!
   // If aTargets is non-null, the event isn't going to be dispatched.
-  NS_ENSURE_TRUE(aEvent->message || !aDOMEvent || aTargets,
+  NS_ENSURE_TRUE(aEvent->mMessage || !aDOMEvent || aTargets,
                  NS_ERROR_DOM_INVALID_STATE_ERR);
 
 #ifdef MOZ_TASK_TRACER
@@ -493,7 +494,8 @@ EventDispatcher::Dispatch(nsISupports* aTarget,
   }
 
 #ifdef DEBUG
-  if (aEvent->message != NS_EVENT_NULL && !nsContentUtils::IsSafeToRunScript()) {
+  if (aEvent->mMessage != eVoidEvent &&
+      !nsContentUtils::IsSafeToRunScript()) {
     nsresult rv = NS_ERROR_FAILURE;
     if (target->GetContextForEventHandlers(&rv) ||
         NS_FAILED(rv)) {
@@ -518,7 +520,7 @@ EventDispatcher::Dispatch(nsISupports* aTarget,
 
   // If we have a PresContext, make sure it doesn't die before
   // event dispatching is finished.
-  nsRefPtr<nsPresContext> kungFuDeathGrip(aPresContext);
+  RefPtr<nsPresContext> kungFuDeathGrip(aPresContext);
 
   ELMCreationDetector cd;
   nsTArray<EventTargetChainItem> chain;
@@ -708,7 +710,9 @@ EventDispatcher::DispatchDOMEvent(nsISupports* aTarget,
 
     if (!dontResetTrusted) {
       //Check security state to determine if dispatcher is trusted
-      aDOMEvent->SetTrusted(nsContentUtils::ThreadsafeIsCallerChrome());
+      bool trusted = NS_IsMainThread() ? nsContentUtils::LegacyIsCallerChromeOrNativeCode()
+                                       : mozilla::dom::workers::IsCurrentThreadRunningChromeWorker();
+      aDOMEvent->SetTrusted(trusted);
     }
 
     return EventDispatcher::Dispatch(aTarget, aPresContext, innerEvent,

@@ -7,6 +7,7 @@
 this.EXPORTED_SYMBOLS = [
   "btoa", // It comes from a module import.
   "encryptPayload",
+  "isConfiguredWithLegacyIdentity",
   "ensureLegacyIdentityManager",
   "setBasicCredentials",
   "makeIdentityConfig",
@@ -18,9 +19,10 @@ this.EXPORTED_SYMBOLS = [
   "add_identity_test",
   "MockFxaStorageManager",
   "AccountState", // from a module import
+  "sumHistogram",
 ];
 
-const {utils: Cu} = Components;
+var {utils: Cu} = Components;
 
 Cu.import("resource://services-sync/status.js");
 Cu.import("resource://services-sync/identity.js");
@@ -31,8 +33,10 @@ Cu.import("resource://services-sync/browserid_identity.js");
 Cu.import("resource://testing-common/services/common/logging.js");
 Cu.import("resource://testing-common/services/sync/fakeservices.js");
 Cu.import("resource://gre/modules/FxAccounts.jsm");
+Cu.import("resource://gre/modules/FxAccountsClient.jsm");
 Cu.import("resource://gre/modules/FxAccountsCommon.js");
 Cu.import("resource://gre/modules/Promise.jsm");
+Cu.import("resource://gre/modules/Services.jsm");
 
 // and grab non-exported stuff via a backstage pass.
 const {AccountState} = Cu.import("resource://gre/modules/FxAccounts.jsm", {});
@@ -89,6 +93,18 @@ this.waitForZeroTimer = function waitForZeroTimer(callback) {
     callback();
   }
   CommonUtils.namedTimer(wait, 150, {}, "timer");
+}
+
+/**
+ * Return true if Sync is configured with the "legacy" identity provider.
+ */
+this.isConfiguredWithLegacyIdentity = function() {
+  let ns = {};
+  Cu.import("resource://services-sync/service.js", ns);
+
+  // We can't use instanceof as BrowserIDManager (the "other" identity) inherits
+  // from IdentityManager so that would return true - so check the prototype.
+  return Object.getPrototypeOf(ns.Service.identity) === IdentityManager.prototype;
 }
 
 /**
@@ -190,6 +206,18 @@ this.configureFxAccountIdentity = function(authService,
 
   };
   fxa = new FxAccounts(MockInternal);
+
+  let MockFxAccountsClient = function() {
+    FxAccountsClient.apply(this);
+  };
+  MockFxAccountsClient.prototype = {
+    __proto__: FxAccountsClient.prototype,
+    accountStatus() {
+      return Promise.resolve(true);
+    }
+  };
+  let mockFxAClient = new MockFxAccountsClient();
+  fxa.internal._fxAccountsClient = mockFxAClient;
 
   let mockTSC = { // TokenServerClient
     getTokenFromBrowserIDAssertion: function(uri, assertion, cb) {
@@ -303,4 +331,16 @@ this.add_identity_test = function(test, testFunction) {
     yield testFunction();
     Status.__authManager = ns.Service.identity = oldIdentity;
   });
+}
+
+this.sumHistogram = function(name, options = {}) {
+  let histogram = options.key ? Services.telemetry.getKeyedHistogramById(name) :
+                  Services.telemetry.getHistogramById(name);
+  let snapshot = histogram.snapshot(options.key);
+  let sum = -Infinity;
+  if (snapshot) {
+    sum = snapshot.sum;
+  }
+  histogram.clear();
+  return sum;
 }

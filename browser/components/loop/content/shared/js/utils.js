@@ -42,7 +42,7 @@ var inChrome = typeof Components != "undefined" && "utils" in Components;
     this.EXPORTED_SYMBOLS = ["utils"];
     mozL10n = { get: function() {
       throw new Error("mozL10n.get not availabled from chrome!");
-    }};
+    } };
   } else {
     mozL10n = document.mozL10n || navigator.mozL10n;
   }
@@ -62,24 +62,20 @@ var inChrome = typeof Components != "undefined" && "utils" in Components;
     ROOM_FULL: 202
   };
 
-  var WEBSOCKET_REASONS = {
-    ANSWERED_ELSEWHERE: "answered-elsewhere",
-    BUSY: "busy",
-    CANCEL: "cancel",
-    CLOSED: "closed",
-    MEDIA_FAIL: "media-fail",
-    REJECT: "reject",
-    TIMEOUT: "timeout"
-  };
-
   var FAILURE_DETAILS = {
     MEDIA_DENIED: "reason-media-denied",
     NO_MEDIA: "reason-no-media",
+    ROOM_ALREADY_OPEN: "reason-room-already-open",
     UNABLE_TO_PUBLISH_MEDIA: "unable-to-publish-media",
+    USER_UNAVAILABLE: "reason-user-unavailable",
     COULD_NOT_CONNECT: "reason-could-not-connect",
     NETWORK_DISCONNECTED: "reason-network-disconnected",
     EXPIRED_OR_INVALID: "reason-expired-or-invalid",
-    UNKNOWN: "reason-unknown"
+    // TOS_FAILURE reflects the sdk error code 1026:
+    // https://tokbox.com/developer/sdks/js/reference/ExceptionEvent.html
+    TOS_FAILURE: "reason-tos-failure",
+    UNKNOWN: "reason-unknown",
+    ICE_FAILED: "reason-ice-failed"
   };
 
   var ROOM_INFO_FAILURES = {
@@ -106,6 +102,12 @@ var inChrome = typeof Components != "undefined" && "utils" in Components;
     ACTIVE: "ss-active"
   };
 
+  var CHAT_CONTENT_TYPES = {
+    CONTEXT: "chat-context",
+    TEXT: "chat-text",
+    ROOM_NAME: "room-name"
+  };
+
   /**
    * Format a given date into an l10n-friendly string.
    *
@@ -114,7 +116,7 @@ var inChrome = typeof Components != "undefined" && "utils" in Components;
    */
   function formatDate(timestamp) {
     var date = (new Date(timestamp * 1000));
-    var options = {year: "numeric", month: "long", day: "numeric"};
+    var options = { year: "numeric", month: "long", day: "numeric" };
     return date.toLocaleDateString(navigator.language, options);
   }
 
@@ -142,15 +144,6 @@ var inChrome = typeof Components != "undefined" && "utils" in Components;
 
   function isFirefox(platform) {
     return platform.toLowerCase().indexOf("firefox") !== -1;
-  }
-
-  function isFirefoxOS(platform) {
-    // So far WebActivities are exposed only in FxOS, but they may be
-    // exposed in Firefox Desktop soon, so we check for its existence
-    // and also check if the UA belongs to a mobile platform.
-    // XXX WebActivities are also exposed in WebRT on Firefox for Android,
-    //     so we need a better check. Bug 1065403.
-    return !!window.MozActivity && /mobi/i.test(platform);
   }
 
   function isOpera(platform) {
@@ -412,7 +405,7 @@ var inChrome = typeof Components != "undefined" && "utils" in Components;
         callUrl: callUrl
       });
     }
-    var bodyFooter =  body + footer;
+    var bodyFooter = body + footer;
     bodyFooter = bodyFooter.replace(/\r\n/g, "\n").replace(/\n/g, "\r\n");
     mozLoop.composeEmail(
       subject,
@@ -513,12 +506,12 @@ var inChrome = typeof Components != "undefined" && "utils" in Components;
    * @param {Number} chr The character code to decode.
    * @return {Number} The decoded value.
    */
-  function _b64ToUint6 (chr) {
-    return chr > 64 && chr < 91  ? chr - 65 :
+  function _b64ToUint6(chr) {
+    return chr > 64 && chr < 91 ? chr - 65 :
            chr > 96 && chr < 123 ? chr - 71 :
-           chr > 47 && chr < 58  ? chr + 4  :
-           chr === 43            ? 62       :
-           chr === 47            ? 63       : 0;
+           chr > 47 && chr < 58 ? chr + 4 :
+           chr === 43 ? 62 :
+           chr === 47 ? 63 : 0;
   }
 
   /**
@@ -529,12 +522,12 @@ var inChrome = typeof Components != "undefined" && "utils" in Components;
    * @param {Number} uint6 The number to encode.
    * @return {Number} The encoded value.
    */
-  function _uint6ToB64 (uint6) {
-    return uint6 < 26   ? uint6 + 65 :
-           uint6 < 52   ? uint6 + 71 :
-           uint6 < 62   ? uint6 - 4  :
-           uint6 === 62 ? 43         :
-           uint6 === 63 ? 47         : 65;
+  function _uint6ToB64(uint6) {
+    return uint6 < 26 ? uint6 + 65 :
+           uint6 < 52 ? uint6 + 71 :
+           uint6 < 62 ? uint6 - 4 :
+           uint6 === 62 ? 43 :
+           uint6 === 63 ? 47 : 65;
   }
 
   /**
@@ -553,10 +546,10 @@ var inChrome = typeof Components != "undefined" && "utils" in Components;
     // Mapping.
     for (var mapIndex = 0; mapIndex < inLength; mapIndex++) {
       chr = inString.charCodeAt(mapIndex);
-      arrayLength += chr < 0x80      ? 1 :
-                     chr < 0x800     ? 2 :
-                     chr < 0x10000   ? 3 :
-                     chr < 0x200000  ? 4 :
+      arrayLength += chr < 0x80 ? 1 :
+                     chr < 0x800 ? 2 :
+                     chr < 0x10000 ? 3 :
+                     chr < 0x200000 ? 4 :
                      chr < 0x4000000 ? 5 : 6;
     }
 
@@ -753,16 +746,42 @@ var inChrome = typeof Components != "undefined" && "utils" in Components;
     return str;
   }
 
+  /**
+   * Look up the DOM hierarchy for a node matching `selector`.
+   * If it is not found return the parent node, this is a sane default so
+   * that subsequent queries on the result do no fail.
+   * Better choice than the alternative `document.querySelector(selector)`
+   * because we ensure it works in the UI showcase as well.
+   *
+   * @param {HTMLElement} node Child element of the node we are looking for.
+   * @param {String} selector  CSS class value of element we are looking for.
+   * @return {HTMLElement}     Parent of node that matches selector query.
+   */
+  function findParentNode(node, selector) {
+    var parentNode = node.parentNode;
+
+    while (parentNode) {
+      if (parentNode.classList.contains(selector)) {
+        return parentNode;
+      }
+
+      parentNode = parentNode.parentNode;
+    }
+
+    return node;
+  }
+
   this.utils = {
     CALL_TYPES: CALL_TYPES,
+    CHAT_CONTENT_TYPES: CHAT_CONTENT_TYPES,
     FAILURE_DETAILS: FAILURE_DETAILS,
     REST_ERRNOS: REST_ERRNOS,
-    WEBSOCKET_REASONS: WEBSOCKET_REASONS,
     STREAM_PROPERTIES: STREAM_PROPERTIES,
     SCREEN_SHARE_STATES: SCREEN_SHARE_STATES,
     ROOM_INFO_FAILURES: ROOM_INFO_FAILURES,
     setRootObjects: setRootObjects,
     composeCallUrlEmail: composeCallUrlEmail,
+    findParentNode: findParentNode,
     formatDate: formatDate,
     formatURL: formatURL,
     getBoolPreference: getBoolPreference,
@@ -771,7 +790,6 @@ var inChrome = typeof Components != "undefined" && "utils" in Components;
     getPlatform: getPlatform,
     isChrome: isChrome,
     isFirefox: isFirefox,
-    isFirefoxOS: isFirefoxOS,
     isOpera: isOpera,
     getUnsupportedPlatform: getUnsupportedPlatform,
     hasAudioOrVideoDevices: hasAudioOrVideoDevices,

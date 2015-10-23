@@ -225,6 +225,7 @@ class BaselineFrame
   private:
     Value* evalNewTargetAddress() const {
         MOZ_ASSERT(isEvalFrame());
+        MOZ_ASSERT(isFunctionFrame());
         return (Value*)(reinterpret_cast<const uint8_t*>(this) +
                         BaselineFrame::Size() +
                         offsetOfEvalNewTarget());
@@ -279,8 +280,7 @@ class BaselineFrame
     inline void popBlock(JSContext* cx);
     inline bool freshenBlock(JSContext* cx);
 
-    bool strictEvalPrologue(JSContext* cx);
-    bool heavyweightFunPrologue(JSContext* cx);
+    bool initStrictEvalScopeObjects(JSContext* cx);
     bool initFunctionScopeObjects(JSContext* cx);
 
     void initArgsObjUnchecked(ArgumentsObject& argsobj) {
@@ -396,8 +396,11 @@ class BaselineFrame
     bool isFunctionFrame() const {
         return CalleeTokenIsFunction(calleeToken());
     }
+    bool isModuleFrame() const {
+        return CalleeTokenIsModuleScript(calleeToken());
+    }
     bool isGlobalFrame() const {
-        return !CalleeTokenIsFunction(calleeToken());
+        return !isFunctionFrame() && !isModuleFrame();
     }
      bool isEvalFrame() const {
         return flags_ & EVAL;
@@ -408,9 +411,9 @@ class BaselineFrame
     bool isNonStrictEvalFrame() const {
         return isEvalFrame() && !script()->strict();
     }
-    bool isDirectEvalFrame() const;
+    bool isNonGlobalEvalFrame() const;
     bool isNonStrictDirectEvalFrame() const {
-        return isNonStrictEvalFrame() && isDirectEvalFrame();
+        return isNonStrictEvalFrame() && isNonGlobalEvalFrame();
     }
     bool isNonEvalFunctionFrame() const {
         return isFunctionFrame() && !isEvalFrame();

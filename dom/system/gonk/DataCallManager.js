@@ -37,15 +37,15 @@ XPCOMUtils.defineLazyGetter(this, "RIL", function() {
 });
 
 // Ril quirk to attach data registration on demand.
-let RILQUIRKS_DATA_REGISTRATION_ON_DEMAND =
+var RILQUIRKS_DATA_REGISTRATION_ON_DEMAND =
   libcutils.property_get("ro.moz.ril.data_reg_on_demand", "false") == "true";
 
 // Ril quirk to control the uicc/data subscription.
-let RILQUIRKS_SUBSCRIPTION_CONTROL =
+var RILQUIRKS_SUBSCRIPTION_CONTROL =
   libcutils.property_get("ro.moz.ril.subscription_control", "false") == "true";
 
 // Ril quirk to enable IPv6 protocol/roaming protocol in APN settings.
-let RILQUIRKS_HAVE_IPV6 =
+var RILQUIRKS_HAVE_IPV6 =
   libcutils.property_get("ro.moz.ril.ipv6", "false") == "true";
 
 const DATACALLMANAGER_CID =
@@ -960,7 +960,9 @@ function DataCall(aClientId, aApnSetting, aDataCallHandler) {
     ifname: null,
     addresses: [],
     dnses: [],
-    gateways: []
+    gateways: [],
+    pcscf: [],
+    mtu: null
   };
   this.state = NETWORK_STATE_UNKNOWN;
   this.requestedNetworkIfaces = [];
@@ -1024,6 +1026,10 @@ DataCall.prototype = {
           return "changed";
         }
       }
+    }
+
+    if (aCurrentDataCall.mtu != aUpdatedDataCall.mtu) {
+      return "changed";
     }
 
     return "identical";
@@ -1091,6 +1097,8 @@ DataCall.prototype = {
     this.linkInfo.addresses = aDataCall.addresses ? aDataCall.addresses.split(" ") : [];
     this.linkInfo.gateways = aDataCall.gateways ? aDataCall.gateways.split(" ") : [];
     this.linkInfo.dnses = aDataCall.dnses ? aDataCall.dnses.split(" ") : [];
+    this.linkInfo.pcscf = aDataCall.pcscf ? aDataCall.pcscf.split(" ") : [];
+    this.linkInfo.mtu = aDataCall.mtu > 0 ? aDataCall.mtu : 0;
     this.state = this._getGeckoDataCallState(aDataCall);
 
     // Notify DataCallHandler about data call connected.
@@ -1143,7 +1151,9 @@ DataCall.prototype = {
       ifname: aUpdatedDataCall.ifname,
       addresses: aUpdatedDataCall.addresses ? aUpdatedDataCall.addresses.split(" ") : [],
       dnses: aUpdatedDataCall.dnses ? aUpdatedDataCall.dnses.split(" ") : [],
-      gateways: aUpdatedDataCall.gateways ? aUpdatedDataCall.gateways.split(" ") : []
+      gateways: aUpdatedDataCall.gateways ? aUpdatedDataCall.gateways.split(" ") : [],
+      pcscf: aUpdatedDataCall.pcscf ? aUpdatedDataCall.pcscf.split(" ") : [],
+      mtu: aUpdatedDataCall.mtu > 0 ? aUpdatedDataCall.mtu : 0
     };
 
     switch (dataCallState) {
@@ -1169,6 +1179,8 @@ DataCall.prototype = {
           this.linkInfo.addresses = newLinkInfo.addresses.slice();
           this.linkInfo.gateways = newLinkInfo.gateways.slice();
           this.linkInfo.dnses = newLinkInfo.dnses.slice();
+          this.linkInfo.pcscf = newLinkInfo.pcscf.slice();
+          this.linkInfo.mtu = newLinkInfo.mtu;
         }
         break;
       case NETWORK_STATE_DISCONNECTED:
@@ -1267,6 +1279,8 @@ DataCall.prototype = {
     this.linkInfo.addresses = [];
     this.linkInfo.dnses = [];
     this.linkInfo.gateways = [];
+    this.linkInfo.pcscf = [];
+    this.linkInfo.mtu = null;
   },
 
   reset: function() {
@@ -1604,6 +1618,20 @@ RILNetworkInfo.prototype = {
     // See http://www.iana.org/assignments/port-numbers
     return this.getApnSetting().mmsport || -1;
   },
+
+  getPcscf: function(aCount) {
+    if (this.type != NETWORK_TYPE_MOBILE_IMS) {
+      if (DEBUG) this.debug("Error! Only IMS network can get pcscf.");
+      throw Cr.NS_ERROR_UNEXPECTED;
+    }
+
+    let linkInfo = this.getDataCall().linkInfo;
+
+    if (aCount) {
+      aCount.value = linkInfo.pcscf.length;
+    }
+    return linkInfo.pcscf.slice();
+  },
 };
 
 function RILNetworkInterface(aDataCallHandler, aType, aApnSetting, aDataCall) {
@@ -1645,6 +1673,11 @@ RILNetworkInterface.prototype = {
 
   get httpProxyPort() {
     return this.apnSetting.port || "";
+  },
+
+  get mtu() {
+    // Value provided by network has higher priority than apn settings.
+    return this.dataCall.linkInfo.mtu || this.apnSetting.mtu || -1;
   },
 
   // Helpers

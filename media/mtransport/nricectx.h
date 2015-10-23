@@ -174,20 +174,21 @@ class NrIceTurnServer : public NrIceStunServer {
 
 class NrIceProxyServer {
  public:
-  NrIceProxyServer() :
-    host_(), port_(0) {
+  NrIceProxyServer(const std::string& host, uint16_t port,
+                   const std::string& alpn) :
+    host_(host), port_(port), alpn_(alpn) {
   }
 
-  NrIceProxyServer(const std::string& host, uint16_t port) :
-    host_(host), port_(port) {
-  }
+  NrIceProxyServer() : NrIceProxyServer("", 0, "") {}
 
   const std::string& host() const { return host_; }
   uint16_t port() const { return port_; }
+  const std::string& alpn() const { return alpn_; }
 
  private:
   std::string host_;
   uint16_t port_;
+  std::string alpn_;
 };
 
 
@@ -213,12 +214,13 @@ class NrIceCtx {
                 ICE_POLICY_ALL
   };
 
+  // TODO(ekr@rtfm.com): Too many bools here. Bug 1193437.
   static RefPtr<NrIceCtx> Create(const std::string& name,
                                  bool offerer,
-                                 bool set_interface_priorities = true,
                                  bool allow_loopback = false,
                                  bool tcp_enabled = true,
                                  bool allow_link_local = false,
+                                 bool hide_non_default = false,
                                  Policy policy = ICE_POLICY_ALL);
 
   // Deinitialize all ICE global state. Used only for testing.

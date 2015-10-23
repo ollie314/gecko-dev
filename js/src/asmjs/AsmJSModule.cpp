@@ -152,10 +152,6 @@ AsmJSModule::trace(JSTracer* trc)
     for (unsigned i = 0; i < profiledFunctions_.length(); i++)
         profiledFunctions_[i].trace(trc);
 #endif
-#if defined(JS_ION_PERF)
-    for (unsigned i = 0; i < perfProfiledBlocksFunctions_.length(); i++)
-        perfProfiledBlocksFunctions_[i].trace(trc);
-#endif
     if (globalArgumentName_)
         TraceManuallyBarrieredEdge(trc, &globalArgumentName_, "asm.js global argument name");
     if (importArgumentName_)
@@ -184,9 +180,6 @@ AsmJSModule::addSizeOfMisc(mozilla::MallocSizeOf mallocSizeOf, size_t* asmJSModu
                         functionCounts_.sizeOfExcludingThis(mallocSizeOf) +
 #if defined(MOZ_VTUNE) || defined(JS_ION_PERF)
                         profiledFunctions_.sizeOfExcludingThis(mallocSizeOf) +
-#endif
-#if defined(JS_ION_PERF)
-                        perfProfiledBlocksFunctions_.sizeOfExcludingThis(mallocSizeOf) +
 #endif
                         staticLinkData_.sizeOfExcludingThis(mallocSizeOf);
 }
@@ -319,7 +312,7 @@ AsmJSModule::finish(ExclusiveContext* cx, TokenStream& tokenStream, MacroAssembl
     MOZ_ASSERT(masm.jumpRelocationTableBytes() == 0);
     MOZ_ASSERT(masm.dataRelocationTableBytes() == 0);
     MOZ_ASSERT(masm.preBarrierTableBytes() == 0);
-    MOZ_ASSERT(!masm.hasEnteredExitFrame());
+    MOZ_ASSERT(!masm.hasSelfReference());
 
     // Copy over metadata, making sure to update all offsets on ARM.
 
@@ -370,8 +363,8 @@ AsmJSModule::finish(ExclusiveContext* cx, TokenStream& tokenStream, MacroAssembl
     // Relative link metadata: absolute addresses that refer to another point within
     // the asm.js module.
 
-    // CodeLabels are used for switch cases and loads from doubles in the
-    // constant pool.
+    // CodeLabels are used for switch cases and loads from floating-point /
+    // SIMD values in the constant pool.
     for (size_t i = 0; i < masm.numCodeLabels(); i++) {
         CodeLabel src = masm.codeLabel(i);
         int32_t labelOffset = src.dest()->offset();
@@ -433,20 +426,6 @@ AsmJSModule::finish(ExclusiveContext* cx, TokenStream& tokenStream, MacroAssembl
         ProfiledFunction& pf = profiledFunctions_[i];
         pf.pod.startCodeOffset = masm.actualOffset(pf.pod.startCodeOffset);
         pf.pod.endCodeOffset = masm.actualOffset(pf.pod.endCodeOffset);
-    }
-#endif
-#ifdef JS_ION_PERF
-    for (size_t i = 0; i < perfProfiledBlocksFunctions_.length(); i++) {
-        ProfiledBlocksFunction& pbf = perfProfiledBlocksFunctions_[i];
-        pbf.pod.startCodeOffset = masm.actualOffset(pbf.pod.startCodeOffset);
-        pbf.endInlineCodeOffset = masm.actualOffset(pbf.endInlineCodeOffset);
-        pbf.pod.endCodeOffset = masm.actualOffset(pbf.pod.endCodeOffset);
-        BasicBlocksVector& basicBlocks = pbf.blocks;
-        for (uint32_t i = 0; i < basicBlocks.length(); i++) {
-            Record& r = basicBlocks[i];
-            r.startOffset = masm.actualOffset(r.startOffset);
-            r.endOffset = masm.actualOffset(r.endOffset);
-        }
     }
 #endif
 
@@ -538,6 +517,12 @@ TryEnablingJit(JSContext* cx, AsmJSModule& module, HandleFunction fun, uint32_t 
         MOZ_ASSERT(!script->hasIonScript());
         return true;
     }
+
+    // Don't enable jit entry when we have a pending ion builder.
+    // Take the interpreter path which will link it and enable
+    // the fast path on the next call.
+    if (script->baselineScript()->hasPendingIonBuilder())
+        return true;
 
     // Currently we can't rectify arguments. Therefore disabling if argc is too low.
     if (fun->nargs() > size_t(argc))
@@ -838,10 +823,13 @@ AsmJSModule::initHeap(Handle<ArrayBufferObjectMaybeShared*> heap, JSContext* cx)
     MOZ_ASSERT(!maybeHeap_);
 
     maybeHeap_ = heap;
-    heapDatum() = heap->dataPointer();
+    // heapDatum() may point to shared memory but that memory is only
+    // accessed from maybeHeap(), which wraps it, and from
+    // hasDetachedHeap(), which checks it for null.
+    heapDatum() = heap->dataPointerMaybeShared().unwrap(/*safe - explained above*/);
 
 #if defined(JS_CODEGEN_X86)
-    uint8_t* heapOffset = heap->dataPointer();
+    uint8_t* heapOffset = heap->dataPointerMaybeShared().unwrap(/*safe - used for value*/);
     uint32_t heapLength = heap->byteLength();
     for (unsigned i = 0; i < heapAccesses_.length(); i++) {
         const jit::AsmJSHeapAccess& access = heapAccesses_[i];
@@ -887,7 +875,7 @@ AsmJSModule::restoreHeapToInitialState(ArrayBufferObjectMaybeShared* maybePrevBu
 #if defined(JS_CODEGEN_X86)
     if (maybePrevBuffer) {
         // Subtract out the base-pointer added by AsmJSModule::initHeap.
-        uint8_t* ptrBase = maybePrevBuffer->dataPointer();
+        uint8_t* ptrBase = maybePrevBuffer->dataPointerMaybeShared().unwrap(/*safe - used for value*/);
         uint32_t heapLength = maybePrevBuffer->byteLength();
         for (unsigned i = 0; i < heapAccesses_.length(); i++) {
             const jit::AsmJSHeapAccess& access = heapAccesses_[i];
@@ -1019,7 +1007,7 @@ AsmJSModuleObject_trace(JSTracer* trc, JSObject* obj)
 
 const Class AsmJSModuleObject::class_ = {
     "AsmJSModuleObject",
-    JSCLASS_IS_ANONYMOUS | JSCLASS_IMPLEMENTS_BARRIERS | JSCLASS_DELAY_METADATA_CALLBACK |
+    JSCLASS_IS_ANONYMOUS | JSCLASS_DELAY_METADATA_CALLBACK |
     JSCLASS_HAS_RESERVED_SLOTS(AsmJSModuleObject::RESERVED_SLOTS),
     nullptr, /* addProperty */
     nullptr, /* delProperty */
@@ -1028,7 +1016,6 @@ const Class AsmJSModuleObject::class_ = {
     nullptr, /* enumerate */
     nullptr, /* resolve */
     nullptr, /* mayResolve */
-    nullptr, /* convert */
     AsmJSModuleObject_finalize,
     nullptr, /* call */
     nullptr, /* hasInstance */
@@ -1377,19 +1364,19 @@ AsmJSModule::CodeRange::CodeRange(uint32_t nameIndex, uint32_t lineNumber,
                                   const AsmJSFunctionLabels& l)
   : nameIndex_(nameIndex),
     lineNumber_(lineNumber),
-    begin_(l.begin.offset()),
+    begin_(l.profilingEntry.offset()),
     profilingReturn_(l.profilingReturn.offset()),
-    end_(l.end.offset())
+    end_(l.endAfterOOL.offset())
 {
     PodZero(&u);  // zero padding for Valgrind
     u.kind_ = Function;
-    setDeltas(l.entry.offset(), l.profilingJump.offset(), l.profilingEpilogue.offset());
+    setDeltas(l.nonProfilingEntry.offset(), l.profilingJump.offset(), l.profilingEpilogue.offset());
 
-    MOZ_ASSERT(l.begin.offset() < l.entry.offset());
-    MOZ_ASSERT(l.entry.offset() < l.profilingJump.offset());
+    MOZ_ASSERT(l.profilingEntry.offset() < l.nonProfilingEntry.offset());
+    MOZ_ASSERT(l.nonProfilingEntry.offset() < l.profilingJump.offset());
     MOZ_ASSERT(l.profilingJump.offset() < l.profilingEpilogue.offset());
     MOZ_ASSERT(l.profilingEpilogue.offset() < l.profilingReturn.offset());
-    MOZ_ASSERT(l.profilingReturn.offset() < l.end.offset());
+    MOZ_ASSERT(l.profilingReturn.offset() < l.endAfterOOL.offset());
 }
 
 void
@@ -1453,7 +1440,9 @@ AsmJSModule::CodeRange::CodeRange(AsmJSExit::BuiltinKind builtin, uint32_t begin
 void
 AsmJSModule::CodeRange::updateOffsets(jit::MacroAssembler& masm)
 {
-    uint32_t entryBefore, profilingJumpBefore, profilingEpilogueBefore;
+    uint32_t entryBefore = 0;
+    uint32_t profilingJumpBefore = 0;
+    uint32_t profilingEpilogueBefore = 0;
     if (isFunction()) {
         entryBefore = entry();
         profilingJumpBefore = profilingJump();
@@ -1803,6 +1792,7 @@ AsmJSModule::setProfilingEnabled(bool enabled, JSContext* cx)
 #elif defined(JS_CODEGEN_ARM64)
         MOZ_CRASH();
         void* callee = nullptr;
+        (void)callerRetAddr;
 #elif defined(JS_CODEGEN_MIPS32)
         Instruction* instr = (Instruction*)(callerRetAddr - 4 * sizeof(uint32_t));
         void* callee = (void*)Assembler::ExtractLuiOriValue(instr, instr->next());
@@ -1828,6 +1818,7 @@ AsmJSModule::setProfilingEnabled(bool enabled, JSContext* cx)
 #elif defined(JS_CODEGEN_ARM)
         new (caller) InstBLImm(BOffImm(newCallee - caller), Assembler::Always);
 #elif defined(JS_CODEGEN_ARM64)
+        (void)newCallee;
         MOZ_CRASH();
 #elif defined(JS_CODEGEN_MIPS32)
         Assembler::WriteLuiOriInstructions(instr, instr->next(),
@@ -1893,6 +1884,8 @@ AsmJSModule::setProfilingEnabled(bool enabled, JSContext* cx)
             new (jump) InstNOP();
         }
 #elif defined(JS_CODEGEN_ARM64)
+        (void)jump;
+        (void)profilingEpilogue;
         MOZ_CRASH();
 #elif defined(JS_CODEGEN_MIPS32)
         Instruction* instr = (Instruction*)jump;

@@ -252,11 +252,15 @@ ReportError(JSContext* cx, const char* message, JSErrorReport* reportp,
 static void
 PopulateReportBlame(JSContext* cx, JSErrorReport* report)
 {
+    JSCompartment* compartment = cx->compartment();
+    if (!compartment)
+        return;
+
     /*
      * Walk stack until we find a frame that is associated with a non-builtin
      * rather than a builtin frame and which we're allowed to know about.
      */
-    NonBuiltinFrameIter iter(cx, cx->compartment()->principals());
+    NonBuiltinFrameIter iter(cx, compartment->principals());
     if (iter.done())
         return;
 
@@ -428,8 +432,10 @@ js::ReportErrorVA(JSContext* cx, unsigned flags, const char* format, va_list ap)
         return true;
 
     message = JS_vsmprintf(format, ap);
-    if (!message)
+    if (!message) {
+        ReportOutOfMemory(cx);
         return false;
+    }
     messagelen = strlen(message);
 
     report.flags = flags;
@@ -565,8 +571,7 @@ js::ExpandErrorArgumentsVA(ExclusiveContext* cx, JSErrorCallback callback,
                            ErrorArgumentsType argumentsType, va_list ap)
 {
     const JSErrorFormatString* efs;
-    int i;
-    int argCount;
+    uint16_t argCount;
     bool messageArgsPassed = !!reportp->messageArgs;
 
     *messagep = nullptr;
@@ -583,9 +588,9 @@ js::ExpandErrorArgumentsVA(ExclusiveContext* cx, JSErrorCallback callback,
         reportp->exnType = efs->exnType;
 
         size_t totalArgsLength = 0;
-        size_t argLengths[10]; /* only {0} thru {9} supported */
+        size_t argLengths[JS::MaxNumErrorArguments]; /* only {0} thru {9} supported */
         argCount = efs->argCount;
-        MOZ_ASSERT(argCount <= 10);
+        MOZ_RELEASE_ASSERT(argCount <= JS::MaxNumErrorArguments);
         if (argCount > 0) {
             /*
              * Gather the arguments into an array, and accumulate
@@ -602,7 +607,7 @@ js::ExpandErrorArgumentsVA(ExclusiveContext* cx, JSErrorCallback callback,
                 /* nullptr-terminate for easy copying. */
                 reportp->messageArgs[argCount] = nullptr;
             }
-            for (i = 0; i < argCount; i++) {
+            for (uint16_t i = 0; i < argCount; i++) {
                 if (messageArgsPassed) {
                     /* Do nothing. */
                 } else if (argumentsType == ArgumentsAreASCII) {
@@ -652,7 +657,7 @@ js::ExpandErrorArgumentsVA(ExclusiveContext* cx, JSErrorCallback callback,
                     if (*fmt == '{') {
                         if (isdigit(fmt[1])) {
                             int d = JS7_UNDEC(fmt[1]);
-                            MOZ_ASSERT(d < argCount);
+                            MOZ_RELEASE_ASSERT(d < argCount);
                             js_strncpy(out, reportp->messageArgs[d],
                                        argLengths[d]);
                             out += argLengths[d];
@@ -708,7 +713,7 @@ error:
     if (!messageArgsPassed && reportp->messageArgs) {
         /* free the arguments only if we allocated them */
         if (argumentsType == ArgumentsAreASCII) {
-            i = 0;
+            uint16_t i = 0;
             while (reportp->messageArgs[i])
                 js_free((void*)reportp->messageArgs[i++]);
         }
@@ -948,7 +953,7 @@ ExclusiveContext::recoverFromOutOfMemory()
 JSContext::JSContext(JSRuntime* rt)
   : ExclusiveContext(rt, &rt->mainThread, Context_JS),
     throwing(false),
-    unwrappedException_(UndefinedValue()),
+    unwrappedException_(this),
     options_(),
     overRecursed_(false),
     propagatingForcedReturn_(false),
@@ -1137,10 +1142,6 @@ JSContext::mark(JSTracer* trc)
 {
     /* Stack frames and slots are traced by StackSpace::mark. */
 
-    /* Mark other roots-by-definition in the JSContext. */
-    if (isExceptionPending())
-        TraceRoot(trc, &unwrappedException_, "unwrapped exception");
-
     TraceCycleDetectionSet(trc, cycleDetectorSet);
 
     if (compartment_)
@@ -1200,13 +1201,15 @@ JS::AutoCheckRequestDepth::~AutoCheckRequestDepth()
 #endif
 
 #ifdef JS_CRASH_DIAGNOSTICS
-void CompartmentChecker::check(InterpreterFrame* fp)
+void
+CompartmentChecker::check(InterpreterFrame* fp)
 {
     if (fp)
         check(fp->scopeChain());
 }
 
-void CompartmentChecker::check(AbstractFramePtr frame)
+void
+CompartmentChecker::check(AbstractFramePtr frame)
 {
     if (frame)
         check(frame.scopeChain());
@@ -1214,7 +1217,7 @@ void CompartmentChecker::check(AbstractFramePtr frame)
 #endif
 
 void
-js::CrashAtUnhandlableOOM(const char* reason)
+AutoEnterOOMUnsafeRegion::crash(const char* reason)
 {
     char msgbuf[1024];
     JS_snprintf(msgbuf, sizeof(msgbuf), "[unhandlable oom] %s", reason);

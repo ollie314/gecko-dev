@@ -104,7 +104,7 @@ WyciwygChannelChild::Init(nsIURI* uri)
     mozilla::ipc::PrincipalToPrincipalInfo(mLoadInfo->TriggeringPrincipal(),
                                            &triggeringPrincipalInfo);
     securityFlags = mLoadInfo->GetSecurityFlags();
-    policyType = mLoadInfo->GetContentPolicyType();
+    policyType = mLoadInfo->InternalContentPolicyType();
   }
   else {
     // use default values if no loadInfo is provided
@@ -626,6 +626,10 @@ GetTabChild(nsIChannel* aChannel)
 NS_IMETHODIMP
 WyciwygChannelChild::AsyncOpen(nsIStreamListener *aListener, nsISupports *aContext)
 {
+  MOZ_ASSERT(!mLoadInfo || mLoadInfo->GetSecurityMode() == 0 ||
+             mLoadInfo->GetInitialSecurityCheckDone(),
+             "security flags in loadInfo but asyncOpen2() not called");
+
   LOG(("WyciwygChannelChild::AsyncOpen [this=%p]\n", this));
 
   // The only places creating wyciwyg: channels should be

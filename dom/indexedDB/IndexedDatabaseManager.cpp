@@ -31,6 +31,8 @@
 #include "nsThreadUtils.h"
 #include "mozilla/Logging.h"
 
+#include "FileInfo.h"
+#include "FileManager.h"
 #include "IDBEvents.h"
 #include "IDBFactory.h"
 #include "IDBKeyRange.h"
@@ -51,6 +53,11 @@
 #include "mozilla/dom/IDBRequestBinding.h"
 #include "mozilla/dom/IDBTransactionBinding.h"
 #include "mozilla/dom/IDBVersionChangeEventBinding.h"
+
+#ifdef ENABLE_INTL_API
+#include "nsCharSeparatedTokenizer.h"
+#include "unicode/locid.h"
+#endif
 
 #define IDB_STR "indexedDB"
 
@@ -97,18 +104,18 @@ public:
                                  const nsAString& aName);
 
 private:
-  nsTArray<nsRefPtr<FileManager> >&
+  nsTArray<RefPtr<FileManager> >&
   GetArray(PersistenceType aPersistenceType);
 
-  const nsTArray<nsRefPtr<FileManager> >&
+  const nsTArray<RefPtr<FileManager> >&
   GetImmutableArray(PersistenceType aPersistenceType) const
   {
     return const_cast<FileManagerInfo*>(this)->GetArray(aPersistenceType);
   }
 
-  nsTArray<nsRefPtr<FileManager> > mPersistentStorageFileManagers;
-  nsTArray<nsRefPtr<FileManager> > mTemporaryStorageFileManagers;
-  nsTArray<nsRefPtr<FileManager> > mDefaultStorageFileManagers;
+  nsTArray<RefPtr<FileManager> > mPersistentStorageFileManagers;
+  nsTArray<RefPtr<FileManager> > mTemporaryStorageFileManagers;
+  nsTArray<RefPtr<FileManager> > mDefaultStorageFileManagers;
 };
 
 namespace {
@@ -121,6 +128,7 @@ const uint32_t kDeleteTimeoutMs = 1000;
 
 const char kTestingPref[] = IDB_PREF_BRANCH_ROOT "testing";
 const char kPrefExperimental[] = IDB_PREF_BRANCH_ROOT "experimental";
+const char kPrefFileHandle[] = "dom.fileHandle.enabled";
 
 #define IDB_PREF_LOGGING_BRANCH_ROOT IDB_PREF_BRANCH_ROOT "logging."
 
@@ -141,6 +149,7 @@ Atomic<bool> gInitialized(false);
 Atomic<bool> gClosed(false);
 Atomic<bool> gTestingMode(false);
 Atomic<bool> gExperimentalFeaturesEnabled(false);
+Atomic<bool> gFileHandleEnabled(false);
 
 class DeleteFilesRunnable final
   : public nsIRunnable
@@ -169,10 +178,10 @@ class DeleteFilesRunnable final
     State_Completed
   };
 
-  nsRefPtr<FileManager> mFileManager;
+  RefPtr<FileManager> mFileManager;
   nsTArray<int64_t> mFileIds;
 
-  nsRefPtr<DirectoryLock> mDirectoryLock;
+  RefPtr<DirectoryLock> mDirectoryLock;
 
   nsCOMPtr<nsIFile> mDirectory;
   nsCOMPtr<nsIFile> mJournalDirectory;
@@ -326,7 +335,7 @@ IndexedDatabaseManager::GetOrCreate()
       }
     }
 
-    nsRefPtr<IndexedDatabaseManager> instance(new IndexedDatabaseManager());
+    RefPtr<IndexedDatabaseManager> instance(new IndexedDatabaseManager());
 
     nsresult rv = instance->Init();
     NS_ENSURE_SUCCESS(rv, nullptr);
@@ -376,6 +385,9 @@ IndexedDatabaseManager::Init()
   Preferences::RegisterCallbackAndCall(AtomicBoolPrefChangedCallback,
                                        kPrefExperimental,
                                        &gExperimentalFeaturesEnabled);
+  Preferences::RegisterCallbackAndCall(AtomicBoolPrefChangedCallback,
+                                       kPrefFileHandle,
+                                       &gFileHandleEnabled);
 
   // By default IndexedDB uses SQLite with PRAGMA synchronous = NORMAL. This
   // guarantees (unlike synchronous = OFF) atomicity and consistency, but not
@@ -393,6 +405,27 @@ IndexedDatabaseManager::Init()
 #endif
   Preferences::RegisterCallbackAndCall(LoggingModePrefChangedCallback,
                                        kPrefLoggingEnabled);
+
+#ifdef ENABLE_INTL_API
+  const nsAdoptingCString& acceptLang =
+    Preferences::GetLocalizedCString("intl.accept_languages");
+
+  // Split values on commas.
+  nsCCharSeparatedTokenizer langTokenizer(acceptLang, ',');
+  while (langTokenizer.hasMoreTokens()) {
+    nsAutoCString lang(langTokenizer.nextToken());
+    icu::Locale locale = icu::Locale::createCanonical(lang.get());
+    if (!locale.isBogus()) {
+      // icu::Locale::getBaseName is always ASCII as per BCP 47
+      mLocale.AssignASCII(locale.getBaseName());
+      break;
+    }
+  }
+
+  if (mLocale.IsEmpty()) {
+    mLocale.AssignLiteral("en-US");
+  }
+#endif
 
   return NS_OK;
 }
@@ -420,6 +453,9 @@ IndexedDatabaseManager::Destroy()
   Preferences::UnregisterCallback(AtomicBoolPrefChangedCallback,
                                   kPrefExperimental,
                                   &gExperimentalFeaturesEnabled);
+  Preferences::UnregisterCallback(AtomicBoolPrefChangedCallback,
+                                  kPrefFileHandle,
+                                  &gFileHandleEnabled);
 
   Preferences::UnregisterCallback(LoggingModePrefChangedCallback,
                                   kPrefLoggingDetails);
@@ -464,14 +500,14 @@ IndexedDatabaseManager::CommonPostHandleEvent(EventChainPostVisitor& aVisitor,
   MOZ_ASSERT(eventTarget);
 
   // Only mess with events that were originally targeted to an IDBRequest.
-  nsRefPtr<IDBRequest> request;
+  RefPtr<IDBRequest> request;
   if (NS_FAILED(eventTarget->QueryInterface(kIDBRequestIID,
                                             getter_AddRefs(request))) ||
       !request) {
     return NS_OK;
   }
 
-  nsRefPtr<DOMError> error = request->GetErrorAfterResult();
+  RefPtr<DOMError> error = request->GetErrorAfterResult();
 
   nsString errorName;
   if (error) {
@@ -480,7 +516,7 @@ IndexedDatabaseManager::CommonPostHandleEvent(EventChainPostVisitor& aVisitor,
 
   ThreadsafeAutoJSContext cx;
   RootedDictionary<ErrorEventInit> init(cx);
-  request->GetCallerLocation(init.mFilename, &init.mLineno);
+  request->GetCallerLocation(init.mFilename, &init.mLineno, &init.mColno);
 
   init.mMessage = errorName;
   init.mCancelable = true;
@@ -506,10 +542,10 @@ IndexedDatabaseManager::CommonPostHandleEvent(EventChainPostVisitor& aVisitor,
     WorkerPrivate* workerPrivate = GetCurrentThreadWorkerPrivate();
     MOZ_ASSERT(workerPrivate);
 
-    nsRefPtr<WorkerGlobalScope> globalScope = workerPrivate->GlobalScope();
+    RefPtr<WorkerGlobalScope> globalScope = workerPrivate->GlobalScope();
     MOZ_ASSERT(globalScope);
 
-    nsRefPtr<ErrorEvent> errorEvent =
+    RefPtr<ErrorEvent> errorEvent =
       ErrorEvent::Constructor(globalScope,
                               nsDependentString(kErrorEventType),
                               init);
@@ -556,7 +592,7 @@ IndexedDatabaseManager::CommonPostHandleEvent(EventChainPostVisitor& aVisitor,
                                     init.mFilename,
                                     /* aSourceLine */ EmptyString(),
                                     init.mLineno,
-                                    /* aColumnNumber */ 0,
+                                    init.mColno,
                                     nsIScriptError::errorFlag,
                                     category,
                                     innerWindowID)));
@@ -566,7 +602,7 @@ IndexedDatabaseManager::CommonPostHandleEvent(EventChainPostVisitor& aVisitor,
                         init.mFilename,
                         /* aSourceLine */ EmptyString(),
                         init.mLineno,
-                        /* aColumnNumber */ 0,
+                        init.mColno,
                         nsIScriptError::errorFlag,
                         category.get())));
   }
@@ -597,6 +633,7 @@ IndexedDatabaseManager::DefineIndexedDB(JSContext* aCx,
       !IDBFactoryBinding::GetConstructorObject(aCx, aGlobal) ||
       !IDBIndexBinding::GetConstructorObject(aCx, aGlobal) ||
       !IDBKeyRangeBinding::GetConstructorObject(aCx, aGlobal) ||
+      !IDBLocaleAwareKeyRangeBinding::GetConstructorObject(aCx, aGlobal) ||
       !IDBMutableFileBinding::GetConstructorObject(aCx, aGlobal) ||
       !IDBObjectStoreBinding::GetConstructorObject(aCx, aGlobal) ||
       !IDBOpenDBRequestBinding::GetConstructorObject(aCx, aGlobal) ||
@@ -607,7 +644,7 @@ IndexedDatabaseManager::DefineIndexedDB(JSContext* aCx,
     return false;
   }
 
-  nsRefPtr<IDBFactory> factory;
+  RefPtr<IDBFactory> factory;
   if (NS_FAILED(IDBFactory::CreateForMainThreadJS(aCx,
                                                   aGlobal,
                                                   getter_AddRefs(factory)))) {
@@ -715,6 +752,17 @@ IndexedDatabaseManager::ExperimentalFeaturesEnabled()
   return gExperimentalFeaturesEnabled;
 }
 
+// static
+bool
+IndexedDatabaseManager::IsFileHandleEnabled()
+{
+  MOZ_ASSERT(gDBManager,
+             "IsFileHandleEnabled() called before indexedDB has been "
+             "initialized!");
+
+  return gFileHandleEnabled;
+}
+
 already_AddRefed<FileManager>
 IndexedDatabaseManager::GetFileManager(PersistenceType aPersistenceType,
                                        const nsACString& aOrigin,
@@ -727,7 +775,7 @@ IndexedDatabaseManager::GetFileManager(PersistenceType aPersistenceType,
     return nullptr;
   }
 
-  nsRefPtr<FileManager> fileManager =
+  RefPtr<FileManager> fileManager =
     info->GetFileManager(aPersistenceType, aDatabaseName);
 
   return fileManager.forget();
@@ -851,7 +899,7 @@ IndexedDatabaseManager::BlockAndGetFileReferences(
   }
 
   if (IsMainProcess()) {
-    nsRefPtr<GetFileReferencesHelper> helper =
+    RefPtr<GetFileReferencesHelper> helper =
       new GetFileReferencesHelper(aPersistenceType, aOrigin, aDatabaseName,
                                   aFileId);
 
@@ -953,6 +1001,18 @@ IndexedDatabaseManager::LoggingModePrefChangedCallback(
   }
 }
 
+#ifdef ENABLE_INTL_API
+// static
+const nsCString&
+IndexedDatabaseManager::GetLocale()
+{
+  IndexedDatabaseManager* idbManager = Get();
+  MOZ_ASSERT(idbManager, "IDBManager is not ready!");
+
+  return idbManager->mLocale;
+}
+#endif
+
 NS_IMPL_ADDREF(IndexedDatabaseManager)
 NS_IMPL_RELEASE_WITH_DESTROY(IndexedDatabaseManager, Destroy())
 NS_IMPL_QUERY_INTERFACE(IndexedDatabaseManager, nsIObserver, nsITimerCallback)
@@ -997,7 +1057,7 @@ IndexedDatabaseManager::Notify(nsITimer* aTimer)
     auto value = iter.Data();
     MOZ_ASSERT(!value->IsEmpty());
 
-    nsRefPtr<DeleteFilesRunnable> runnable =
+    RefPtr<DeleteFilesRunnable> runnable =
       new DeleteFilesRunnable(key, *value);
 
     MOZ_ASSERT(value->IsEmpty());
@@ -1016,14 +1076,14 @@ FileManagerInfo::GetFileManager(PersistenceType aPersistenceType,
 {
   AssertIsOnIOThread();
 
-  const nsTArray<nsRefPtr<FileManager> >& managers =
+  const nsTArray<RefPtr<FileManager> >& managers =
     GetImmutableArray(aPersistenceType);
 
   for (uint32_t i = 0; i < managers.Length(); i++) {
-    const nsRefPtr<FileManager>& fileManager = managers[i];
+    const RefPtr<FileManager>& fileManager = managers[i];
 
     if (fileManager->DatabaseName() == aName) {
-      nsRefPtr<FileManager> result = fileManager;
+      RefPtr<FileManager> result = fileManager;
       return result.forget();
     }
   }
@@ -1036,7 +1096,7 @@ FileManagerInfo::AddFileManager(FileManager* aFileManager)
 {
   AssertIsOnIOThread();
 
-  nsTArray<nsRefPtr<FileManager> >& managers = GetArray(aFileManager->Type());
+  nsTArray<RefPtr<FileManager> >& managers = GetArray(aFileManager->Type());
 
   NS_ASSERTION(!managers.Contains(aFileManager), "Adding more than once?!");
 
@@ -1069,7 +1129,7 @@ FileManagerInfo::InvalidateAndRemoveFileManagers(
 {
   AssertIsOnIOThread();
 
-  nsTArray<nsRefPtr<FileManager > >& managers = GetArray(aPersistenceType);
+  nsTArray<RefPtr<FileManager > >& managers = GetArray(aPersistenceType);
 
   for (uint32_t i = 0; i < managers.Length(); i++) {
     managers[i]->Invalidate();
@@ -1085,10 +1145,10 @@ FileManagerInfo::InvalidateAndRemoveFileManager(
 {
   AssertIsOnIOThread();
 
-  nsTArray<nsRefPtr<FileManager > >& managers = GetArray(aPersistenceType);
+  nsTArray<RefPtr<FileManager > >& managers = GetArray(aPersistenceType);
 
   for (uint32_t i = 0; i < managers.Length(); i++) {
-    nsRefPtr<FileManager>& fileManager = managers[i];
+    RefPtr<FileManager>& fileManager = managers[i];
     if (fileManager->DatabaseName() == aName) {
       fileManager->Invalidate();
       managers.RemoveElementAt(i);
@@ -1097,7 +1157,7 @@ FileManagerInfo::InvalidateAndRemoveFileManager(
   }
 }
 
-nsTArray<nsRefPtr<FileManager> >&
+nsTArray<RefPtr<FileManager> >&
 FileManagerInfo::GetArray(PersistenceType aPersistenceType)
 {
   switch (aPersistenceType) {
@@ -1339,11 +1399,11 @@ GetFileReferencesHelper::Run()
   IndexedDatabaseManager* mgr = IndexedDatabaseManager::Get();
   NS_ASSERTION(mgr, "This should never fail!");
 
-  nsRefPtr<FileManager> fileManager =
+  RefPtr<FileManager> fileManager =
     mgr->GetFileManager(mPersistenceType, mOrigin, mDatabaseName);
 
   if (fileManager) {
-    nsRefPtr<FileInfo> fileInfo = fileManager->GetFileInfo(mFileId);
+    RefPtr<FileInfo> fileInfo = fileManager->GetFileInfo(mFileId);
 
     if (fileInfo) {
       fileInfo->GetReferences(&mMemRefCnt, &mDBRefCnt, &mSliceRefCnt);

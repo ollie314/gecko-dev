@@ -105,7 +105,6 @@ public:
   virtual void EndObservingDocument() override;
   virtual nsresult Initialize(nscoord aWidth, nscoord aHeight) override;
   virtual nsresult ResizeReflow(nscoord aWidth, nscoord aHeight) override;
-  virtual nsresult ResizeReflowOverride(nscoord aWidth, nscoord aHeight) override;
   virtual nsresult ResizeReflowIgnoreOverride(nscoord aWidth, nscoord aHeight) override;
   virtual nsIPageSequenceFrame* GetPageSequenceFrame() const override;
   virtual nsCanvasFrame* GetCanvasFrame() const override;
@@ -359,7 +358,7 @@ public:
   virtual nsresult SetIsActive(bool aIsActive) override;
 
   virtual bool GetIsViewportOverridden() override {
-    return mViewportOverridden || (mMobileViewportManager != nullptr);
+    return (mMobileViewportManager != nullptr);
   }
 
   virtual bool IsLayoutFlushObserver() override
@@ -565,7 +564,7 @@ protected:
   void AddUserSheet(nsISupports* aSheet);
   void AddAgentSheet(nsISupports* aSheet);
   void AddAuthorSheet(nsISupports* aSheet);
-  void RemoveSheet(nsStyleSet::sheetType aType, nsISupports* aSheet);
+  void RemoveSheet(mozilla::SheetType aType, nsISupports* aSheet);
 
   // Hide a view if it is a popup
   void HideViewIfPopup(nsView* aView);
@@ -648,7 +647,7 @@ protected:
     }
     virtual void WillRefresh(mozilla::TimeStamp aTime) override {
       if (mPresShell) {
-        nsRefPtr<PresShell> shell = mPresShell;
+        RefPtr<PresShell> shell = mPresShell;
         shell->ProcessSynthMouseMoveEvent(mFromScroll);
       }
     }
@@ -791,7 +790,7 @@ protected:
   nsPoint                   mMouseLocation;
 
   // mStyleSet owns it but we maintain a ref, may be null
-  nsRefPtr<mozilla::CSSStyleSheet> mPrefStyleSheet;
+  RefPtr<mozilla::CSSStyleSheet> mPrefStyleSheet;
 
   // Set of frames that we should mark with NS_FRAME_HAS_DIRTY_CHILDREN after
   // we finish reflowing mCurrentReflowRoot.
@@ -811,21 +810,21 @@ private:
 protected:
   nsRevocableEventPtr<nsSynthMouseMoveEvent> mSynthMouseMoveEvent;
   nsCOMPtr<nsIContent>      mLastAnchorScrolledTo;
-  nsRefPtr<nsCaret>         mCaret;
-  nsRefPtr<nsCaret>         mOriginalCaret;
+  RefPtr<nsCaret>         mCaret;
+  RefPtr<nsCaret>         mOriginalCaret;
   nsCallbackEventRequest*   mFirstCallbackEventRequest;
   nsCallbackEventRequest*   mLastCallbackEventRequest;
 
   // TouchManager
   TouchManager              mTouchManager;
 
-  nsRefPtr<ZoomConstraintsClient> mZoomConstraintsClient;
-  nsRefPtr<MobileViewportManager> mMobileViewportManager;
+  RefPtr<ZoomConstraintsClient> mZoomConstraintsClient;
+  RefPtr<MobileViewportManager> mMobileViewportManager;
 
   // TouchCaret
-  nsRefPtr<mozilla::TouchCaret> mTouchCaret;
-  nsRefPtr<mozilla::SelectionCarets> mSelectionCarets;
-  nsRefPtr<mozilla::AccessibleCaretEventHub> mAccessibleCaretEventHub;
+  RefPtr<mozilla::TouchCaret> mTouchCaret;
+  RefPtr<mozilla::SelectionCarets> mSelectionCarets;
+  RefPtr<mozilla::AccessibleCaretEventHub> mAccessibleCaretEventHub;
 
   // This timer controls painting suppression.  Until it fires
   // or all frames are constructed, we won't paint anything but
@@ -861,7 +860,6 @@ protected:
   bool                      mDocumentLoading : 1;
   bool                      mIgnoreFrameDestruction : 1;
   bool                      mHaveShutDown : 1;
-  bool                      mViewportOverridden : 1;
   bool                      mLastRootReflowHadUnconstrainedBSize : 1;
   bool                      mNoDelayedMouseEvents : 1;
   bool                      mNoDelayedKeyEvents : 1;

@@ -97,7 +97,9 @@ EXPORTS.mozilla.layers += [
     # proper interface for the code there
     'apz/src/APZCTreeManager.h',
     'apz/src/APZUtils.h',
+    'apz/src/AsyncDragMetrics.h',
     'apz/src/AsyncPanZoomAnimation.h',
+    'apz/src/TouchCounter.h',
     'apz/testutil/APZTestData.h',
     'apz/util/ActiveElementManager.h',
     'apz/util/APZCCallbackHelper.h',
@@ -106,6 +108,7 @@ EXPORTS.mozilla.layers += [
     'apz/util/ChromeProcessController.h',
     'apz/util/DoubleTapToZoom.h',
     'apz/util/InputAPZContext.h',
+    'AsyncCanvasRenderer.h',
     'AtomicRefCountedWithFinalize.h',
     'AxisPhysicsModel.h',
     'AxisPhysicsMSDModel.h',
@@ -241,6 +244,7 @@ UNIFIED_SOURCES += [
     'apz/src/InputQueue.cpp',
     'apz/src/OverscrollHandoffState.cpp',
     'apz/src/TaskThrottler.cpp',
+    'apz/src/TouchCounter.cpp',
     'apz/src/WheelScrollAnimation.cpp',
     'apz/testutil/APZTestData.cpp',
     'apz/util/ActiveElementManager.cpp',
@@ -250,6 +254,7 @@ UNIFIED_SOURCES += [
     'apz/util/ChromeProcessController.cpp',
     'apz/util/DoubleTapToZoom.cpp',
     'apz/util/InputAPZContext.cpp',
+    'AsyncCanvasRenderer.cpp',
     'AxisPhysicsModel.cpp',
     'AxisPhysicsMSDModel.cpp',
     'basic/BasicCanvasLayer.cpp',
@@ -379,8 +384,6 @@ IPDL_SOURCES = [
     'ipc/PTexture.ipdl',
 ]
 
-FAIL_ON_WARNINGS = True
-
 include('/ipc/chromium/chromium-config.mozbuild')
 
 LOCAL_INCLUDES += [
@@ -406,8 +409,11 @@ CXXFLAGS += [
     ]
 ]
 
-MOCHITEST_MANIFESTS += ['apz/test/mochitest.ini']
-MOCHITEST_CHROME_MANIFESTS += ['apz/test/chrome.ini']
+if CONFIG['ENABLE_TESTS']:
+    DIRS += ['apz/test/gtest']
+
+MOCHITEST_MANIFESTS += ['apz/test/mochitest/mochitest.ini']
+MOCHITEST_CHROME_MANIFESTS += ['apz/test/mochitest/chrome.ini']
 
 CXXFLAGS += CONFIG['MOZ_CAIRO_CFLAGS']
 CXXFLAGS += CONFIG['TK_CFLAGS']

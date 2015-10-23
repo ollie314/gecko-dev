@@ -7,12 +7,14 @@ task:
   workerType: flame-kk
   scopes:
     - 'docker-worker:cache:build-aries-opt'
+    - 'docker-worker:cache:build-aries-opt-objdir-gecko-{{project}}'
   metadata:
     name: '[TC] B2G Aries Opt'
 
   payload:
     cache:
       build-aries-opt: /home/worker/workspace
+      build-aries-opt-objdir-gecko-{{project}}: /home/worker/objdir-gecko
     env:
       TARGET: 'aries'
       DEBUG: 0
@@ -21,10 +23,7 @@ task:
       B2G_SYSTEM_APPS: '1'
       MOZHARNESS_CONFIG: b2g/taskcluster-spark.py
     command:
-      - >
-        checkout-gecko workspace &&
-        cd ./workspace/gecko/testing/taskcluster/scripts/phone-builder &&
-        buildbot_step 'Build' ./build-phone.sh $HOME/workspace
+      - phone
   extra:
     treeherderEnv:
       - production

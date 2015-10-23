@@ -52,7 +52,7 @@ public:
   NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(MediaKeys)
 
-  MediaKeys(nsPIDOMWindow* aParentWindow, const nsAString& aKeySystem);
+  MediaKeys(nsPIDOMWindow* aParentWindow, const nsAString& aKeySystem, const nsAString& aCDMVersion);
 
   already_AddRefed<DetailedPromise> Init(ErrorResult& aRv);
 
@@ -132,20 +132,21 @@ private:
 
   // Owning ref to proxy. The proxy has a weak reference back to the MediaKeys,
   // and the MediaKeys destructor clears the proxy's reference to the MediaKeys.
-  nsRefPtr<CDMProxy> mProxy;
+  RefPtr<CDMProxy> mProxy;
 
-  nsRefPtr<HTMLMediaElement> mElement;
+  RefPtr<HTMLMediaElement> mElement;
 
   nsCOMPtr<nsPIDOMWindow> mParent;
-  nsString mKeySystem;
+  const nsString mKeySystem;
+  const nsString mCDMVersion;
   nsCString mNodeId;
   KeySessionHashMap mKeySessions;
   PromiseHashMap mPromises;
   PendingKeySessionsHashMap mPendingSessions;
   PromiseId mCreatePromiseId;
 
-  nsRefPtr<nsIPrincipal> mPrincipal;
-  nsRefPtr<nsIPrincipal> mTopLevelPrincipal;
+  RefPtr<nsIPrincipal> mPrincipal;
+  RefPtr<nsIPrincipal> mTopLevelPrincipal;
 
 };
 

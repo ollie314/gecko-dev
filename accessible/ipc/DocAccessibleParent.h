@@ -72,7 +72,7 @@ public:
   void Destroy();
   virtual void ActorDestroy(ActorDestroyReason aWhy) override
   {
-    CheckDocTree();
+    MOZ_DIAGNOSTIC_ASSERT(CheckDocTree());
     if (!mShutdown)
       Destroy();
   }
@@ -104,7 +104,7 @@ public:
 
   void RemoveAccessible(ProxyAccessible* aAccessible)
   {
-    MOZ_ASSERT(mAccessibles.GetEntry(aAccessible->ID()));
+    MOZ_DIAGNOSTIC_ASSERT(mAccessibles.GetEntry(aAccessible->ID()));
     mAccessibles.RemoveEntry(aAccessible->ID());
   }
 
@@ -122,6 +122,10 @@ public:
 
   const ProxyAccessible* GetAccessible(uintptr_t aID) const
     { return const_cast<DocAccessibleParent*>(this)->GetAccessible(aID); }
+
+  size_t ChildDocCount() const { return mChildDocs.Length(); }
+  const DocAccessibleParent* ChildDocAt(size_t aIdx) const
+    { return mChildDocs[aIdx]; }
 
 private:
 
@@ -151,7 +155,7 @@ private:
   uint32_t AddSubtree(ProxyAccessible* aParent,
                       const nsTArray<AccessibleData>& aNewTree, uint32_t aIdx,
                       uint32_t aIdxInParent);
-  void CheckDocTree() const;
+  MOZ_WARN_UNUSED_RESULT bool CheckDocTree() const;
 
   nsTArray<DocAccessibleParent*> mChildDocs;
   DocAccessibleParent* mParentDoc;

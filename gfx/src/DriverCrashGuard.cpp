@@ -25,6 +25,7 @@ static const size_t NUM_CRASH_GUARD_TYPES = size_t(CrashGuardType::NUM_TYPES);
 static const char* sCrashGuardNames[NUM_CRASH_GUARD_TYPES] = {
   "d3d11layers",
   "d3d9video",
+  "glcontext",
 };
 
 DriverCrashGuard::DriverCrashGuard(CrashGuardType aType, dom::ContentParent* aContentParent)
@@ -54,6 +55,29 @@ DriverCrashGuard::InitializeIfNeeded()
 void
 DriverCrashGuard::Initialize()
 {
+#ifdef NIGHTLY_BUILD
+  // We only use the crash guard on non-nightly channels, since the nightly
+  // channel is for development and having graphics features perma-disabled
+  // is rather annoying.
+  return;
+#endif
+
+  // Using DriverCrashGuard off the main thread currently does not work. Under
+  // e10s it could conceivably work by dispatching the IPC calls via the main
+  // thread. In the parent process this would be harder. For now, we simply
+  // exit early instead.
+  if (!NS_IsMainThread()) {
+    return;
+  }
+
+  // Check to see if all guards have been disabled through the environment.
+  static bool sAllGuardsDisabled = !!PR_GetEnv("MOZ_DISABLE_CRASH_GUARD");
+  if (sAllGuardsDisabled) {
+    return;
+  }
+
+  mGfxInfo = services::GetGfxInfo();
+
   if (XRE_IsContentProcess()) {
     // Ask the parent whether or not activating the guard is okay. The parent
     // won't bother if it detected a crash.
@@ -157,8 +181,6 @@ DriverCrashGuard::GetGuardFile()
 void
 DriverCrashGuard::ActivateGuard()
 {
-  MOZ_ASSERT(XRE_IsParentProcess());
-
   mGuardActivated = true;
 
 #ifdef MOZ_CRASHREPORTER
@@ -253,7 +275,6 @@ bool
 DriverCrashGuard::UpdateBaseEnvironment()
 {
   bool changed = false;
-  mGfxInfo = services::GetGfxInfo();
   if (mGfxInfo) {
     nsString value;
 
@@ -271,8 +292,11 @@ DriverCrashGuard::UpdateBaseEnvironment()
 }
 
 bool
-DriverCrashGuard::FeatureEnabled(int aFeature)
+DriverCrashGuard::FeatureEnabled(int aFeature, bool aDefault)
 {
+  if (!mGfxInfo) {
+    return aDefault;
+  }
   int32_t status;
   if (!NS_SUCCEEDED(mGfxInfo->GetFeatureStatus(aFeature, &status))) {
     return false;
@@ -375,20 +399,18 @@ D3D11LayersCrashGuard::UpdateEnvironment()
 
   checked = true;
 
-  if (mGfxInfo) {
-    // Feature status.
+  // Feature status.
 #if defined(XP_WIN)
-    bool d2dEnabled = gfxPrefs::Direct2DForceEnabled() ||
-                      (!gfxPrefs::Direct2DDisabled() && FeatureEnabled(nsIGfxInfo::FEATURE_DIRECT2D));
-    changed |= CheckAndUpdateBoolPref("feature-d2d", d2dEnabled);
+  bool d2dEnabled = gfxPrefs::Direct2DForceEnabled() ||
+                    (!gfxPrefs::Direct2DDisabled() && FeatureEnabled(nsIGfxInfo::FEATURE_DIRECT2D));
+  changed |= CheckAndUpdateBoolPref("feature-d2d", d2dEnabled);
 
-    bool d3d11Enabled = !gfxPrefs::LayersPreferD3D9();
-    if (!FeatureEnabled(nsIGfxInfo::FEATURE_DIRECT3D_11_LAYERS)) {
-      d3d11Enabled = false;
-    }
-    changed |= CheckAndUpdateBoolPref("feature-d3d11", d3d11Enabled);
-#endif
+  bool d3d11Enabled = !gfxPrefs::LayersPreferD3D9();
+  if (!FeatureEnabled(nsIGfxInfo::FEATURE_DIRECT3D_11_LAYERS)) {
+    d3d11Enabled = false;
   }
+  changed |= CheckAndUpdateBoolPref("feature-d3d11", d3d11Enabled);
+#endif
 
   if (!changed) {
     return false;
@@ -453,6 +475,63 @@ void
 D3D9VideoCrashGuard::LogFeatureDisabled()
 {
   gfxCriticalError(CriticalLog::DefaultOptions(false)) << "DXVA2D3D9 video decoding is disabled due to a previous crash.";
+}
+
+GLContextCrashGuard::GLContextCrashGuard(dom::ContentParent* aContentParent)
+ : DriverCrashGuard(CrashGuardType::GLContext, aContentParent)
+{
+}
+
+void
+GLContextCrashGuard::Initialize()
+{
+  if (XRE_IsContentProcess()) {
+    // Disable the GL crash guard in content processes, since we're not going
+    // to lose the entire browser and we don't want to hinder WebGL availability.
+    return;
+  }
+
+  DriverCrashGuard::Initialize();
+}
+
+bool
+GLContextCrashGuard::UpdateEnvironment()
+{
+  static bool checked = false;
+  static bool changed = false;
+
+  if (checked) {
+    return changed;
+  }
+
+  checked = true;
+
+#if defined(XP_WIN)
+  changed |= CheckAndUpdateBoolPref("gfx.driver-init.webgl-angle-force-d3d11",
+                                    gfxPrefs::WebGLANGLEForceD3D11());
+  changed |= CheckAndUpdateBoolPref("gfx.driver-init.webgl-angle-try-d3d11",
+                                    gfxPrefs::WebGLANGLETryD3D11());
+  changed |= CheckAndUpdateBoolPref("gfx.driver-init.webgl-angle-force-warp",
+                                    gfxPrefs::WebGLANGLEForceWARP());
+  changed |= CheckAndUpdateBoolPref("gfx.driver-init.webgl-angle",
+                                    FeatureEnabled(nsIGfxInfo::FEATURE_WEBGL_ANGLE, false));
+  changed |= CheckAndUpdateBoolPref("gfx.driver-init.direct3d11-angle",
+                                    FeatureEnabled(nsIGfxInfo::FEATURE_DIRECT3D_11_ANGLE, false));
+#endif
+
+  return changed;
+}
+
+void
+GLContextCrashGuard::LogCrashRecovery()
+{
+  gfxCriticalError(CriticalLog::DefaultOptions(false)) << "GLContext just crashed and is now disabled.";
+}
+
+void
+GLContextCrashGuard::LogFeatureDisabled()
+{
+  gfxCriticalError(CriticalLog::DefaultOptions(false)) << "GLContext is disabled due to a previous crash.";
 }
 
 } // namespace gfx

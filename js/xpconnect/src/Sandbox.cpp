@@ -16,7 +16,6 @@
 #include "nsGlobalWindow.h"
 #include "nsIScriptContext.h"
 #include "nsIScriptObjectPrincipal.h"
-#include "nsIScriptSecurityManager.h"
 #include "nsIURI.h"
 #include "nsJSUtils.h"
 #include "nsNetUtil.h"
@@ -30,6 +29,7 @@
 #include "Crypto.h"
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/BlobBinding.h"
+#include "mozilla/dom/cache/CacheStorage.h"
 #include "mozilla/dom/CSSBinding.h"
 #include "mozilla/dom/indexedDB/IndexedDatabaseManager.h"
 #include "mozilla/dom/Fetch.h"
@@ -287,7 +287,7 @@ SandboxFetch(JSContext* cx, JS::HandleObject scope, const CallArgs& args)
         return false;
     }
     ErrorResult rv;
-    nsRefPtr<dom::Promise> response =
+    RefPtr<dom::Promise> response =
         FetchRequest(global, Constify(request), Constify(options), rv);
     rv.WouldReportJSException();
     if (rv.Failed()) {
@@ -441,17 +441,6 @@ sandbox_moved(JSObject* obj, const JSObject* old)
 }
 
 static bool
-sandbox_convert(JSContext* cx, HandleObject obj, JSType type, MutableHandleValue vp)
-{
-    if (type == JSTYPE_OBJECT) {
-        vp.setObject(*obj);
-        return true;
-    }
-
-    return OrdinaryToPrimitive(cx, obj, type, vp);
-}
-
-static bool
 writeToProto_setProperty(JSContext* cx, JS::HandleObject obj, JS::HandleId id,
                          JS::MutableHandleValue vp, JS::ObjectOpResult& result)
 {
@@ -569,7 +558,7 @@ static const js::Class SandboxClass = {
     nullptr, nullptr, nullptr, nullptr,
     sandbox_enumerate, sandbox_resolve,
     nullptr,        /* mayResolve */
-    sandbox_convert,  sandbox_finalize,
+    sandbox_finalize,
     nullptr, nullptr, nullptr, JS_GlobalObjectTraceHook,
     JS_NULL_CLASS_SPEC,
     {
@@ -590,7 +579,7 @@ static const js::Class SandboxWriteToProtoClass = {
     sandbox_addProperty, nullptr, nullptr, nullptr,
     sandbox_enumerate, sandbox_resolve,
     nullptr,        /* mayResolve */
-    sandbox_convert,  sandbox_finalize,
+    sandbox_finalize,
     nullptr, nullptr, nullptr, JS_GlobalObjectTraceHook,
     JS_NULL_CLASS_SPEC,
     {
@@ -828,7 +817,7 @@ xpc::SandboxProxyHandler::hasOwn(JSContext* cx, JS::Handle<JSObject*> proxy,
 
 bool
 xpc::SandboxProxyHandler::get(JSContext* cx, JS::Handle<JSObject*> proxy,
-                              JS::Handle<JSObject*> receiver,
+                              JS::Handle<JS::Value> receiver,
                               JS::Handle<jsid> id,
                               JS::MutableHandle<Value> vp) const
 {
@@ -863,8 +852,6 @@ xpc::SandboxProxyHandler::enumerate(JSContext* cx, JS::Handle<JSObject*> proxy,
 bool
 xpc::GlobalProperties::Parse(JSContext* cx, JS::HandleObject obj)
 {
-    MOZ_ASSERT(JS_IsArrayObject(cx, obj));
-
     uint32_t length;
     bool ok = JS_GetArrayLength(cx, obj, &length);
     NS_ENSURE_TRUE(ok, false);
@@ -908,6 +895,8 @@ xpc::GlobalProperties::Parse(JSContext* cx, JS::HandleObject obj)
 #endif
         } else if (!strcmp(name.ptr(), "fetch")) {
             fetch = true;
+        } else if (!strcmp(name.ptr(), "caches")) {
+            caches = true;
         } else {
             JS_ReportError(cx, "Unknown property name: %s", name.ptr());
             return false;
@@ -973,6 +962,9 @@ xpc::GlobalProperties::Define(JSContext* cx, JS::HandleObject obj)
     if (fetch && !SandboxCreateFetch(cx, obj))
         return false;
 
+    if (caches && !dom::cache::CacheStorage::DefineCaches(cx, obj))
+        return false;
+
     return true;
 }
 
@@ -987,7 +979,7 @@ xpc::CreateSandboxObject(JSContext* cx, MutableHandleValue vp, nsISupports* prin
         if (sop) {
             principal = sop->GetPrincipal();
         } else {
-            nsRefPtr<nsNullPrincipal> nullPrin = nsNullPrincipal::Create();
+            RefPtr<nsNullPrincipal> nullPrin = nsNullPrincipal::Create();
             NS_ENSURE_TRUE(nullPrin, NS_ERROR_FAILURE);
             principal = nullPrin;
         }
@@ -1032,6 +1024,7 @@ xpc::CreateSandboxObject(JSContext* cx, MutableHandleValue vp, nsISupports* prin
     CompartmentPrivate* priv = CompartmentPrivate::Get(sandbox);
     priv->allowWaivers = options.allowWaivers;
     priv->writeToGlobalPrototype = options.writeToGlobalPrototype;
+    priv->isWebExtensionContentScript = options.isWebExtensionContentScript;
 
     // Set up the wantXrays flag, which indicates whether xrays are desired even
     // for same-origin access.
@@ -1047,6 +1040,30 @@ xpc::CreateSandboxObject(JSContext* cx, MutableHandleValue vp, nsISupports* prin
 
     {
         JSAutoCompartment ac(cx, sandbox);
+
+        nsCOMPtr<nsIScriptObjectPrincipal> sbp =
+            new SandboxPrivate(principal, sandbox);
+
+        // Pass on ownership of sbp to |sandbox|.
+        JS_SetPrivate(sandbox, sbp.forget().take());
+
+        {
+            // Don't try to mirror standard class properties, if we're using a
+            // mirroring sandbox.  (This is meaningless for non-mirroring
+            // sandboxes.)
+            AutoSkipPropertyMirroring askip(CompartmentPrivate::Get(sandbox));
+
+            // Ensure |Object.prototype| is instantiated before prototype-
+            // splicing below.  For write-to-global-prototype behavior, extend
+            // this to all builtin properties.
+            if (options.writeToGlobalPrototype) {
+                if (!JS_EnumerateStandardClasses(cx, sandbox))
+                    return NS_ERROR_XPC_UNEXPECTED;
+            } else {
+                if (!JS_GetObjectPrototype(cx, sandbox))
+                    return NS_ERROR_XPC_UNEXPECTED;
+            }
+        }
 
         if (options.proto) {
             bool ok = JS_WrapObject(cx, &options.proto);
@@ -1082,16 +1099,10 @@ xpc::CreateSandboxObject(JSContext* cx, MutableHandleValue vp, nsISupports* prin
                     return NS_ERROR_OUT_OF_MEMORY;
             }
 
-            ok = JS_SetPrototype(cx, sandbox, options.proto);
+            ok = JS_SplicePrototype(cx, sandbox, options.proto);
             if (!ok)
                 return NS_ERROR_XPC_UNEXPECTED;
         }
-
-        nsCOMPtr<nsIScriptObjectPrincipal> sbp =
-            new SandboxPrivate(principal, sandbox);
-
-        // Pass on ownership of sbp to |sandbox|.
-        JS_SetPrivate(sandbox, sbp.forget().take());
 
         // Don't try to mirror the properties that are set below.
         AutoSkipPropertyMirroring askip(CompartmentPrivate::Get(sandbox));
@@ -1121,10 +1132,6 @@ xpc::CreateSandboxObject(JSContext* cx, MutableHandleValue vp, nsISupports* prin
         // Promise is supposed to be part of ES, and therefore should appear on
         // every global.
         if (!dom::PromiseBinding::GetConstructorObject(cx, sandbox))
-            return NS_ERROR_XPC_UNEXPECTED;
-
-        // Resolve standard classes eagerly to avoid triggering mirroring hooks for them.
-        if (options.writeToGlobalPrototype && !JS_EnumerateStandardClasses(cx, sandbox))
             return NS_ERROR_XPC_UNEXPECTED;
     }
 
@@ -1193,15 +1200,15 @@ ParsePrincipal(JSContext* cx, HandleString codebase, nsIPrincipal** principal)
         return false;
     }
 
-    nsCOMPtr<nsIScriptSecurityManager> secman =
-        do_GetService(kScriptSecurityManagerContractID);
-    NS_ENSURE_TRUE(secman, false);
-
     // We could allow passing in the app-id and browser-element info to the
     // sandbox constructor. But creating a sandbox based on a string is a
     // deprecated API so no need to add features to it.
-    rv = secman->GetNoAppCodebasePrincipal(uri, principal);
-    if (NS_FAILED(rv) || !*principal) {
+    OriginAttributes attrs;
+    nsCOMPtr<nsIPrincipal> prin =
+        BasePrincipal::CreateCodebasePrincipal(uri, attrs);
+    prin.forget(principal);
+
+    if (!*principal) {
         JS_ReportError(cx, "Creating Principal from URI failed");
         return false;
     }
@@ -1243,10 +1250,9 @@ GetExpandedPrincipal(JSContext* cx, HandleObject arrayObj, nsIExpandedPrincipal*
     MOZ_ASSERT(out);
     uint32_t length;
 
-    if (!JS_IsArrayObject(cx, arrayObj) ||
-        !JS_GetArrayLength(cx, arrayObj, &length) ||
-        !length)
-    {
+    if (!JS_GetArrayLength(cx, arrayObj, &length))
+        return false;
+    if (!length) {
         // We need a whitelist of principals or uri strings to create an
         // expanded principal, if we got an empty array or something else
         // report error.
@@ -1476,7 +1482,10 @@ SandboxOptions::ParseGlobalProperties()
     }
 
     RootedObject ctors(mCx, &value.toObject());
-    if (!JS_IsArrayObject(mCx, ctors)) {
+    bool isArray;
+    if (!JS_IsArrayObject(mCx, ctors, &isArray))
+        return false;
+    if (!isArray) {
         JS_ReportError(mCx, "Expected an array value for wantGlobalProperties");
         return false;
     }
@@ -1495,6 +1504,7 @@ SandboxOptions::Parse()
               ParseBoolean("allowWaivers", &allowWaivers) &&
               ParseBoolean("wantComponents", &wantComponents) &&
               ParseBoolean("wantExportHelpers", &wantExportHelpers) &&
+              ParseBoolean("isWebExtensionContentScript", &isWebExtensionContentScript) &&
               ParseString("sandboxName", sandboxName) &&
               ParseObject("sameZoneAs", &sameZoneAs) &&
               ParseBoolean("freshZone", &freshZone) &&
@@ -1572,7 +1582,10 @@ nsXPCComponents_utils_Sandbox::CallOrConstruct(nsIXPConnectWrappedNative* wrappe
         prinOrSop = principal;
     } else if (args[0].isObject()) {
         RootedObject obj(cx, &args[0].toObject());
-        if (JS_IsArrayObject(cx, obj)) {
+        bool isArray;
+        if (!JS_IsArrayObject(cx, obj, &isArray)) {
+            ok = false;
+        } else if (isArray) {
             ok = GetExpandedPrincipal(cx, obj, getter_AddRefs(expanded));
             prinOrSop = expanded;
         } else {

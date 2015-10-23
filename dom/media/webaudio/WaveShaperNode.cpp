@@ -215,11 +215,12 @@ public:
   }
 
   virtual void ProcessBlock(AudioNodeStream* aStream,
-                            const AudioChunk& aInput,
-                            AudioChunk* aOutput,
+                            GraphTime aFrom,
+                            const AudioBlock& aInput,
+                            AudioBlock* aOutput,
                             bool* aFinished) override
   {
-    uint32_t channelCount = aInput.mChannelData.Length();
+    uint32_t channelCount = aInput.ChannelCount();
     if (!mCurve.Length() || !channelCount) {
       // Optimize the case where we don't have a curve buffer,
       // or the input is null.
@@ -227,28 +228,36 @@ public:
       return;
     }
 
-    AllocateAudioBlock(channelCount, aOutput);
+    aOutput->AllocateChannels(channelCount);
     for (uint32_t i = 0; i < channelCount; ++i) {
-      float* scaledSample = (float *)(aInput.mChannelData[i]);
-      AudioBlockInPlaceScale(scaledSample, aInput.mVolume);
-      const float* inputBuffer = static_cast<const float*>(scaledSample);
+      const float* inputSamples;
+      float scaledInput[WEBAUDIO_BLOCK_SIZE];
+      if (aInput.mVolume != 1.0f) {
+        AudioBlockCopyChannelWithScale(
+            static_cast<const float*>(aInput.mChannelData[i]),
+                                      aInput.mVolume,
+                                      scaledInput);
+        inputSamples = scaledInput;
+      } else {
+        inputSamples = static_cast<const float*>(aInput.mChannelData[i]);
+      }
       float* outputBuffer = aOutput->ChannelFloatsForWrite(i);
       float* sampleBuffer;
 
       switch (mType) {
       case OverSampleType::None:
         mResampler.Reset(channelCount, aStream->SampleRate(), OverSampleType::None);
-        ProcessCurve<1>(inputBuffer, outputBuffer);
+        ProcessCurve<1>(inputSamples, outputBuffer);
         break;
       case OverSampleType::_2x:
         mResampler.Reset(channelCount, aStream->SampleRate(), OverSampleType::_2x);
-        sampleBuffer = mResampler.UpSample(i, inputBuffer, 2);
+        sampleBuffer = mResampler.UpSample(i, inputSamples, 2);
         ProcessCurve<2>(sampleBuffer, sampleBuffer);
         mResampler.DownSample(i, outputBuffer, 2);
         break;
       case OverSampleType::_4x:
         mResampler.Reset(channelCount, aStream->SampleRate(), OverSampleType::_4x);
-        sampleBuffer = mResampler.UpSample(i, inputBuffer, 4);
+        sampleBuffer = mResampler.UpSample(i, inputSamples, 4);
         ProcessCurve<4>(sampleBuffer, sampleBuffer);
         mResampler.DownSample(i, outputBuffer, 4);
         break;
@@ -288,7 +297,8 @@ WaveShaperNode::WaveShaperNode(AudioContext* aContext)
   mozilla::HoldJSObjects(this);
 
   WaveShaperNodeEngine* engine = new WaveShaperNodeEngine(this);
-  mStream = aContext->Graph()->CreateAudioNodeStream(engine, MediaStreamGraph::INTERNAL_STREAM);
+  mStream = AudioNodeStream::Create(aContext, engine,
+                                    AudioNodeStream::NO_STREAM_FLAGS);
 }
 
 WaveShaperNode::~WaveShaperNode()

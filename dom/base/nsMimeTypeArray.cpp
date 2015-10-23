@@ -90,7 +90,7 @@ nsMimeTypeArray::IndexedGetter(uint32_t aIndex, bool &aFound)
 }
 
 static nsMimeType*
-FindMimeType(const nsTArray<nsRefPtr<nsMimeType> >& aMimeTypes,
+FindMimeType(const nsTArray<RefPtr<nsMimeType> >& aMimeTypes,
              const nsAString& aType)
 {
   for (uint32_t i = 0; i < aMimeTypes.Length(); ++i) {
@@ -264,8 +264,10 @@ nsMimeType::GetDescription(nsString& aRetval) const
 nsPluginElement*
 nsMimeType::GetEnabledPlugin() const
 {
-  return (mPluginElement && mPluginElement->PluginTag()->IsEnabled()) ?
-    mPluginElement : nullptr;
+  if (!mPluginElement || !mPluginElement->PluginTag()->IsEnabled()) {
+    return nullptr;
+  }
+  return mPluginElement;
 }
 
 void

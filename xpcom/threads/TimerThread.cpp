@@ -31,8 +31,7 @@ TimerThread::TimerThread() :
   mShutdown(false),
   mWaiting(false),
   mNotified(false),
-  mSleeping(false),
-  mLastTimerEventLoopRun(TimeStamp::Now())
+  mSleeping(false)
 {
 }
 
@@ -181,7 +180,7 @@ private:
     sAllocatorUsers--;
   }
 
-  nsRefPtr<nsTimerImpl> mTimer;
+  RefPtr<nsTimerImpl> mTimer;
   int32_t      mGeneration;
 
   static TimerEventAllocator* sAllocator;
@@ -297,7 +296,7 @@ TimerThread::Init()
     if (NS_FAILED(rv)) {
       mThread = nullptr;
     } else {
-      nsRefPtr<TimerObserverRunnable> r = new TimerObserverRunnable(this);
+      RefPtr<TimerObserverRunnable> r = new TimerObserverRunnable(this);
       if (NS_IsMainThread()) {
         r->Run();
       } else {
@@ -431,7 +430,11 @@ TimerThread::Run()
     bool forceRunThisTimer = forceRunNextTimer;
     forceRunNextTimer = false;
 
-    if (mSleeping) {
+    if (mSleeping
+#ifdef MOZ_NUWA_PROCESS
+        || IsNuwaProcess() // Don't fire timers or deadlock will result.
+#endif
+        ) {
       // Sleep for 0.1 seconds while not firing timers.
       uint32_t milliseconds = 100;
       if (ChaosMode::isActive(ChaosFeature::TimerScheduling)) {
@@ -441,7 +444,6 @@ TimerThread::Run()
     } else {
       waitFor = PR_INTERVAL_NO_TIMEOUT;
       TimeStamp now = TimeStamp::Now();
-      mLastTimerEventLoopRun = now;
       nsTimerImpl* timer = nullptr;
 
       if (!mTimers.IsEmpty()) {
@@ -455,7 +457,7 @@ TimerThread::Run()
           // must be racing with us, blocked in gThread->RemoveTimer waiting
           // for TimerThread::mMonitor, under nsTimerImpl::Release.
 
-          nsRefPtr<nsTimerImpl> timerRef(timer);
+          RefPtr<nsTimerImpl> timerRef(timer);
           RemoveTimerInternal(timer);
           timer = nullptr;
 
@@ -685,7 +687,7 @@ TimerThread::PostTimerEvent(already_AddRefed<nsTimerImpl> aTimerRef)
 {
   mMonitor.AssertCurrentThreadOwns();
 
-  nsRefPtr<nsTimerImpl> timer(aTimerRef);
+  RefPtr<nsTimerImpl> timer(aTimerRef);
   if (!timer->mEventTarget) {
     NS_ERROR("Attempt to post timer event to NULL event target");
     return timer.forget();
@@ -699,7 +701,7 @@ TimerThread::PostTimerEvent(already_AddRefed<nsTimerImpl> aTimerRef)
   // event, so we can avoid firing a timer that was re-initialized after being
   // canceled.
 
-  nsRefPtr<nsTimerEvent> event = new nsTimerEvent;
+  RefPtr<nsTimerEvent> event = new nsTimerEvent;
   if (!event) {
     return timer.forget();
   }
@@ -747,7 +749,6 @@ TimerThread::DoBeforeSleep()
 {
   // Mainthread
   MonitorAutoLock lock(mMonitor);
-  mLastTimerEventLoopRun = TimeStamp::Now();
   mSleeping = true;
 }
 
@@ -756,27 +757,11 @@ void
 TimerThread::DoAfterSleep()
 {
   // Mainthread
-  TimeStamp now = TimeStamp::Now();
-
   MonitorAutoLock lock(mMonitor);
-
-  // an over-estimate of time slept, usually small
-  TimeDuration slept = now - mLastTimerEventLoopRun;
-
-  // Adjust all old timers to expire roughly similar times in the future
-  // compared to when we went to sleep, by adding the time we slept to the
-  // target time. It's slightly possible a few will end up slightly in the
-  // past and fire immediately, but ordering should be preserved.  All
-  // timers retain the exact same order (and relative times) as before
-  // going to sleep.
-  for (uint32_t i = 0; i < mTimers.Length(); i ++) {
-    nsTimerImpl* timer = mTimers[i];
-    timer->mTimeout += slept;
-  }
   mSleeping = false;
-  mLastTimerEventLoopRun = now;
 
-  // Wake up the timer thread to process the updated array
+  // Wake up the timer thread to re-process the array to ensure the sleep delay is correct,
+  // and fire any expired timers (perhaps quite a few)
   mNotified = true;
   mMonitor.Notify();
 }

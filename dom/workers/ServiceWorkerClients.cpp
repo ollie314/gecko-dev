@@ -45,7 +45,7 @@ namespace {
 
 class ResolvePromiseWorkerRunnable final : public WorkerRunnable
 {
-  nsRefPtr<PromiseWorkerProxy> mPromiseProxy;
+  RefPtr<PromiseWorkerProxy> mPromiseProxy;
   nsTArray<ServiceWorkerClientInfo> mValue;
 
 public:
@@ -65,39 +65,33 @@ public:
     MOZ_ASSERT(aWorkerPrivate);
     aWorkerPrivate->AssertIsOnWorkerThread();
 
-    Promise* promise = mPromiseProxy->GetWorkerPromise();
+    Promise* promise = mPromiseProxy->WorkerPromise();
     MOZ_ASSERT(promise);
 
-    nsTArray<nsRefPtr<ServiceWorkerClient>> ret;
+    nsTArray<RefPtr<ServiceWorkerClient>> ret;
     for (size_t i = 0; i < mValue.Length(); i++) {
-      ret.AppendElement(nsRefPtr<ServiceWorkerClient>(
+      ret.AppendElement(RefPtr<ServiceWorkerClient>(
             new ServiceWorkerWindowClient(promise->GetParentObject(),
                                           mValue.ElementAt(i))));
     }
+
     promise->MaybeResolve(ret);
-
-    // release the reference on the worker thread.
     mPromiseProxy->CleanUp(aCx);
-
     return true;
   }
 };
 
 class MatchAllRunnable final : public nsRunnable
 {
-  WorkerPrivate* mWorkerPrivate;
-  nsRefPtr<PromiseWorkerProxy> mPromiseProxy;
+  RefPtr<PromiseWorkerProxy> mPromiseProxy;
   nsCString mScope;
 public:
-  MatchAllRunnable(WorkerPrivate* aWorkerPrivate,
-                   PromiseWorkerProxy* aPromiseProxy,
+  MatchAllRunnable(PromiseWorkerProxy* aPromiseProxy,
                    const nsCString& aScope)
-    : mWorkerPrivate(aWorkerPrivate),
-      mPromiseProxy(aPromiseProxy),
+    : mPromiseProxy(aPromiseProxy),
       mScope(aScope)
   {
-    MOZ_ASSERT(aWorkerPrivate);
-    aWorkerPrivate->AssertIsOnWorkerThread();
+    MOZ_ASSERT(mPromiseProxy);
   }
 
   NS_IMETHOD
@@ -105,40 +99,29 @@ public:
   {
     AssertIsOnMainThread();
 
-    MutexAutoLock lock(mPromiseProxy->GetCleanUpLock());
-    if (mPromiseProxy->IsClean()) {
-      // Don't resolve the promise if it was already released.
+    MutexAutoLock lock(mPromiseProxy->Lock());
+    if (mPromiseProxy->CleanedUp()) {
       return NS_OK;
     }
 
-    nsRefPtr<ServiceWorkerManager> swm = ServiceWorkerManager::GetInstance();
+    RefPtr<ServiceWorkerManager> swm = ServiceWorkerManager::GetInstance();
     nsTArray<ServiceWorkerClientInfo> result;
 
-    swm->GetAllClients(mWorkerPrivate->GetPrincipal(), mScope, result);
-    nsRefPtr<ResolvePromiseWorkerRunnable> r =
-      new ResolvePromiseWorkerRunnable(mWorkerPrivate, mPromiseProxy, result);
+    swm->GetAllClients(mPromiseProxy->GetWorkerPrivate()->GetPrincipal(), mScope, result);
+    RefPtr<ResolvePromiseWorkerRunnable> r =
+      new ResolvePromiseWorkerRunnable(mPromiseProxy->GetWorkerPrivate(),
+                                       mPromiseProxy, result);
 
-    AutoSafeJSContext cx;
-    if (r->Dispatch(cx)) {
-      return NS_OK;
-    }
-
-    // Dispatch to worker thread failed because the worker is shutting down.
-    // Use a control runnable to release the runnable on the worker thread.
-    nsRefPtr<PromiseWorkerProxyControlRunnable> releaseRunnable =
-      new PromiseWorkerProxyControlRunnable(mWorkerPrivate, mPromiseProxy);
-
-    if (!releaseRunnable->Dispatch(cx)) {
-      NS_RUNTIMEABORT("Failed to dispatch MatchAll promise control runnable.");
-    }
-
+    AutoJSAPI jsapi;
+    jsapi.Init();
+    r->Dispatch(jsapi.cx());
     return NS_OK;
   }
 };
 
 class ResolveClaimRunnable final : public WorkerRunnable
 {
-  nsRefPtr<PromiseWorkerProxy> mPromiseProxy;
+  RefPtr<PromiseWorkerProxy> mPromiseProxy;
   nsresult mResult;
 
 public:
@@ -158,7 +141,7 @@ public:
     MOZ_ASSERT(aWorkerPrivate);
     aWorkerPrivate->AssertIsOnWorkerThread();
 
-    Promise* promise = mPromiseProxy->GetWorkerPromise();
+    RefPtr<Promise> promise = mPromiseProxy->WorkerPromise();
     MOZ_ASSERT(promise);
 
     if (NS_SUCCEEDED(mResult)) {
@@ -167,25 +150,23 @@ public:
       promise->MaybeReject(NS_ERROR_DOM_INVALID_STATE_ERR);
     }
 
-    // Release the reference on the worker thread.
     mPromiseProxy->CleanUp(aCx);
-
     return true;
   }
 };
 
 class ClaimRunnable final : public nsRunnable
 {
-  nsRefPtr<PromiseWorkerProxy> mPromiseProxy;
+  RefPtr<PromiseWorkerProxy> mPromiseProxy;
   nsCString mScope;
-  // We grab the ID so we don't have to hold a lock the entire time the claim
-  // operation is happening on the main thread.
   uint64_t mServiceWorkerID;
 
 public:
   ClaimRunnable(PromiseWorkerProxy* aPromiseProxy, const nsCString& aScope)
     : mPromiseProxy(aPromiseProxy)
     , mScope(aScope)
+    // Safe to call GetWorkerPrivate() since we are being called on the worker
+    // thread via script (so no clean up has occured yet).
     , mServiceWorkerID(aPromiseProxy->GetWorkerPrivate()->ServiceWorkerID())
   {
     MOZ_ASSERT(aPromiseProxy);
@@ -194,40 +175,26 @@ public:
   NS_IMETHOD
   Run() override
   {
-    MutexAutoLock lock(mPromiseProxy->GetCleanUpLock());
-    if (mPromiseProxy->IsClean()) {
-      // Don't resolve the promise if it was already released.
+    MutexAutoLock lock(mPromiseProxy->Lock());
+    if (mPromiseProxy->CleanedUp()) {
       return NS_OK;
     }
 
     WorkerPrivate* workerPrivate = mPromiseProxy->GetWorkerPrivate();
     MOZ_ASSERT(workerPrivate);
 
-    nsRefPtr<ServiceWorkerManager> swm = ServiceWorkerManager::GetInstance();
+    RefPtr<ServiceWorkerManager> swm = ServiceWorkerManager::GetInstance();
     MOZ_ASSERT(swm);
 
     nsresult rv = swm->ClaimClients(workerPrivate->GetPrincipal(),
                                     mScope, mServiceWorkerID);
 
-    nsRefPtr<ResolveClaimRunnable> r =
+    RefPtr<ResolveClaimRunnable> r =
       new ResolveClaimRunnable(workerPrivate, mPromiseProxy, rv);
 
     AutoJSAPI jsapi;
     jsapi.Init();
-    JSContext* cx = jsapi.cx();
-    if (r->Dispatch(cx)) {
-      return NS_OK;
-    }
-
-    // Dispatch to worker thread failed because the worker is shutting down.
-    // Use a control runnable to release the runnable on the worker thread.
-    nsRefPtr<PromiseWorkerProxyControlRunnable> releaseRunnable =
-      new PromiseWorkerProxyControlRunnable(workerPrivate, mPromiseProxy);
-
-    if (!releaseRunnable->Dispatch(cx)) {
-      NS_RUNTIMEABORT("Failed to dispatch Claim control runnable.");
-    }
-
+    r->Dispatch(jsapi.cx());
     return NS_OK;
   }
 };
@@ -250,28 +217,22 @@ ServiceWorkerClients::MatchAll(const ClientQueryOptions& aOptions,
     return nullptr;
   }
 
-  nsRefPtr<Promise> promise = Promise::Create(mWorkerScope, aRv);
+  RefPtr<Promise> promise = Promise::Create(mWorkerScope, aRv);
   if (NS_WARN_IF(aRv.Failed())) {
     return nullptr;
   }
 
-  nsRefPtr<PromiseWorkerProxy> promiseProxy =
+  RefPtr<PromiseWorkerProxy> promiseProxy =
     PromiseWorkerProxy::Create(workerPrivate, promise);
-  if (!promiseProxy->GetWorkerPromise()) {
-    // Don't dispatch if adding the worker feature failed.
+  if (!promiseProxy) {
+    promise->MaybeReject(NS_ERROR_DOM_ABORT_ERR);
     return promise.forget();
   }
 
-  nsRefPtr<MatchAllRunnable> r =
-    new MatchAllRunnable(workerPrivate,
-                         promiseProxy,
+  RefPtr<MatchAllRunnable> r =
+    new MatchAllRunnable(promiseProxy,
                          NS_ConvertUTF16toUTF8(scope));
-  nsresult rv = NS_DispatchToMainThread(r);
-
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    promise->MaybeReject(NS_ERROR_NOT_AVAILABLE);
-  }
-
+  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(NS_DispatchToMainThread(r)));
   return promise.forget();
 }
 
@@ -279,7 +240,7 @@ already_AddRefed<Promise>
 ServiceWorkerClients::OpenWindow(const nsAString& aUrl)
 {
   ErrorResult result;
-  nsRefPtr<Promise> promise = Promise::Create(mWorkerScope, result);
+  RefPtr<Promise> promise = Promise::Create(mWorkerScope, result);
   if (NS_WARN_IF(result.Failed())) {
     return nullptr;
   }
@@ -294,28 +255,24 @@ ServiceWorkerClients::Claim(ErrorResult& aRv)
   WorkerPrivate* workerPrivate = GetCurrentThreadWorkerPrivate();
   MOZ_ASSERT(workerPrivate);
 
-  nsRefPtr<Promise> promise = Promise::Create(mWorkerScope, aRv);
+  RefPtr<Promise> promise = Promise::Create(mWorkerScope, aRv);
   if (NS_WARN_IF(aRv.Failed())) {
     return nullptr;
   }
 
-  nsRefPtr<PromiseWorkerProxy> promiseProxy =
+  RefPtr<PromiseWorkerProxy> promiseProxy =
     PromiseWorkerProxy::Create(workerPrivate, promise);
-  if (!promiseProxy->GetWorkerPromise()) {
-    // Don't dispatch if adding the worker feature failed.
+  if (!promiseProxy) {
+    promise->MaybeReject(NS_ERROR_DOM_ABORT_ERR);
     return promise.forget();
   }
 
   nsString scope;
   mWorkerScope->GetScope(scope);
 
-  nsRefPtr<ClaimRunnable> runnable =
+  RefPtr<ClaimRunnable> runnable =
     new ClaimRunnable(promiseProxy, NS_ConvertUTF16toUTF8(scope));
 
-  aRv = NS_DispatchToMainThread(runnable);
-  if (NS_WARN_IF(aRv.Failed())) {
-    promise->MaybeReject(NS_ERROR_DOM_ABORT_ERR);
-  }
-
+  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(NS_DispatchToMainThread(runnable)));
   return promise.forget();
 }

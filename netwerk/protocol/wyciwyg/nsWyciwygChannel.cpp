@@ -26,6 +26,7 @@
 #include "nsIURI.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/unused.h"
+#include "mozilla/BasePrincipal.h"
 #include "nsProxyRelease.h"
 #include "nsContentSecurityManager.h"
 
@@ -47,7 +48,7 @@ public:
     }
   }
 protected:
-  nsRefPtr<nsWyciwygChannel> mChannel;
+  RefPtr<nsWyciwygChannel> mChannel;
 };
 
 class nsWyciwygSetCharsetandSourceEvent : public nsWyciwygAsyncEvent {
@@ -100,9 +101,7 @@ nsWyciwygChannel::nsWyciwygChannel()
     mNeedToWriteCharset(false),
     mCharsetSource(kCharsetUninitialized),
     mContentLength(-1),
-    mLoadFlags(LOAD_NORMAL),
-    mAppId(NECKO_NO_APP_ID),
-    mInBrowser(false)
+    mLoadFlags(LOAD_NORMAL)
 {
 }
 
@@ -233,7 +232,8 @@ nsWyciwygChannel::SetLoadGroup(nsILoadGroup* aLoadGroup)
                                 NS_GET_IID(nsIProgressEventSink),
                                 getter_AddRefs(mProgressSink));
   mPrivateBrowsing = NS_UsePrivateBrowsing(this);
-  NS_GetAppInfo(this, &mAppId, &mInBrowser);
+  NS_GetOriginAttributes(this, mOriginAttributes);
+
   return NS_OK;
 }
 
@@ -329,7 +329,7 @@ nsWyciwygChannel::SetNotificationCallbacks(nsIInterfaceRequestor* aNotificationC
                                 getter_AddRefs(mProgressSink));
 
   mPrivateBrowsing = NS_UsePrivateBrowsing(this);
-  NS_GetAppInfo(this, &mAppId, &mInBrowser);
+  NS_GetOriginAttributes(this, mOriginAttributes);
 
   return NS_OK;
 }
@@ -431,6 +431,10 @@ nsWyciwygChannel::Open2(nsIInputStream** aStream)
 NS_IMETHODIMP
 nsWyciwygChannel::AsyncOpen(nsIStreamListener *listener, nsISupports *ctx)
 {
+  MOZ_ASSERT(!mLoadInfo || mLoadInfo->GetSecurityMode() == 0 ||
+             mLoadInfo->GetInitialSecurityCheckDone(),
+             "security flags in loadInfo but asyncOpen2() not called");
+
   LOG(("nsWyciwygChannel::AsyncOpen [this=%p]\n", this));
   MOZ_ASSERT(mMode == NONE, "nsWyciwygChannel already open");
 
@@ -791,8 +795,8 @@ nsWyciwygChannel::OpenCacheEntry(nsIURI *aURI,
   NS_ENSURE_SUCCESS(rv, rv);
 
   bool anonymous = mLoadFlags & LOAD_ANONYMOUS;
-  nsRefPtr<LoadContextInfo> loadInfo = mozilla::net::GetLoadContextInfo(
-    mPrivateBrowsing, mAppId, mInBrowser, anonymous);
+  RefPtr<LoadContextInfo> loadInfo = mozilla::net::GetLoadContextInfo(
+    mPrivateBrowsing, anonymous, mOriginAttributes);
 
   nsCOMPtr<nsICacheStorage> cacheStorage;
   if (mLoadFlags & INHIBIT_PERSISTENT_CACHING)

@@ -6,6 +6,7 @@
 
 #include "MainThreadUtils.h"
 #include "mozilla/Assertions.h"
+#include "mozilla/BasePrincipal.h"
 #include "mozilla/ipc/PBackgroundSharedTypes.h"
 #include "mozilla/net/NeckoChannelParams.h"
 #include "nsPrincipal.h"
@@ -23,6 +24,7 @@ namespace net {
 class OptionalLoadInfoArgs;
 }
 
+using mozilla::BasePrincipal;
 using namespace mozilla::net;
 
 namespace ipc {
@@ -74,13 +76,11 @@ PrincipalInfoToPrincipal(const PrincipalInfo& aPrincipalInfo,
         return nullptr;
       }
 
-      if (info.appId() == nsIScriptSecurityManager::UNKNOWN_APP_ID) {
+      if (info.attrs().mAppId == nsIScriptSecurityManager::UNKNOWN_APP_ID) {
         rv = secMan->GetSimpleCodebasePrincipal(uri, getter_AddRefs(principal));
       } else {
-        rv = secMan->GetAppCodebasePrincipal(uri,
-                                             info.appId(),
-                                             info.isInBrowserElement(),
-                                             getter_AddRefs(principal));
+        principal = BasePrincipal::CreateCodebasePrincipal(uri, info.attrs());
+        rv = principal ? NS_OK : NS_ERROR_FAILURE;
       }
       if (NS_WARN_IF(NS_FAILED(rv))) {
         return nullptr;
@@ -104,7 +104,7 @@ PrincipalInfoToPrincipal(const PrincipalInfo& aPrincipalInfo,
         whitelist.AppendElement(wlPrincipal);
       }
 
-      nsRefPtr<nsExpandedPrincipal> expandedPrincipal = new nsExpandedPrincipal(whitelist);
+      RefPtr<nsExpandedPrincipal> expandedPrincipal = new nsExpandedPrincipal(whitelist);
       if (!expandedPrincipal) {
         NS_WARNING("could not instantiate expanded principal");
         return nullptr;
@@ -199,29 +199,8 @@ PrincipalToPrincipalInfo(nsIPrincipal* aPrincipal,
     return rv;
   }
 
-  bool isUnknownAppId;
-  rv = aPrincipal->GetUnknownAppId(&isUnknownAppId);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-
-  uint32_t appId;
-  if (isUnknownAppId) {
-    appId = nsIScriptSecurityManager::UNKNOWN_APP_ID;
-  } else {
-    rv = aPrincipal->GetAppId(&appId);
-    if (NS_WARN_IF(NS_FAILED(rv))) {
-      return rv;
-    }
-  }
-
-  bool isInBrowserElement;
-  rv = aPrincipal->GetIsInBrowserElement(&isInBrowserElement);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-
-  *aPrincipalInfo = ContentPrincipalInfo(appId, isInBrowserElement, spec);
+  *aPrincipalInfo = ContentPrincipalInfo(BasePrincipal::Cast(aPrincipal)->OriginAttributesRef(),
+                                         spec);
   return NS_OK;
 }
 
@@ -256,13 +235,14 @@ LoadInfoToLoadInfoArgs(nsILoadInfo *aLoadInfo,
       requestingPrincipalInfo,
       triggeringPrincipalInfo,
       aLoadInfo->GetSecurityFlags(),
-      aLoadInfo->GetContentPolicyType(),
+      aLoadInfo->InternalContentPolicyType(),
       aLoadInfo->GetUpgradeInsecureRequests(),
       aLoadInfo->GetInnerWindowID(),
       aLoadInfo->GetOuterWindowID(),
       aLoadInfo->GetParentOuterWindowID(),
       aLoadInfo->GetEnforceSecurity(),
       aLoadInfo->GetInitialSecurityCheckDone(),
+      aLoadInfo->GetOriginAttributes(),
       redirectChain);
 
   return NS_OK;
@@ -307,6 +287,7 @@ LoadInfoArgsToLoadInfo(const OptionalLoadInfoArgs& aOptionalLoadInfoArgs,
                           loadInfoArgs.parentOuterWindowID(),
                           loadInfoArgs.enforceSecurity(),
                           loadInfoArgs.initialSecurityCheckDone(),
+                          loadInfoArgs.originAttributes(),
                           redirectChain);
 
    loadInfo.forget(outLoadInfo);

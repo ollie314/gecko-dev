@@ -148,7 +148,7 @@ NoteWeakMapChildrenTracer::onChild(const JS::GCCellPtr& aThing)
     mCb.NoteWeakMapping(mMap, mKey, mKeyDelegate, aThing);
     mTracedAny = true;
   } else {
-    JS_TraceChildren(this, aThing.asCell(), aThing.kind());
+    JS::TraceChildren(this, aThing);
   }
 }
 
@@ -203,7 +203,7 @@ NoteWeakMapsTracer::trace(JSObject* aMap, JS::GCCellPtr aKey,
     mChildTracer.mKeyDelegate = kdelegate;
 
     if (aValue.is<JSString>()) {
-      JS_TraceChildren(&mChildTracer, aValue.asCell(), aValue.kind());
+      JS::TraceChildren(&mChildTracer, aValue);
     }
 
     // The delegate could hold alive the key, so report something to the CC
@@ -360,7 +360,7 @@ TraversalTracer::onChild(const JS::GCCellPtr& aThing)
     // be traced.
     JS_TraceObjectGroupCycleCollectorChildren(this, aThing);
   } else if (!aThing.is<JSString>()) {
-    JS_TraceChildren(this, aThing.asCell(), aThing.kind());
+    JS::TraceChildren(this, aThing);
   }
 }
 
@@ -542,7 +542,7 @@ CycleCollectedJSRuntime::NoteGCThingJSChildren(JS::GCCellPtr aThing,
 {
   MOZ_ASSERT(mJSRuntime);
   TraversalTracer trc(mJSRuntime, aCb);
-  JS_TraceChildren(&trc, aThing.asCell(), aThing.kind());
+  JS::TraceChildren(&trc, aThing);
 }
 
 void
@@ -1138,7 +1138,9 @@ CycleCollectedJSRuntime::RunInMetastableState(already_AddRefed<nsIRunnable>&& aR
   data.mRecursionDepth = RecursionDepth();
 
   // There must be an event running to get here.
+#ifndef MOZ_WIDGET_COCOA
   MOZ_ASSERT(data.mRecursionDepth > mBaseRecursionDepth);
+#endif
 
   mMetastableStateEvents.AppendElement(Move(data));
 }

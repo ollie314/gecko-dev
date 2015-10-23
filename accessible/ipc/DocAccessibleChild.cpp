@@ -17,6 +17,9 @@
 #include "nsIPersistentProperties2.h"
 #include "nsISimpleEnumerator.h"
 #include "nsAccUtils.h"
+#ifdef MOZ_ACCESSIBILITY_ATK
+#include "AccessibleWrap.h"
+#endif
 
 namespace mozilla {
 namespace a11y {
@@ -43,6 +46,14 @@ InterfacesFor(Accessible* aAcc)
   if (aAcc->IsDoc())
     interfaces |= Interfaces::DOCUMENT;
 
+  if (aAcc->IsSelect()) {
+    interfaces |= Interfaces::SELECTION;
+  }
+
+  if (aAcc->ActionCount()) {
+    interfaces |= Interfaces::ACTION;
+  }
+
   return interfaces;
 }
 
@@ -57,7 +68,8 @@ SerializeTree(Accessible* aRoot, nsTArray<AccessibleData>& aTree)
   // OuterDocAccessibles are special because we don't want to serialize the
   // child doc here, we'll call PDocAccessibleConstructor in
   // NotificationController.
-  if (childCount == 1 && aRoot->GetChildAt(0)->IsDoc())
+  MOZ_ASSERT(!aRoot->IsDoc(), "documents shouldn't be serialized");
+  if (aRoot->IsOuterDoc())
     childCount = 0;
 
   aTree.AppendElement(AccessibleData(id, role, childCount, interfaces));
@@ -378,13 +390,10 @@ DocAccessibleChild::RecvCaretOffset(const uint64_t& aID, int32_t* aOffset)
 
 bool
 DocAccessibleChild::RecvSetCaretOffset(const uint64_t& aID,
-                                       const int32_t& aOffset,
-                                       bool* aRetVal)
+                                       const int32_t& aOffset)
 {
   HyperTextAccessible* acc = IdToHyperTextAccessible(aID);
-  *aRetVal = false;
   if (acc && acc->IsTextRole() && acc->IsValidOffset(aOffset)) {
-    *aRetVal = true;
     acc->SetCaretOffset(aOffset);
   }
   return true;
@@ -1445,6 +1454,52 @@ DocAccessibleChild::RecvTableIsProbablyForLayout(const uint64_t& aID,
 }
 
 bool
+DocAccessibleChild::RecvAtkTableColumnHeader(const uint64_t& aID,
+                                             const int32_t& aCol,
+                                             uint64_t* aHeader,
+                                             bool* aOk)
+{
+  *aHeader = 0;
+  *aOk = false;
+
+#ifdef MOZ_ACCESSIBILITY_ATK
+  TableAccessible* acc = IdToTableAccessible(aID);
+  if (acc) {
+    Accessible* header = AccessibleWrap::GetColumnHeader(acc, aCol);
+    if (header) {
+      *aHeader = reinterpret_cast<uint64_t>(header->UniqueID());
+      *aOk = true;
+    }
+  }
+#endif
+
+  return true;
+}
+
+bool
+DocAccessibleChild::RecvAtkTableRowHeader(const uint64_t& aID,
+                                          const int32_t& aRow,
+                                          uint64_t* aHeader,
+                                          bool* aOk)
+{
+  *aHeader = 0;
+  *aOk = false;
+
+#ifdef MOZ_ACCESSIBILITY_ATK
+  TableAccessible* acc = IdToTableAccessible(aID);
+  if (acc) {
+    Accessible* header = AccessibleWrap::GetRowHeader(acc, aRow);
+    if (header) {
+      *aHeader = reinterpret_cast<uint64_t>(header->UniqueID());
+      *aOk = true;
+    }
+  }
+#endif
+
+  return true;
+}
+
+bool
 DocAccessibleChild::RecvSelectedItems(const uint64_t& aID,
                                       nsTArray<uint64_t>* aSelectedItemIDs)
 {
@@ -1564,6 +1619,28 @@ DocAccessibleChild::RecvUnselectAll(const uint64_t& aID,
 }
 
 bool
+DocAccessibleChild::RecvTakeSelection(const uint64_t& aID)
+{
+  Accessible* acc = IdToAccessible(aID);
+  if (acc) {
+    acc->TakeSelection();
+  }
+
+  return true;
+}
+
+bool
+DocAccessibleChild::RecvSetSelected(const uint64_t& aID, const bool& aSelect)
+{
+  Accessible* acc = IdToAccessible(aID);
+  if (acc) {
+    acc->SetSelected(aSelect);
+  }
+
+  return true;
+}
+
+bool
 DocAccessibleChild::RecvDoAction(const uint64_t& aID,
                                  const uint8_t& aIndex,
                                  bool* aSuccess)
@@ -1651,6 +1728,19 @@ DocAccessibleChild::RecvKeyboardShortcut(const uint64_t& aID,
 }
 
 bool
+DocAccessibleChild::RecvAtkKeyBinding(const uint64_t& aID,
+                                      nsString* aResult)
+{
+#ifdef MOZ_ACCESSIBILITY_ATK
+  Accessible* acc = IdToAccessible(aID);
+  if (acc) {
+    AccessibleWrap::GetKeyBinding(acc, *aResult);
+  }
+#endif
+  return true;
+}
+
+bool
 DocAccessibleChild::RecvCurValue(const uint64_t& aID,
                                  double* aValue)
 {
@@ -1728,6 +1818,22 @@ DocAccessibleChild::RecvTakeFocus(const uint64_t& aID)
 }
 
 bool
+DocAccessibleChild::RecvEmbeddedChildCount(const uint64_t& aID,
+                                           uint32_t* aCount)
+{
+  *aCount = 0;
+
+  Accessible* acc = IdToAccessible(aID);
+  if (!acc) {
+    return true;
+  }
+
+  *aCount = acc->EmbeddedChildCount();
+
+  return true;
+}
+
+bool
 DocAccessibleChild::RecvIndexOfEmbeddedChild(const uint64_t& aID,
                                              const uint64_t& aChildID,
                                              uint32_t* aChildIdx)
@@ -1774,42 +1880,6 @@ DocAccessibleChild::RecvFocusedChild(const uint64_t& aID,
     }
   }
   return true;
-}
-
-bool
-DocAccessibleChild::RecvChildAtPoint(const uint64_t& aID,
-                                     const int32_t& aX,
-                                     const int32_t& aY,
-                                     const uint32_t& aWhich,
-                                     uint64_t* aChild,
-                                     bool* aOk)
-{
-  *aChild = 0;
-  *aOk = false;
-  Accessible* acc = IdToAccessible(aID);
-  if (acc && !acc->IsDefunct() && !nsAccUtils::MustPrune(acc)) {
-    Accessible* child =
-      acc->ChildAtPoint(aX, aY,
-                        static_cast<Accessible::EWhichChildAtPoint>(aWhich));
-    if (child) {
-      *aChild = reinterpret_cast<uint64_t>(child->UniqueID());
-      *aOk = true;
-    }
-  }
-
-  return true;
-}
-
-bool
-DocAccessibleChild::RecvBounds(const uint64_t& aID,
-                               nsIntRect* aRect)
-{
-  Accessible* acc = IdToAccessible(aID);
-  if (acc && !acc->IsDefunct()) {
-    *aRect = acc->Bounds();
-  }
-
-  return false;
 }
 
 bool
@@ -1887,6 +1957,72 @@ DocAccessibleChild::RecvURLDocTypeMimeType(const uint64_t& aID,
     doc->MimeType(*aMimeType);
   }
 
+  return true;
+}
+
+bool
+DocAccessibleChild::RecvAccessibleAtPoint(const uint64_t& aID,
+                                          const int32_t& aX,
+                                          const int32_t& aY,
+                                          const bool& aNeedsScreenCoords,
+                                          const uint32_t& aWhich,
+                                          uint64_t* aResult,
+                                          bool* aOk)
+{
+  *aResult = 0;
+  *aOk = false;
+  Accessible* acc = IdToAccessible(aID);
+  if (acc && !acc->IsDefunct() && !nsAccUtils::MustPrune(acc)) {
+    int32_t x = aX;
+    int32_t y = aY;
+    if (aNeedsScreenCoords) {
+      nsIntPoint winCoords =
+        nsCoreUtils::GetScreenCoordsForWindow(acc->GetNode());
+      x += winCoords.x;
+      y += winCoords.y;
+    }
+
+    Accessible* result =
+      acc->ChildAtPoint(x, y,
+                        static_cast<Accessible::EWhichChildAtPoint>(aWhich));
+    if (result) {
+      *aResult = reinterpret_cast<uint64_t>(result->UniqueID());
+      *aOk = true;
+    }
+  }
+
+  return true;
+}
+
+bool
+DocAccessibleChild::RecvExtents(const uint64_t& aID,
+                                const bool& aNeedsScreenCoords,
+                                int32_t* aX,
+                                int32_t* aY,
+                                int32_t* aWidth,
+                                int32_t* aHeight)
+{
+  *aX = 0;
+  *aY = 0;
+  *aWidth = 0;
+  *aHeight = 0;
+  Accessible* acc = IdToAccessible(aID);
+  if (acc && !acc->IsDefunct()) {
+    nsIntRect screenRect = acc->Bounds();
+    if (!screenRect.IsEmpty()) {
+      if (aNeedsScreenCoords) {
+        nsIntPoint winCoords =
+          nsCoreUtils::GetScreenCoordsForWindow(acc->GetNode());
+        screenRect.x -= winCoords.x;
+        screenRect.y -= winCoords.y;
+      }
+
+      *aX = screenRect.x;
+      *aY = screenRect.y;
+      *aWidth = screenRect.width;
+      *aHeight = screenRect.height;
+    }
+  }
   return true;
 }
 

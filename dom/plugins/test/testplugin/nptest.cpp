@@ -122,6 +122,7 @@ static bool stopWatchingInstanceCount(NPObject* npobj, const NPVariant* args, ui
 static bool getLastMouseX(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
 static bool getLastMouseY(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
 static bool getPaintCount(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
+static bool resetPaintCount(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
 static bool getWidthAtLastPaint(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
 static bool setInvalidateDuringPaint(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
 static bool setSlowPaint(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
@@ -171,6 +172,7 @@ static bool echoString(NPObject* npobj, const NPVariant* args, uint32_t argCount
 static bool startAudioPlayback(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
 static bool stopAudioPlayback(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
 static bool getAudioMuted(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
+static bool nativeWidgetIsVisible(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result);
 
 static const NPUTF8* sPluginMethodIdentifierNames[] = {
   "npnEvaluateTest",
@@ -191,6 +193,7 @@ static const NPUTF8* sPluginMethodIdentifierNames[] = {
   "getLastMouseX",
   "getLastMouseY",
   "getPaintCount",
+  "resetPaintCount",
   "getWidthAtLastPaint",
   "setInvalidateDuringPaint",
   "setSlowPaint",
@@ -240,6 +243,7 @@ static const NPUTF8* sPluginMethodIdentifierNames[] = {
   "startAudioPlayback",
   "stopAudioPlayback",
   "audioMuted",
+  "nativeWidgetIsVisible",
 };
 static NPIdentifier sPluginMethodIdentifiers[MOZ_ARRAY_LENGTH(sPluginMethodIdentifierNames)];
 static const ScriptableFunction sPluginMethodFunctions[] = {
@@ -261,6 +265,7 @@ static const ScriptableFunction sPluginMethodFunctions[] = {
   getLastMouseX,
   getLastMouseY,
   getPaintCount,
+  resetPaintCount,
   getWidthAtLastPaint,
   setInvalidateDuringPaint,
   setSlowPaint,
@@ -310,6 +315,7 @@ static const ScriptableFunction sPluginMethodFunctions[] = {
   startAudioPlayback,
   stopAudioPlayback,
   getAudioMuted,
+  nativeWidgetIsVisible,
 };
 
 static_assert(MOZ_ARRAY_LENGTH(sPluginMethodIdentifierNames) ==
@@ -968,7 +974,7 @@ NPP_New(NPMIMEType pluginType, NPP instance, uint16_t mode, int16_t argc, char* 
   NPError err = pluginInstanceInit(instanceData);
   if (err != NPERR_NO_ERROR) {
     NPN_ReleaseObject(scriptableObject);
-    free(instanceData);
+    delete instanceData;
     return err;
   }
 
@@ -2434,6 +2440,18 @@ getPaintCount(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVaria
 }
 
 static bool
+resetPaintCount(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result)
+{
+  if (argCount != 0)
+    return false;
+
+  NPP npp = static_cast<TestNPObject*>(npobj)->npp;
+  InstanceData* id = static_cast<InstanceData*>(npp->pdata);
+  id->paintCount = 0;
+  return true;
+}
+
+static bool
 getWidthAtLastPaint(NPObject* npobj, const NPVariant* args, uint32_t argCount, NPVariant* result)
 {
   if (argCount != 0)
@@ -3315,6 +3333,27 @@ crashPluginInNestedLoop(NPObject* npobj, const NPVariant* args,
 bool
 destroySharedGfxStuff(NPObject* npobj, const NPVariant* args,
                         uint32_t argCount, NPVariant* result)
+{
+  // XXX Not implemented!
+  return false;
+}
+#endif
+
+#if defined(XP_WIN)
+bool
+nativeWidgetIsVisible(NPObject* npobj, const NPVariant* args,
+                        uint32_t argCount, NPVariant* result)
+{
+  NPP npp = static_cast<TestNPObject*>(npobj)->npp;
+  InstanceData* id = static_cast<InstanceData*>(npp->pdata);
+  bool visible = pluginNativeWidgetIsVisible(id);
+  BOOLEAN_TO_NPVARIANT(visible, *result);
+  return true;
+}
+#else
+bool
+nativeWidgetIsVisible(NPObject* npobj, const NPVariant* args,
+                      uint32_t argCount, NPVariant* result)
 {
   // XXX Not implemented!
   return false;

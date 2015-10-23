@@ -593,7 +593,7 @@ MaybeAddNsprLogFileAccess(std::vector<std::wstring>& aAllowedFilesReadWrite)
   // Chromium sandbox can only allow access to fully qualified file paths. This
   // only affects the environment for the child process we're about to create,
   // because this will get reset to the original value in PerformAsyncLaunch.
-  aAllowedFilesReadWrite.push_back(resolvedFilePath.get());
+  aAllowedFilesReadWrite.push_back(std::wstring(resolvedFilePath.get()));
   nsAutoCString resolvedEnvVar("NSPR_LOG_FILE=");
   AppendUTF16toUTF8(resolvedFilePath, resolvedEnvVar);
   PR_SetEnv(resolvedEnvVar.get());
@@ -983,6 +983,16 @@ GeckoChildProcessHost::PerformAsyncLaunchInternal(std::vector<std::string>& aExt
 #endif
   {
     base::LaunchApp(cmdLine, false, false, &process);
+
+#ifdef MOZ_SANDBOX
+    // We need to be able to duplicate handles to non-sandboxed content
+    // processes, so add it as a target peer.
+    if (mProcessType == GeckoProcessType_Content) {
+      if (!mSandboxBroker.AddTargetPeer(process)) {
+        NS_WARNING("Failed to add content process as target peer.");
+      }
+    }
+#endif
   }
 
 #else

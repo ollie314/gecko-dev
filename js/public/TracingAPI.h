@@ -20,16 +20,34 @@ class JS_PUBLIC_API(CallbackTracer);
 template <typename T> class Heap;
 template <typename T> class TenuredHeap;
 
-// Returns a static string equivalent of |kind|.
+/** Returns a static string equivalent of |kind|. */
 JS_FRIEND_API(const char*)
 GCTraceKindToAscii(JS::TraceKind kind);
 
 } // namespace JS
 
 enum WeakMapTraceKind {
-    DoNotTraceWeakMaps = 0,
-    TraceWeakMapValues = 1,
-    TraceWeakMapKeysValues = 2
+    /** Do true ephemeron marking with an iterative weak marking phase. */
+    DoNotTraceWeakMaps,
+
+    /**
+     * Do true ephemeron marking with a weak key lookup marking phase. This is
+     * expected to be constant for the lifetime of a JSTracer; it does not
+     * change when switching from "plain" marking to weak marking.
+     */
+    ExpandWeakMaps,
+
+    /**
+     * Trace through to all values, irrespective of whether the keys are live
+     * or not. Used for non-marking tracers.
+     */
+    TraceWeakMapValues,
+
+    /**
+     * Trace through to all keys and values, irrespective of whether the keys
+     * are live or not. Used for non-marking tracers.
+     */
+    TraceWeakMapKeysValues
 };
 
 class JS_PUBLIC_API(JSTracer)
@@ -38,16 +56,18 @@ class JS_PUBLIC_API(JSTracer)
     // Return the runtime set on the tracer.
     JSRuntime* runtime() const { return runtime_; }
 
-    // Return the weak map tracing behavior set on this tracer.
-    WeakMapTraceKind eagerlyTraceWeakMaps() const { return eagerlyTraceWeakMaps_; }
+    // Return the weak map tracing behavior currently set on this tracer.
+    WeakMapTraceKind weakMapAction() const { return weakMapAction_; }
 
     // An intermediate state on the road from C to C++ style dispatch.
     enum class TracerKindTag {
         Marking,
+        WeakMarking, // In weak marking phase: looking up every marked obj/script.
         Tenuring,
         Callback
     };
-    bool isMarkingTracer() const { return tag_ == TracerKindTag::Marking; }
+    bool isMarkingTracer() const { return tag_ == TracerKindTag::Marking || tag_ == TracerKindTag::WeakMarking; }
+    bool isWeakMarkingTracer() const { return tag_ == TracerKindTag::WeakMarking; }
     bool isTenuringTracer() const { return tag_ == TracerKindTag::Tenuring; }
     bool isCallbackTracer() const { return tag_ == TracerKindTag::Callback; }
     inline JS::CallbackTracer* asCallbackTracer();
@@ -55,13 +75,15 @@ class JS_PUBLIC_API(JSTracer)
   protected:
     JSTracer(JSRuntime* rt, TracerKindTag tag,
              WeakMapTraceKind weakTraceKind = TraceWeakMapValues)
-      : runtime_(rt), tag_(tag), eagerlyTraceWeakMaps_(weakTraceKind)
+      : runtime_(rt), weakMapAction_(weakTraceKind), tag_(tag)
     {}
 
   private:
     JSRuntime*          runtime_;
+    WeakMapTraceKind    weakMapAction_;
+
+  protected:
     TracerKindTag       tag_;
-    WeakMapTraceKind    eagerlyTraceWeakMaps_;
 };
 
 namespace JS {
@@ -184,7 +206,7 @@ class JS_PUBLIC_API(CallbackTracer) : public JSTracer
 };
 
 // Set the name portion of the tracer's context for the current edge.
-class AutoTracingName
+class MOZ_RAII AutoTracingName
 {
     CallbackTracer* trc_;
     const char* prior_;
@@ -201,7 +223,7 @@ class AutoTracingName
 };
 
 // Set the index portion of the tracer's context for the current range.
-class AutoTracingIndex
+class MOZ_RAII AutoTracingIndex
 {
     CallbackTracer* trc_;
 
@@ -230,7 +252,7 @@ class AutoTracingIndex
 
 // Set a context callback for the trace callback to use, if it needs a detailed
 // edge description.
-class AutoTracingDetails
+class MOZ_RAII AutoTracingDetails
 {
     CallbackTracer* trc_;
 
@@ -317,23 +339,27 @@ JS_CallHashSetObjectTracer(JSTracer* trc, HashSetEnum& e, JSObject* const& key, 
         e.rekeyFront(updated);
 }
 
-// Trace an object that is known to always be tenured.  No post barriers are
-// required in this case.
+/**
+ * Trace an object that is known to always be tenured.  No post barriers are
+ * required in this case.
+ */
 extern JS_PUBLIC_API(void)
 JS_CallTenuredObjectTracer(JSTracer* trc, JS::TenuredHeap<JSObject*>* objp, const char* name);
-
-extern JS_PUBLIC_API(void)
-JS_TraceChildren(JSTracer* trc, void* thing, JS::TraceKind kind);
 
 extern JS_PUBLIC_API(void)
 JS_TraceRuntime(JSTracer* trc);
 
 namespace JS {
+extern JS_PUBLIC_API(void)
+TraceChildren(JSTracer* trc, GCCellPtr thing);
+
 typedef js::HashSet<Zone*, js::DefaultHasher<Zone*>, js::SystemAllocPolicy> ZoneSet;
 } // namespace JS
 
-// Trace every value within |zones| that is wrapped by a cross-compartment
-// wrapper from a zone that is not an element of |zones|.
+/**
+ * Trace every value within |zones| that is wrapped by a cross-compartment
+ * wrapper from a zone that is not an element of |zones|.
+ */
 extern JS_PUBLIC_API(void)
 JS_TraceIncomingCCWs(JSTracer* trc, const JS::ZoneSet& zones);
 

@@ -175,17 +175,12 @@ void
 LayerTransactionParent::Destroy()
 {
   mDestroyed = true;
-  for (size_t i = 0; i < ManagedPLayerParent().Length(); ++i) {
+  const ManagedContainer<PLayerParent>& layers = ManagedPLayerParent();
+  for (auto iter = layers.ConstIter(); !iter.Done(); iter.Next()) {
     ShadowLayerParent* slp =
-      static_cast<ShadowLayerParent*>(ManagedPLayerParent()[i]);
+      static_cast<ShadowLayerParent*>(iter.Get()->GetKey());
     slp->Destroy();
   }
-}
-
-LayersBackend
-LayerTransactionParent::GetCompositorBackendType() const
-{
-  return mLayerManager->GetBackendType();
 }
 
 bool
@@ -197,11 +192,12 @@ LayerTransactionParent::RecvUpdateNoSwap(InfallibleTArray<Edit>&& cset,
                                          const bool& scheduleComposite,
                                          const uint32_t& paintSequenceNumber,
                                          const bool& isRepeatTransaction,
-                                         const mozilla::TimeStamp& aTransactionStart)
+                                         const mozilla::TimeStamp& aTransactionStart,
+                                         const int32_t& aPaintSyncId)
 {
   return RecvUpdate(Move(cset), aTransactionId, targetConfig, Move(aPlugins), isFirstPaint,
       scheduleComposite, paintSequenceNumber, isRepeatTransaction,
-      aTransactionStart, nullptr);
+      aTransactionStart, aPaintSyncId, nullptr);
 }
 
 class MOZ_STACK_CLASS AutoLayerTransactionParentAsyncMessageSender
@@ -229,6 +225,7 @@ LayerTransactionParent::RecvUpdate(InfallibleTArray<Edit>&& cset,
                                    const uint32_t& paintSequenceNumber,
                                    const bool& isRepeatTransaction,
                                    const mozilla::TimeStamp& aTransactionStart,
+                                   const int32_t& aPaintSyncId,
                                    InfallibleTArray<EditReply>* reply)
 {
   profiler_tracing("Paint", "LayerTransaction", TRACING_INTERVAL_START);
@@ -261,7 +258,7 @@ LayerTransactionParent::RecvUpdate(InfallibleTArray<Edit>&& cset,
     case Edit::TOpCreatePaintedLayer: {
       MOZ_LAYERS_LOG(("[ParentSide] CreatePaintedLayer"));
 
-      nsRefPtr<PaintedLayerComposite> layer =
+      RefPtr<PaintedLayerComposite> layer =
         layer_manager()->CreatePaintedLayerComposite();
       AsLayerComposite(edit.get_OpCreatePaintedLayer())->Bind(layer);
       break;
@@ -269,14 +266,14 @@ LayerTransactionParent::RecvUpdate(InfallibleTArray<Edit>&& cset,
     case Edit::TOpCreateContainerLayer: {
       MOZ_LAYERS_LOG(("[ParentSide] CreateContainerLayer"));
 
-      nsRefPtr<ContainerLayer> layer = layer_manager()->CreateContainerLayerComposite();
+      RefPtr<ContainerLayer> layer = layer_manager()->CreateContainerLayerComposite();
       AsLayerComposite(edit.get_OpCreateContainerLayer())->Bind(layer);
       break;
     }
     case Edit::TOpCreateImageLayer: {
       MOZ_LAYERS_LOG(("[ParentSide] CreateImageLayer"));
 
-      nsRefPtr<ImageLayerComposite> layer =
+      RefPtr<ImageLayerComposite> layer =
         layer_manager()->CreateImageLayerComposite();
       AsLayerComposite(edit.get_OpCreateImageLayer())->Bind(layer);
       break;
@@ -284,14 +281,14 @@ LayerTransactionParent::RecvUpdate(InfallibleTArray<Edit>&& cset,
     case Edit::TOpCreateColorLayer: {
       MOZ_LAYERS_LOG(("[ParentSide] CreateColorLayer"));
 
-      nsRefPtr<ColorLayerComposite> layer = layer_manager()->CreateColorLayerComposite();
+      RefPtr<ColorLayerComposite> layer = layer_manager()->CreateColorLayerComposite();
       AsLayerComposite(edit.get_OpCreateColorLayer())->Bind(layer);
       break;
     }
     case Edit::TOpCreateCanvasLayer: {
       MOZ_LAYERS_LOG(("[ParentSide] CreateCanvasLayer"));
 
-      nsRefPtr<CanvasLayerComposite> layer =
+      RefPtr<CanvasLayerComposite> layer =
         layer_manager()->CreateCanvasLayerComposite();
       AsLayerComposite(edit.get_OpCreateCanvasLayer())->Bind(layer);
       break;
@@ -299,7 +296,7 @@ LayerTransactionParent::RecvUpdate(InfallibleTArray<Edit>&& cset,
     case Edit::TOpCreateRefLayer: {
       MOZ_LAYERS_LOG(("[ParentSide] CreateRefLayer"));
 
-      nsRefPtr<RefLayerComposite> layer =
+      RefPtr<RefLayerComposite> layer =
         layer_manager()->CreateRefLayerComposite();
       AsLayerComposite(edit.get_OpCreateRefLayer())->Bind(layer);
       break;
@@ -327,8 +324,11 @@ LayerTransactionParent::RecvUpdate(InfallibleTArray<Edit>&& cset,
       layer->SetBaseTransform(common.transform().value());
       layer->SetPostScale(common.postXScale(), common.postYScale());
       layer->SetIsFixedPosition(common.isFixedPosition());
-      layer->SetFixedPositionAnchor(common.fixedPositionAnchor());
-      layer->SetFixedPositionMargins(common.fixedPositionMargin());
+      if (common.isFixedPosition()) {
+        layer->SetFixedPositionData(common.fixedPositionScrollContainerId(),
+                                    common.fixedPositionAnchor(),
+                                    common.isClipFixed());
+      }
       if (common.isStickyPosition()) {
         layer->SetStickyPositionData(common.stickyScrollContainerId(),
                                      common.stickyScrollRangeOuter(),
@@ -349,7 +349,7 @@ LayerTransactionParent::RecvUpdate(InfallibleTArray<Edit>&& cset,
       layer->SetFrameMetrics(common.metrics());
       layer->SetDisplayListLog(common.displayListLog().get());
 
-      nsTArray<nsRefPtr<Layer>> maskLayers;
+      nsTArray<RefPtr<Layer>> maskLayers;
       for (size_t i = 0; i < common.ancestorMaskLayersParent().Length(); i++) {
         Layer* maskLayer = cast(common.ancestorMaskLayersParent().ElementAt(i))->AsLayer();
         maskLayers.AppendElement(maskLayer);
@@ -588,7 +588,8 @@ LayerTransactionParent::RecvUpdate(InfallibleTArray<Edit>&& cset,
 
   mShadowLayersManager->ShadowLayersUpdated(this, aTransactionId, targetConfig,
                                             aPlugins, isFirstPaint, scheduleComposite,
-                                            paintSequenceNumber, isRepeatTransaction);
+                                            paintSequenceNumber, isRepeatTransaction,
+                                            aPaintSyncId);
 
   {
     AutoResolveRefLayers resolve(mShadowLayersManager->GetCompositionManager(this));
@@ -918,9 +919,11 @@ LayerTransactionParent::DeallocPCompositableParent(PCompositableParent* aActor)
 
 PTextureParent*
 LayerTransactionParent::AllocPTextureParent(const SurfaceDescriptor& aSharedData,
+                                            const LayersBackend& aLayersBackend,
                                             const TextureFlags& aFlags)
 {
-  return TextureHost::CreateIPDLActor(this, aSharedData, aFlags);
+  MOZ_ASSERT(aLayersBackend == mLayerManager->GetCompositor()->GetBackendType());
+  return TextureHost::CreateIPDLActor(this, aSharedData, aLayersBackend, aFlags);
 }
 
 bool

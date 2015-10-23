@@ -4,9 +4,9 @@
 
 "use strict";
 
-let Cc = Components.classes;
-let Ci = Components.interfaces;
-let Cu = Components.utils;
+var Cc = Components.classes;
+var Ci = Components.interfaces;
+var Cu = Components.utils;
 
 this.EXPORTED_SYMBOLS = [ "PluginContent" ];
 
@@ -166,7 +166,7 @@ PluginContent.prototype = {
       pluginName = BrowserUtils.makeNicePluginName(pluginTag.name);
 
       // Convert this from nsIPluginTag so it can be serialized.
-      let properties = ["name", "description", "filename", "version", "enabledState"];
+      let properties = ["name", "description", "filename", "version", "enabledState", "niceName"];
       let pluginTagCopy = {};
       for (let prop of properties) {
         pluginTagCopy[prop] = pluginTag[prop];
@@ -311,8 +311,6 @@ PluginContent.prototype = {
         return "PluginVulnerableUpdatable";
       case Ci.nsIObjectLoadingContent.PLUGIN_VULNERABLE_NO_UPDATE:
         return "PluginVulnerableNoUpdate";
-      case Ci.nsIObjectLoadingContent.PLUGIN_PLAY_PREVIEW:
-        return "PluginPlayPreview";
       default:
         // Not all states map to a handler
         return null;
@@ -417,10 +415,6 @@ PluginContent.prototype = {
         shouldShowNotification = true;
         break;
 
-      case "PluginPlayPreview":
-        this._handlePlayPreviewEvent(plugin);
-        break;
-
       case "PluginDisabled":
         let manageLink = this.getPluginUI(plugin, "managePluginsLink");
         this.addLinkClickCallback(manageLink, "forwardCallback", "managePlugins");
@@ -428,6 +422,7 @@ PluginContent.prototype = {
         break;
 
       case "PluginInstantiated":
+        Services.telemetry.getKeyedHistogramById('PLUGIN_ACTIVATION_COUNT').add(this._getPluginInfo(plugin).pluginTag.niceName);
         shouldShowNotification = true;
         break;
     }
@@ -531,12 +526,6 @@ PluginContent.prototype = {
       objLoadingContent.pluginFallbackType >= Ci.nsIObjectLoadingContent.PLUGIN_CLICK_TO_PLAY &&
       objLoadingContent.pluginFallbackType <= Ci.nsIObjectLoadingContent.PLUGIN_VULNERABLE_NO_UPDATE;
 
-    if (objLoadingContent.pluginFallbackType == Ci.nsIObjectLoadingContent.PLUGIN_PLAY_PREVIEW) {
-      // checking if play preview is subject to CTP rules
-      let playPreviewInfo = pluginHost.getPlayPreviewInfo(objLoadingContent.actualType);
-      isFallbackTypeValid = !playPreviewInfo.ignoreCTP;
-    }
-
     return !objLoadingContent.activated &&
            pluginPermission != Ci.nsIPermissionManager.DENY_ACTION &&
            isFallbackTypeValid;
@@ -547,17 +536,6 @@ PluginContent.prototype = {
     if (overlay) {
       overlay.classList.remove("visible");
     }
-  },
-
-  stopPlayPreview: function (plugin, playPlugin) {
-    let objLoadingContent = plugin.QueryInterface(Ci.nsIObjectLoadingContent);
-    if (objLoadingContent.activated)
-      return;
-
-    if (playPlugin)
-      objLoadingContent.playPlugin();
-    else
-      objLoadingContent.cancelPlayPreview();
   },
 
   // Forward a link click callback to the chrome process.
@@ -638,49 +616,6 @@ PluginContent.prototype = {
       this._showClickToPlayNotification(plugin, true);
     event.stopPropagation();
     event.preventDefault();
-    }
-  },
-
-  _handlePlayPreviewEvent: function (plugin) {
-    let doc = plugin.ownerDocument;
-    let pluginHost = Cc["@mozilla.org/plugin/host;1"].getService(Ci.nsIPluginHost);
-    let pluginInfo = this._getPluginInfo(plugin);
-    let playPreviewInfo = pluginHost.getPlayPreviewInfo(pluginInfo.mimetype);
-
-    let previewContent = this.getPluginUI(plugin, "previewPluginContent");
-    let iframe = previewContent.getElementsByClassName("previewPluginContentFrame")[0];
-    if (!iframe) {
-      // lazy initialization of the iframe
-      iframe = doc.createElementNS("http://www.w3.org/1999/xhtml", "iframe");
-      iframe.className = "previewPluginContentFrame";
-      previewContent.appendChild(iframe);
-
-      // Force a style flush, so that we ensure our binding is attached.
-      plugin.clientTop;
-    }
-    iframe.src = playPreviewInfo.redirectURL;
-
-    // MozPlayPlugin event can be dispatched from the extension chrome
-    // code to replace the preview content with the native plugin
-    let playPluginHandler = (event) => {
-      if (!event.isTrusted)
-        return;
-
-      previewContent.removeEventListener("MozPlayPlugin", playPluginHandler, true);
-
-      let playPlugin = !event.detail;
-      this.stopPlayPreview(plugin, playPlugin);
-
-      // cleaning up: removes overlay iframe from the DOM
-      let iframe = previewContent.getElementsByClassName("previewPluginContentFrame")[0];
-      if (iframe)
-        previewContent.removeChild(iframe);
-    };
-
-    previewContent.addEventListener("MozPlayPlugin", playPluginHandler, true);
-
-    if (!playPreviewInfo.ignoreCTP) {
-      this._showClickToPlayNotification(plugin, false);
     }
   },
 

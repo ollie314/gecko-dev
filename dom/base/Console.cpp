@@ -10,7 +10,7 @@
 #include "mozilla/dom/BlobBinding.h"
 #include "mozilla/dom/Exceptions.h"
 #include "mozilla/dom/File.h"
-#include "mozilla/dom/StructuredCloneHelper.h"
+#include "mozilla/dom/StructuredCloneHolder.h"
 #include "mozilla/dom/ToJSValue.h"
 #include "mozilla/Maybe.h"
 #include "nsCycleCollectionParticipant.h"
@@ -18,6 +18,7 @@
 #include "nsDOMNavigationTiming.h"
 #include "nsGlobalWindow.h"
 #include "nsJSUtils.h"
+#include "nsNetUtil.h"
 #include "nsPerformance.h"
 #include "ScriptSettings.h"
 #include "WorkerPrivate.h"
@@ -26,20 +27,19 @@
 #include "nsContentUtils.h"
 #include "nsDocShell.h"
 #include "nsProxyRelease.h"
+#include "mozilla/ConsoleTimelineMarker.h"
+#include "mozilla/TimestampTimelineMarker.h"
 
 #include "nsIConsoleAPIStorage.h"
 #include "nsIDOMWindowUtils.h"
 #include "nsIInterfaceRequestorUtils.h"
 #include "nsILoadContext.h"
 #include "nsIProgrammingLanguage.h"
+#include "nsISensitiveInfoHiddenURI.h"
 #include "nsIServiceManager.h"
 #include "nsISupportsPrimitives.h"
 #include "nsIWebNavigation.h"
 #include "nsIXPConnect.h"
-
-#ifdef MOZ_ENABLE_PROFILER_SPS
-#include "nsIProfiler.h"
-#endif
 
 // The maximum allowed number of concurrent timers per page.
 #define MAX_PAGE_TIMERS 10000
@@ -65,7 +65,7 @@ struct
 ConsoleStructuredCloneData
 {
   nsCOMPtr<nsISupports> mParent;
-  nsTArray<nsRefPtr<BlobImpl>> mBlobs;
+  nsTArray<RefPtr<BlobImpl>> mBlobs;
 };
 
 /**
@@ -194,7 +194,7 @@ private:
 
 class ConsoleRunnable : public nsRunnable
                       , public WorkerFeature
-                      , public StructuredCloneHelperInternal
+                      , public StructuredCloneHolderBase
 {
 public:
   explicit ConsoleRunnable(Console* aConsole)
@@ -207,8 +207,8 @@ public:
   virtual
   ~ConsoleRunnable()
   {
-    // Shutdown the StructuredCloneHelperInternal class.
-    Shutdown();
+    // Clear the StructuredCloneHolderBase class.
+    Clear();
   }
 
   bool
@@ -264,7 +264,7 @@ private:
   {
     class ConsoleReleaseRunnable final : public MainThreadWorkerControlRunnable
     {
-      nsRefPtr<ConsoleRunnable> mRunnable;
+      RefPtr<ConsoleRunnable> mRunnable;
 
     public:
       ConsoleReleaseRunnable(WorkerPrivate* aWorkerPrivate,
@@ -291,7 +291,7 @@ private:
       {}
     };
 
-    nsRefPtr<WorkerControlRunnable> runnable =
+    RefPtr<WorkerControlRunnable> runnable =
       new ConsoleReleaseRunnable(mWorkerPrivate, this);
     runnable->Dispatch(nullptr);
   }
@@ -302,7 +302,7 @@ private:
     AutoJSAPI jsapi;
     MOZ_ASSERT(aWindow);
 
-    nsRefPtr<nsGlobalWindow> win = static_cast<nsGlobalWindow*>(aWindow);
+    RefPtr<nsGlobalWindow> win = static_cast<nsGlobalWindow*>(aWindow);
     if (NS_WARN_IF(!jsapi.Init(win))) {
       return;
     }
@@ -348,10 +348,10 @@ protected:
   RunConsole(JSContext* aCx, nsPIDOMWindow* aOuterWindow,
              nsPIDOMWindow* aInnerWindow) = 0;
 
-  virtual JSObject* ReadCallback(JSContext* aCx,
-                                 JSStructuredCloneReader* aReader,
-                                 uint32_t aTag,
-                                 uint32_t aIndex) override
+  virtual JSObject* CustomReadHandler(JSContext* aCx,
+                                      JSStructuredCloneReader* aReader,
+                                      uint32_t aTag,
+                                      uint32_t aIndex) override
   {
     AssertIsOnMainThread();
 
@@ -360,7 +360,7 @@ protected:
 
       JS::Rooted<JS::Value> val(aCx);
       {
-        nsRefPtr<Blob> blob =
+        RefPtr<Blob> blob =
           Blob::Create(mClonedData.mParent, mClonedData.mBlobs.ElementAt(aIndex));
         if (!ToJSValue(aCx, blob, &val)) {
           return nullptr;
@@ -374,11 +374,11 @@ protected:
     return nullptr;
   }
 
-  virtual bool WriteCallback(JSContext* aCx,
-                             JSStructuredCloneWriter* aWriter,
-                             JS::Handle<JSObject*> aObj) override
+  virtual bool CustomWriteHandler(JSContext* aCx,
+                                  JSStructuredCloneWriter* aWriter,
+                                  JS::Handle<JSObject*> aObj) override
   {
-    nsRefPtr<Blob> blob;
+    RefPtr<Blob> blob;
     if (NS_SUCCEEDED(UNWRAP_OBJECT(Blob, aObj, blob)) &&
         blob->Impl()->MayBeClonedToOtherThreads()) {
       if (!JS_WriteUint32Pair(aWriter, CONSOLE_TAG_BLOB,
@@ -406,7 +406,7 @@ protected:
   WorkerPrivate* mWorkerPrivate;
 
   // This must be released on the worker thread.
-  nsRefPtr<Console> mConsole;
+  RefPtr<Console> mConsole;
 
   ConsoleStructuredCloneData mClonedData;
 };
@@ -428,7 +428,7 @@ private:
     class ReleaseCallData final : public nsRunnable
     {
     public:
-      explicit ReleaseCallData(nsRefPtr<ConsoleCallData>& aCallData)
+      explicit ReleaseCallData(RefPtr<ConsoleCallData>& aCallData)
       {
         mCallData.swap(aCallData);
       }
@@ -440,10 +440,10 @@ private:
       }
 
     private:
-      nsRefPtr<ConsoleCallData> mCallData;
+      RefPtr<ConsoleCallData> mCallData;
     };
 
-    nsRefPtr<ReleaseCallData> runnable = new ReleaseCallData(mCallData);
+    RefPtr<ReleaseCallData> runnable = new ReleaseCallData(mCallData);
     if(NS_FAILED(NS_DispatchToMainThread(runnable))) {
       NS_WARNING("Failed to dispatch a ReleaseCallData runnable. Leaking.");
     }
@@ -532,7 +532,6 @@ private:
 
     MOZ_ASSERT(argumentsValue.isObject());
     JS::Rooted<JSObject*> argumentsObj(aCx, &argumentsValue.toObject());
-    MOZ_ASSERT(JS_IsArrayObject(aCx, argumentsObj));
 
     uint32_t length;
     if (!JS_GetArrayLength(aCx, argumentsObj, &length)) {
@@ -555,7 +554,7 @@ private:
     mConsole->ProcessCallData(mCallData);
   }
 
-  nsRefPtr<ConsoleCallData> mCallData;
+  RefPtr<ConsoleCallData> mCallData;
 };
 
 // This runnable calls ProfileMethod() on the console on the main-thread.
@@ -627,7 +626,6 @@ private:
 
     MOZ_ASSERT(argumentsValue.isObject());
     JS::Rooted<JSObject*> argumentsObj(aCx, &argumentsValue.toObject());
-    MOZ_ASSERT(JS_IsArrayObject(aCx, argumentsObj));
 
     uint32_t length;
     if (!JS_GetArrayLength(aCx, argumentsObj, &length)) {
@@ -825,23 +823,6 @@ Console::TimeStamp(JSContext* aCx, const JS::Handle<JS::Value> aData)
     return;
   }
 
-#ifdef MOZ_ENABLE_PROFILER_SPS
-  if (aData.isString() && NS_IsMainThread()) {
-    if (!mProfiler) {
-      mProfiler = do_GetService("@mozilla.org/tools/profiler;1");
-    }
-    if (mProfiler) {
-      bool active = false;
-      if (NS_SUCCEEDED(mProfiler->IsActive(&active)) && active) {
-        nsAutoJSString stringValue;
-        if (stringValue.init(aCx, aData)) {
-          mProfiler->AddMarker(NS_ConvertUTF16toUTF8(stringValue).get());
-        }
-      }
-    }
-  }
-#endif
-
   Method(aCx, MethodTimeStamp, NS_LITERAL_STRING("timeStamp"), data);
 }
 
@@ -863,7 +844,7 @@ Console::ProfileMethod(JSContext* aCx, const nsAString& aAction,
 {
   if (!NS_IsMainThread()) {
     // Here we are in a worker thread.
-    nsRefPtr<ConsoleProfileRunnable> runnable =
+    RefPtr<ConsoleProfileRunnable> runnable =
       new ConsoleProfileRunnable(this, aAction, aData);
     runnable->Dispatch();
     return;
@@ -985,66 +966,13 @@ ReifyStack(nsIStackFrame* aStack, nsTArray<ConsoleStackEntry>& aRefiedStack)
   return NS_OK;
 }
 
-class ConsoleTimelineMarker : public TimelineMarker
-{
-public:
-  ConsoleTimelineMarker(nsDocShell* aDocShell,
-                        TracingMetadata aMetaData,
-                        const nsAString& aCause)
-    : TimelineMarker(aDocShell, "ConsoleTime", aMetaData, aCause)
-  {
-    if (aMetaData == TRACING_INTERVAL_END) {
-      CaptureStack();
-    }
-  }
-
-  virtual bool Equals(const TimelineMarker& aOther) override
-  {
-    if (!TimelineMarker::Equals(aOther)) {
-      return false;
-    }
-    // Console markers must have matching causes as well.
-    return GetCause() == aOther.GetCause();
-  }
-
-  virtual void AddDetails(JSContext* aCx,
-                          mozilla::dom::ProfileTimelineMarker& aMarker) override
-  {
-    if (GetMetaData() == TRACING_INTERVAL_START) {
-      aMarker.mCauseName.Construct(GetCause());
-    } else {
-      aMarker.mEndStack = GetStack();
-    }
-  }
-};
-
-class TimestampTimelineMarker : public TimelineMarker
-{
-public:
-  TimestampTimelineMarker(nsDocShell* aDocShell,
-                          TracingMetadata aMetaData,
-                          const nsAString& aCause)
-    : TimelineMarker(aDocShell, "TimeStamp", aMetaData, aCause)
-  {
-    MOZ_ASSERT(aMetaData == TRACING_TIMESTAMP);
-  }
-
-  virtual void AddDetails(JSContext* aCx,
-                          mozilla::dom::ProfileTimelineMarker& aMarker) override
-  {
-    if (!GetCause().IsEmpty()) {
-      aMarker.mCauseName.Construct(GetCause());
-    }
-  }
-};
-
 // Queue a call to a console method. See the CALL_DELAY constant.
 void
 Console::Method(JSContext* aCx, MethodName aMethodName,
                 const nsAString& aMethodString,
                 const Sequence<JS::Value>& aData)
 {
-  nsRefPtr<ConsoleCallData> callData(new ConsoleCallData());
+  RefPtr<ConsoleCallData> callData(new ConsoleCallData());
 
   ClearException ce(aCx);
 
@@ -1119,7 +1047,7 @@ Console::Method(JSContext* aCx, MethodName aMethodName,
       nsGlobalWindow *win = static_cast<nsGlobalWindow*>(mWindow.get());
       MOZ_ASSERT(win);
 
-      nsRefPtr<nsPerformance> performance = win->GetPerformance();
+      RefPtr<nsPerformance> performance = win->GetPerformance();
       if (!performance) {
         return;
       }
@@ -1144,8 +1072,7 @@ Console::Method(JSContext* aCx, MethodName aMethodName,
           key.init(aCx, jsString);
         }
 
-        mozilla::UniquePtr<TimelineMarker> marker =
-          MakeUnique<TimestampTimelineMarker>(docShell, TRACING_TIMESTAMP, key);
+        UniquePtr<TimelineMarker> marker = MakeUnique<TimestampTimelineMarker>(key);
         TimelineConsumers::AddMarkerForDocShell(docShell, Move(marker));
       }
       // For `console.time(foo)` and `console.timeEnd(foo)`
@@ -1155,10 +1082,9 @@ Console::Method(JSContext* aCx, MethodName aMethodName,
         if (jsString) {
           nsAutoJSString key;
           if (key.init(aCx, jsString)) {
-            mozilla::UniquePtr<TimelineMarker> marker =
-              MakeUnique<ConsoleTimelineMarker>(docShell,
-                                                aMethodName == MethodTime ? TRACING_INTERVAL_START : TRACING_INTERVAL_END,
-                                                key);
+            UniquePtr<TimelineMarker> marker = MakeUnique<ConsoleTimelineMarker>(
+              key, aMethodName == MethodTime ? MarkerTracingType::START
+                                             : MarkerTracingType::END);
             TimelineConsumers::AddMarkerForDocShell(docShell, Move(marker));
           }
         }
@@ -1181,7 +1107,7 @@ Console::Method(JSContext* aCx, MethodName aMethodName,
     return;
   }
 
-  nsRefPtr<ConsoleCallDataRunnable> runnable =
+  RefPtr<ConsoleCallDataRunnable> runnable =
     new ConsoleCallDataRunnable(this, callData);
   runnable->Dispatch();
 }
@@ -1263,6 +1189,19 @@ Console::ProcessCallData(ConsoleCallData* aData)
 
   event.mLevel = aData->mMethodString;
   event.mFilename = frame.mFilename;
+
+  nsCOMPtr<nsIURI> filenameURI;
+  nsAutoCString pass;
+  if (NS_SUCCEEDED(NS_NewURI(getter_AddRefs(filenameURI), frame.mFilename)) &&
+      NS_SUCCEEDED(filenameURI->GetPassword(pass)) && !pass.IsEmpty()) {
+    nsCOMPtr<nsISensitiveInfoHiddenURI> safeURI = do_QueryInterface(filenameURI);
+    nsAutoCString spec;
+    if (safeURI &&
+        NS_SUCCEEDED(safeURI->GetSensitiveInfoHiddenSpec(spec))) {
+      CopyUTF8toUTF16(spec, event.mFilename);
+    }
+  }
+
   event.mLineNumber = frame.mLineNumber;
   event.mColumnNumber = frame.mColumnNumber;
   event.mFunctionName = frame.mFunctionName;
@@ -1560,6 +1499,12 @@ Console::ProcessArguments(JSContext* aCx,
 
       case 'c':
       {
+        // If there isn't any output but there's already a style, then
+        // discard the previous style and use the next one instead.
+        if (output.IsEmpty() && !aStyles.IsEmpty()) {
+          aStyles.TruncateLength(aStyles.Length() - 1);
+        }
+
         if (!FlushOutput(aCx, aSequence, output)) {
           return false;
         }

@@ -71,26 +71,19 @@ public:
                   MediaDataDecoderCallback* aCallback,
                   layers::ImageContainer* aImageContainer);
   virtual ~AppleVDADecoder();
-  virtual nsRefPtr<InitPromise> Init() override;
-  virtual nsresult Input(MediaRawData* aSample) override;
-  virtual nsresult Flush() override;
-  virtual nsresult Drain() override;
-  virtual nsresult Shutdown() override;
-  virtual bool IsHardwareAccelerated() const override
+  RefPtr<InitPromise> Init() override;
+  nsresult Input(MediaRawData* aSample) override;
+  nsresult Flush() override;
+  nsresult Drain() override;
+  nsresult Shutdown() override;
+  bool IsHardwareAccelerated(nsACString& aFailureReason) const override
   {
     return true;
   }
 
-  void DispatchOutputTask(already_AddRefed<nsIRunnable> aTask)
-  {
-    nsCOMPtr<nsIRunnable> task = aTask;
-    if (mIsShutDown || mIsFlushing) {
-      return;
-    }
-    mTaskQueue->Dispatch(task.forget());
-  }
-
-  nsresult OutputFrame(CFRefPtr<CVPixelBufferRef> aImage,
+  // Access from the taskqueue and the decoder's thread.
+  // OutputFrame is thread-safe.
+  nsresult OutputFrame(CVPixelBufferRef aImage,
                        AppleFrameRef aFrameRef);
 
 protected:
@@ -104,30 +97,37 @@ protected:
   void ClearReorderedFrames();
   CFDictionaryRef CreateOutputConfiguration();
 
-  nsRefPtr<MediaByteBuffer> mExtraData;
-  nsRefPtr<FlushableTaskQueue> mTaskQueue;
+  RefPtr<MediaByteBuffer> mExtraData;
+  RefPtr<FlushableTaskQueue> mTaskQueue;
   MediaDataDecoderCallback* mCallback;
-  nsRefPtr<layers::ImageContainer> mImageContainer;
-  ReorderQueue mReorderQueue;
+  RefPtr<layers::ImageContainer> mImageContainer;
   uint32_t mPictureWidth;
   uint32_t mPictureHeight;
   uint32_t mDisplayWidth;
   uint32_t mDisplayHeight;
+  // Accessed on multiple threads, but only set in constructor.
   uint32_t mMaxRefFrames;
   // Increased when Input is called, and decreased when ProcessFrame runs.
   // Reaching 0 indicates that there's no pending Input.
   Atomic<uint32_t> mInputIncoming;
   Atomic<bool> mIsShutDown;
 
-  bool mUseSoftwareImages;
-  bool mIs106;
+  const bool mUseSoftwareImages;
+  const bool mIs106;
+
+  // Number of times a sample was queued via Input(). Will be decreased upon
+  // the decoder's callback being invoked.
+  // This is used to calculate how many frames has been buffered by the decoder.
+  Atomic<uint32_t> mQueuedSamples;
 
   // For wait on mIsFlushing during Shutdown() process.
+  // Protects mReorderQueue.
   Monitor mMonitor;
   // Set on reader/decode thread calling Flush() to indicate that output is
   // not required and so input samples on mTaskQueue need not be processed.
   // Cleared on mTaskQueue in ProcessDrain().
   Atomic<bool> mIsFlushing;
+  ReorderQueue mReorderQueue;
 
 private:
   VDADecoder mDecoder;

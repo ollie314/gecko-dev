@@ -6,16 +6,16 @@
 
 #include "VorbisDecoder.h"
 #include "VorbisUtils.h"
+#include "XiphExtradata.h"
 
 #include "mozilla/PodOperations.h"
 #include "nsAutoPtr.h"
 
 #undef LOG
-#define LOG(type, msg) MOZ_LOG(gMediaDecoderLog, type, msg)
+extern PRLogModuleInfo* GetPDMLog();
+#define LOG(type, msg) MOZ_LOG(GetPDMLog(), type, msg)
 
 namespace mozilla {
-
-extern PRLogModuleInfo* gMediaDecoderLog;
 
 ogg_packet InitVorbisPacket(const unsigned char* aData, size_t aLength,
                          bool aBOS, bool aEOS,
@@ -63,7 +63,7 @@ VorbisDataDecoder::Shutdown()
   return NS_OK;
 }
 
-nsRefPtr<MediaDataDecoder::InitPromise>
+RefPtr<MediaDataDecoder::InitPromise>
 VorbisDataDecoder::Init()
 {
   vorbis_info_init(&mVorbisInfo);
@@ -71,23 +71,17 @@ VorbisDataDecoder::Init()
   PodZero(&mVorbisDsp);
   PodZero(&mVorbisBlock);
 
-  size_t available = mInfo.mCodecSpecificConfig->Length();
-  uint8_t *p = mInfo.mCodecSpecificConfig->Elements();
-  for(int i = 0; i < 3; i++) {
-    if (available < 2) {
+  nsAutoTArray<unsigned char*,4> headers;
+  nsAutoTArray<size_t,4> headerLens;
+  if (!XiphExtradataToHeaders(headers, headerLens,
+                              mInfo.mCodecSpecificConfig->Elements(),
+                              mInfo.mCodecSpecificConfig->Length())) {
+    return InitPromise::CreateAndReject(DecoderFailureReason::INIT_ERROR, __func__);
+  }
+  for (size_t i = 0; i < headers.Length(); i++) {
+    if (NS_FAILED(DecodeHeader(headers[i], headerLens[i]))) {
       return InitPromise::CreateAndReject(DecoderFailureReason::INIT_ERROR, __func__);
     }
-    available -= 2;
-    size_t length = BigEndian::readUint16(p);
-    p += 2;
-    if (available < length) {
-      return InitPromise::CreateAndReject(DecoderFailureReason::INIT_ERROR, __func__);
-    }
-    available -= length;
-    if (NS_FAILED(DecodeHeader((const unsigned char*)p, length))) {
-      return InitPromise::CreateAndReject(DecoderFailureReason::INIT_ERROR, __func__);
-    }
-    p += length;
   }
 
   MOZ_ASSERT(mPacketCount == 3);
@@ -131,9 +125,9 @@ nsresult
 VorbisDataDecoder::Input(MediaRawData* aSample)
 {
   nsCOMPtr<nsIRunnable> runnable(
-    NS_NewRunnableMethodWithArg<nsRefPtr<MediaRawData>>(
+    NS_NewRunnableMethodWithArg<RefPtr<MediaRawData>>(
       this, &VorbisDataDecoder::Decode,
-      nsRefPtr<MediaRawData>(aSample)));
+      RefPtr<MediaRawData>(aSample)));
   mTaskQueue->Dispatch(runnable.forget());
 
   return NS_OK;

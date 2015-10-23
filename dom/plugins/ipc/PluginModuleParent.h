@@ -97,10 +97,10 @@ protected:
     DeallocPPluginInstanceParent(PPluginInstanceParent* aActor) override;
 
 public:
-    explicit PluginModuleParent(bool aIsChrome);
+    explicit PluginModuleParent(bool aIsChrome, bool aAllowAsyncInit);
     virtual ~PluginModuleParent();
 
-    bool RemovePendingSurrogate(const nsRefPtr<PluginAsyncSurrogate>& aSurrogate);
+    bool RemovePendingSurrogate(const RefPtr<PluginAsyncSurrogate>& aSurrogate);
 
     /** @return the state of the pref that controls async plugin init */
     bool IsStartingAsync() const { return mIsStartingAsync; }
@@ -315,7 +315,7 @@ protected:
     nsString mPluginDumpID;
     nsString mBrowserDumpID;
     nsString mHangID;
-    nsRefPtr<nsIObserver> mProfilerObserver;
+    RefPtr<nsIObserver> mProfilerObserver;
     TimeDuration mTimeBlocked;
     nsCString mPluginName;
     nsCString mPluginVersion;
@@ -336,7 +336,7 @@ protected:
     bool              mIsStartingAsync;
     bool              mNPInitialized;
     bool              mIsNPShutdownPending;
-    nsTArray<nsRefPtr<PluginAsyncSurrogate>> mSurrogateInstances;
+    nsTArray<RefPtr<PluginAsyncSurrogate>> mSurrogateInstances;
     nsresult          mAsyncNewRv;
     uint32_t          mRunID;
 };
@@ -344,9 +344,9 @@ protected:
 class PluginModuleContentParent : public PluginModuleParent
 {
   public:
-    explicit PluginModuleContentParent();
+    explicit PluginModuleContentParent(bool aAllowAsyncInit);
 
-    static PluginLibrary* LoadModule(uint32_t aPluginId);
+    static PluginLibrary* LoadModule(uint32_t aPluginId, nsPluginTag* aPluginTag);
 
     static PluginModuleContentParent* Initialize(mozilla::ipc::Transport* aTransport,
                                                  base::ProcessId aOtherProcess);
@@ -497,7 +497,8 @@ private:
 
     // aFilePath is UTF8, not native!
     explicit PluginModuleChromeParent(const char* aFilePath, uint32_t aPluginId,
-                                      int32_t aSandboxLevel);
+                                      int32_t aSandboxLevel,
+                                      bool aAllowAsyncInit);
 
     CrashReporterParent* CrashReporter();
 
@@ -612,7 +613,7 @@ private:
     dom::ContentParent* mContentParent;
     nsCOMPtr<nsIObserver> mOfflineObserver;
 #ifdef MOZ_ENABLE_PROFILER_SPS
-    nsRefPtr<mozilla::ProfileGatherer> mGatherer;
+    RefPtr<mozilla::ProfileGatherer> mGatherer;
 #endif
     nsCString mProfile;
     bool mIsBlocklisted;

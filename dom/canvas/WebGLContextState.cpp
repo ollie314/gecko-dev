@@ -360,10 +360,16 @@ WebGLContext::GetParameter(JSContext* cx, GLenum pname, ErrorResult& rv)
         case LOCAL_GL_MAX_TEXTURE_IMAGE_UNITS:
         case LOCAL_GL_RED_BITS:
         case LOCAL_GL_GREEN_BITS:
-        case LOCAL_GL_BLUE_BITS:
-        case LOCAL_GL_DEPTH_BITS: {
+        case LOCAL_GL_BLUE_BITS: {
             GLint i = 0;
             gl->fGetIntegerv(pname, &i);
+            return JS::Int32Value(i);
+        }
+        case LOCAL_GL_DEPTH_BITS: {
+            GLint i = 0;
+            if (!mNeedsFakeNoDepth) {
+                gl->fGetIntegerv(pname, &i);
+            }
             return JS::Int32Value(i);
         }
         case LOCAL_GL_ALPHA_BITS: {
@@ -391,8 +397,6 @@ WebGLContext::GetParameter(JSContext* cx, GLenum pname, ErrorResult& rv)
         case LOCAL_GL_MAX_VARYING_VECTORS:
             return JS::Int32Value(mGLMaxVaryingVectors);
 
-        case LOCAL_GL_NUM_COMPRESSED_TEXTURE_FORMATS:
-            return JS::Int32Value(0);
         case LOCAL_GL_COMPRESSED_TEXTURE_FORMATS: {
             uint32_t length = mCompressedTextureFormats.Length();
             JSObject* obj = dom::Uint32Array::Create(cx, this, length,
@@ -624,6 +628,8 @@ realGLboolean*
 WebGLContext::GetStateTrackingSlot(GLenum cap)
 {
     switch (cap) {
+        case LOCAL_GL_DEPTH_TEST:
+            return &mDepthTestEnabled;
         case LOCAL_GL_DITHER:
             return &mDitherEnabled;
         case LOCAL_GL_RASTERIZER_DISCARD:

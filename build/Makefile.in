@@ -7,16 +7,12 @@ USE_RCS_MK := 1
 include $(topsrcdir)/config/makefiles/makeutils.mk
 
 ifdef MOZ_APP_BASENAME
-ifdef LIBXUL_SDK
-APP_INI_DEPS = $(LIBXUL_DIST)/bin/platform.ini
-else
 APP_INI_DEPS = $(topsrcdir)/config/milestone.txt
-endif
 
-APP_BUILDID := $(shell cat $(DEPTH)/config/buildid)
+MOZ_APP_BUILDID := $(shell cat $(DEPTH)/config/buildid)
 APP_INI_DEPS += $(DEPTH)/config/buildid
 
-DEFINES += -DAPP_BUILDID=$(APP_BUILDID)
+DEFINES += -DMOZ_APP_BUILDID=$(MOZ_APP_BUILDID)
 
 APP_INI_DEPS += $(DEPTH)/config/autoconf.mk
 
@@ -64,6 +60,9 @@ ifdef MOZTTDIR
 # Install the Firefox OS fonts.
 include $(MOZTTDIR)/fonts.mk
 MOZTT_DEST = $(FINAL_TARGET)/fonts
+ifdef MOZ_B2GDROID
+MOZTT_DEST = $(FINAL_TARGET)/res/fonts
+endif
 MOZTT_FILES = $(patsubst external/moztt/%,$(MOZTTDIR)/%,$(filter external/moztt/%,$(subst :, ,$(PRODUCT_COPY_FILES))))
 INSTALL_TARGETS += MOZTT
 endif

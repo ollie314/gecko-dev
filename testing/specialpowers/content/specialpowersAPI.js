@@ -607,7 +607,7 @@ SpecialPowersAPI.prototype = {
       // in order to properly log these assertions and notify
       // all usefull log observers
       let window = this.window.get();
-      let parentRunner, repr = function (o) o;
+      let parentRunner, repr = o => o;
       if (window) {
         window = window.wrappedJSObject;
         parentRunner = window.TestRunner;
@@ -2042,6 +2042,70 @@ SpecialPowersAPI.prototype = {
 
   removeServiceWorkerDataForExampleDomain: function() {
     this.notifyObserversInParentProcess(null, "browser:purge-domain-data", "example.com");
+  },
+
+  cleanUpSTSData: function(origin, flags) {
+    return this._sendSyncMessage('SPCleanUpSTSData', {origin: origin, flags: flags || 0});
+  },
+
+  loadExtension: function(ext, handler) {
+    let uuidGenerator = Cc["@mozilla.org/uuid-generator;1"].getService(Ci.nsIUUIDGenerator);
+    let id = uuidGenerator.generateUUID().number;
+
+    let resolveStartup, resolveUnload, rejectStartup;
+    let startupPromise = new Promise((resolve, reject) => {
+      resolveStartup = resolve;
+      rejectStartup = reject;
+    });
+    let unloadPromise = new Promise(resolve => { resolveUnload = resolve; });
+
+    handler = Cu.waiveXrays(handler);
+    ext = Cu.waiveXrays(ext);
+
+    let sp = this;
+    let extension = {
+      id,
+
+      startup() {
+        sp._sendAsyncMessage("SPStartupExtension", {id});
+        return startupPromise;
+      },
+
+      unload() {
+        sp._sendAsyncMessage("SPUnloadExtension", {id});
+        return unloadPromise;
+      },
+
+      sendMessage(...args) {
+        sp._sendAsyncMessage("SPExtensionMessage", {id, args});
+      },
+    };
+
+    this._sendAsyncMessage("SPLoadExtension", {ext, id});
+
+    let listener = (msg) => {
+      if (msg.data.id == id) {
+        if (msg.data.type == "extensionStarted") {
+          resolveStartup();
+        } else if (msg.data.type == "extensionFailed") {
+          rejectStartup("startup failed");
+        } else if (msg.data.type == "extensionUnloaded") {
+          this._removeMessageListener("SPExtensionMessage", listener);
+          resolveUnload();
+        } else if (msg.data.type in handler) {
+          handler[msg.data.type](...msg.data.args);
+        } else {
+          dump(`Unexpected: ${msg.data.type}\n`);
+        }
+      }
+    };
+
+    this._addMessageListener("SPExtensionMessage", listener);
+    return extension;
+  },
+
+  invalidateExtensionStorageCache: function() {
+    this.notifyObserversInParentProcess(null, "extension-invalidate-storage-cache", "");
   },
 };
 

@@ -33,9 +33,9 @@ Cu.import("resource://gre/modules/systemlibs.js");
 const NFC_ENABLED = libcutils.property_get("ro.moz.nfc.enabled", "false") === "true";
 
 // set to true to in nfc_consts.js to see debug messages
-let DEBUG = NFC.DEBUG_CONTENT_HELPER;
+var DEBUG = NFC.DEBUG_CONTENT_HELPER;
 
-let debug;
+var debug;
 function updateDebug() {
   if (DEBUG || NFC.DEBUG_CONTENT_HELPER) {
     debug = function (s) {
@@ -97,8 +97,8 @@ NfcContentHelper.prototype = {
     return cpmm.sendSyncMessage("NFC:QueryInfo")[0].rfState;
   },
 
-  setFocusApp: function setFocusApp(tabId, isFocus) {
-    cpmm.sendAsyncMessage("NFC:SetFocusApp", {
+  setFocusTab: function setFocusTab(tabId, isFocus) {
+    cpmm.sendAsyncMessage("NFC:SetFocusTab", {
       tabId: tabId,
       isFocus: isFocus
     });

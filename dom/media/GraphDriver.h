@@ -13,7 +13,6 @@
 #include "AudioSegment.h"
 #include "SelfRef.h"
 #include "mozilla/Atomics.h"
-#include "AudioContext.h"
 
 struct cubeb_stream;
 
@@ -127,10 +126,6 @@ public:
     return mIterationEnd;
   }
 
-  GraphTime StateComputedTime() {
-    return mStateComputedTime;
-  }
-
   virtual void GetAudioBuffer(float** aBuffer, long& aFrames) {
     MOZ_CRASH("This is not an Audio GraphDriver!");
   }
@@ -155,15 +150,7 @@ public:
    */
   void SetGraphTime(GraphDriver* aPreviousDriver,
                     GraphTime aLastSwitchNextIterationStart,
-                    GraphTime aLastSwitchNextIterationEnd,
-                    GraphTime aLastSwitchStateComputedTime);
-
-  /**
-   * Whenever the graph has computed the time until it has all state
-   * (mStateComputedState), it calls this to indicate the new time until which
-   * we have computed state.
-   */
-  void UpdateStateComputedTime(GraphTime aStateComputedTime);
+                    GraphTime aLastSwitchNextIterationEnd);
 
   /**
    * Call this to indicate that another iteration of the control loop is
@@ -190,12 +177,12 @@ public:
   virtual bool OnThread() = 0;
 
 protected:
+  GraphTime StateComputedTime() const;
+
   // Time of the start of this graph iteration.
   GraphTime mIterationStart;
   // Time of the end of this graph iteration.
   GraphTime mIterationEnd;
-  // Time, in the future, for which blocking has been computed.
-  GraphTime mStateComputedTime;
   // The MediaStreamGraphImpl that owns this driver. This has a lifetime longer
   // than the driver, and will never be null.
   MediaStreamGraphImpl* mGraphImpl;
@@ -219,10 +206,10 @@ protected:
   // This is non-null only when this driver has recently switched from an other
   // driver, and has not cleaned it up yet (for example because the audio stream
   // is currently calling the callback during initialization).
-  nsRefPtr<GraphDriver> mPreviousDriver;
+  RefPtr<GraphDriver> mPreviousDriver;
   // This is non-null only when this driver is going to switch to an other
   // driver at the end of this iteration.
-  nsRefPtr<GraphDriver> mNextDriver;
+  RefPtr<GraphDriver> mNextDriver;
   virtual ~GraphDriver()
   { }
 };
@@ -308,7 +295,7 @@ struct StreamAndPromiseForOperation
   StreamAndPromiseForOperation(MediaStream* aStream,
                                void* aPromise,
                                dom::AudioContextOperation aOperation);
-  nsRefPtr<MediaStream> mStream;
+  RefPtr<MediaStream> mStream;
   void* mPromise;
   dom::AudioContextOperation mOperation;
 };
@@ -521,9 +508,9 @@ protected:
 private:
   NS_IMETHOD Run() override final;
   nsCOMPtr<nsIThread> mThread;
-  nsRefPtr<AudioCallbackDriver> mDriver;
+  RefPtr<AudioCallbackDriver> mDriver;
   AsyncCubebOperation mOperation;
-  nsRefPtr<MediaStreamGraphImpl> mShutdownGrip;
+  RefPtr<MediaStreamGraphImpl> mShutdownGrip;
 };
 
 } // namespace mozilla

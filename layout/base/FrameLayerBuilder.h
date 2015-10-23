@@ -282,14 +282,14 @@ public:
    * must be the nsDisplayListBuilder containing this FrameLayerBuilder.
    * This function can be called multiple times in a row to draw
    * different regions. This will occur when, for example, progressive paint is
-   * enabled. In these cases aDirtyRegion can optionally be used to specify the
-   * total region that will be drawn during the transaction, possibly allowing
-   * the callback to make optimizations.
+   * enabled. In these cases aDirtyRegion can be used to specify a larger region
+   * than aRegionToDraw that will be drawn during the transaction, possibly
+   * allowing the callback to make optimizations.
    */
   static void DrawPaintedLayer(PaintedLayer* aLayer,
                               gfxContext* aContext,
                               const nsIntRegion& aRegionToDraw,
-                              const nsIntRegion* aDirtyRegion,
+                              const nsIntRegion& aDirtyRegion,
                               mozilla::layers::DrawRegionClip aClip,
                               const nsIntRegion& aRegionToInvalidate,
                               void* aCallbackData);
@@ -443,6 +443,7 @@ public:
     Layer* GetLayer() { return mLayer; }
     nsDisplayItemGeometry* GetGeometry() const { return mGeometry.get(); }
     void Invalidate() { mIsInvalid = true; }
+    void ClearAnimationCompositorState();
 
   private:
     DisplayItemData(LayerManagerData* aParent,
@@ -491,9 +492,9 @@ public:
     void EndUpdate();
 
     LayerManagerData* mParent;
-    nsRefPtr<Layer> mLayer;
-    nsRefPtr<Layer> mOptLayer;
-    nsRefPtr<BasicLayerManager> mInactiveManager;
+    RefPtr<Layer> mLayer;
+    RefPtr<Layer> mOptLayer;
+    RefPtr<BasicLayerManager> mInactiveManager;
     nsAutoTArray<nsIFrame*, 1> mFrameList;
     nsAutoPtr<nsDisplayItemGeometry> mGeometry;
     DisplayItemClip mClip;
@@ -591,7 +592,7 @@ protected:
      * layer, then this stores the layer manager being
      * used for the inactive transaction.
      */
-    nsRefPtr<LayerManager> mInactiveLayerManager;
+    RefPtr<LayerManager> mInactiveLayerManager;
 
     uint32_t mContainerLayerGeneration;
 
@@ -698,7 +699,7 @@ protected:
   /**
    * The root prescontext for the display list builder reference frame
    */
-  nsRefPtr<nsRootPresContext>         mRootPresContext;
+  RefPtr<nsRootPresContext>         mRootPresContext;
 
   /**
    * The display list builder being used.

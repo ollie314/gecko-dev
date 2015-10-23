@@ -109,6 +109,25 @@ def ensureParentDir(path):
                 raise
 
 
+def readFileContent(name, mode):
+    """Read the content of file, returns tuple (file existed, file content)"""
+    existed = False
+    old_content = None
+    try:
+        existing = open(name, mode)
+        existed = True
+    except IOError:
+        pass
+    else:
+        try:
+            old_content = existing.read()
+        except IOError:
+            pass
+        finally:
+            existing.close()
+    return existed, old_content
+
+
 class FileAvoidWrite(BytesIO):
     """File-like object that buffers output and only writes if content changed.
 
@@ -127,6 +146,7 @@ class FileAvoidWrite(BytesIO):
         self._capture_diff = capture_diff
         self.diff = None
         self.mode = mode
+        self.force_update = False
 
     def write(self, buf):
         if isinstance(buf, unicode):
@@ -146,23 +166,11 @@ class FileAvoidWrite(BytesIO):
         """
         buf = self.getvalue()
         BytesIO.close(self)
-        existed = False
-        old_content = None
 
-        try:
-            existing = open(self.name, self.mode)
-            existed = True
-        except IOError:
-            pass
-        else:
-            try:
-                old_content = existing.read()
-                if old_content == buf:
-                    return True, False
-            except IOError:
-                pass
-            finally:
-                existing.close()
+        existed, old_content = readFileContent(self.name, self.mode)
+        if not self.force_update and old_content == buf:
+            assert existed
+            return existed, False
 
         ensureParentDir(self.name)
         with open(self.name, 'w') as file:
@@ -714,40 +722,6 @@ def lock_file(lockfile, max_wait = 600):
     f.close()
 
     return LockFile(lockfile)
-
-
-class PushbackIter(object):
-    '''Utility iterator that can deal with pushed back elements.
-
-    This behaves like a regular iterable, just that you can call
-    iter.pushback(item) to get the given item as next item in the
-    iteration.
-    '''
-    def __init__(self, iterable):
-        self.it = iter(iterable)
-        self.pushed_back = []
-
-    def __iter__(self):
-        return self
-
-    def __nonzero__(self):
-        if self.pushed_back:
-            return True
-
-        try:
-            self.pushed_back.insert(0, self.it.next())
-        except StopIteration:
-            return False
-        else:
-            return True
-
-    def next(self):
-        if self.pushed_back:
-            return self.pushed_back.pop()
-        return self.it.next()
-
-    def pushback(self, item):
-        self.pushed_back.append(item)
 
 
 def shell_quote(s):

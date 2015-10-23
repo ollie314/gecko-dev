@@ -34,20 +34,21 @@ public class CodeGenerator {
         this.cls = annotatedClass.wrappedClass;
         this.clsName = annotatedClass.generatedName;
 
+        final String unqualifiedName = Utils.getUnqualifiedName(clsName);
         header.append(
-                "class " + clsName + " : public mozilla::jni::Class<" + clsName + ">\n" +
+                "class " + clsName + " : public mozilla::jni::Class<" + unqualifiedName + ">\n" +
                 "{\n" +
                 "public:\n" +
-                "    typedef mozilla::jni::Ref<" + clsName + "> Ref;\n" +
-                "    typedef mozilla::jni::LocalRef<" + clsName + "> LocalRef;\n" +
-                "    typedef mozilla::jni::GlobalRef<" + clsName + "> GlobalRef;\n" +
-                "    typedef const mozilla::jni::Param<" + clsName + ">& Param;\n" +
+                "    typedef mozilla::jni::Ref<" + unqualifiedName + "> Ref;\n" +
+                "    typedef mozilla::jni::LocalRef<" + unqualifiedName + "> LocalRef;\n" +
+                "    typedef mozilla::jni::GlobalRef<" + unqualifiedName + "> GlobalRef;\n" +
+                "    typedef const mozilla::jni::Param<" + unqualifiedName + ">& Param;\n" +
                 "\n" +
                 "    static constexpr char name[] =\n" +
                 "            \"" + cls.getName().replace('.', '/') + "\";\n" +
                 "\n" +
                 "protected:\n" +
-                "    " + clsName + "(jobject instance) : Class(instance) {}\n" +
+                "    " + unqualifiedName + "(jobject instance) : Class(instance) {}\n" +
                 "\n");
 
         cpp.append(
@@ -57,7 +58,7 @@ public class CodeGenerator {
         natives.append(
                 "template<class Impl>\n" +
                 "class " + clsName + "::Natives : " +
-                        "public mozilla::jni::NativeImpl<" + clsName + ", Impl>\n" +
+                        "public mozilla::jni::NativeImpl<" + unqualifiedName + ", Impl>\n" +
                 "{\n");
     }
 
@@ -65,16 +66,38 @@ public class CodeGenerator {
         return (includeScope ? clsName + "::" : "") + uniqueName + "_t";
     }
 
+    /**
+     * Return the C++ type name for this class or any class within the chain
+     * of declaring classes, if the target class matches the given type.
+     *
+     * Return null if the given type does not match any class searched.
+     */
+    private String getMatchingClassType(final Class<?> type) {
+        Class<?> cls = this.cls;
+        String clsName = this.clsName;
+
+        while (cls != null) {
+            if (type.equals(cls)) {
+                return clsName;
+            }
+            cls = cls.getDeclaringClass();
+            clsName = clsName.substring(0, Math.max(0, clsName.lastIndexOf("::")));
+        }
+        return null;
+    }
+
     private String getNativeParameterType(Class<?> type, AnnotationInfo info) {
-        if (type == cls) {
-            return clsName + "::Param";
+        final String clsName = getMatchingClassType(type);
+        if (clsName != null) {
+            return Utils.getUnqualifiedName(clsName) + "::Param";
         }
         return Utils.getNativeParameterType(type, info);
     }
 
     private String getNativeReturnType(Class<?> type, AnnotationInfo info) {
-        if (type == cls) {
-            return clsName + "::LocalRef";
+        final String clsName = getMatchingClassType(type);
+        if (clsName != null) {
+            return Utils.getUnqualifiedName(clsName) + "::LocalRef";
         }
         return Utils.getNativeReturnType(type, info);
     }
@@ -92,7 +115,7 @@ public class CodeGenerator {
         header.append(
                 "public:\n" +
                 "    struct " + getTraitsName(uniqueName, /* includeScope */ false) + " {\n" +
-                "        typedef " + clsName + " Owner;\n" +
+                "        typedef " + Utils.getUnqualifiedName(clsName) + " Owner;\n" +
                 "        typedef " + getNativeReturnType(type, info) + " ReturnType;\n" +
                 "        typedef " + getNativeParameterType(type, info) + " SetterType;\n" +
                 "        typedef mozilla::jni::Args<" + args + "> Args;\n" +
@@ -136,16 +159,13 @@ public class CodeGenerator {
      */
     private String generatePrototype(String name, Class<?>[] argTypes,
                                      Class<?> returnType, AnnotationInfo info,
-                                     boolean includeScope, boolean includeArgName) {
+                                     boolean includeScope, boolean includeArgName,
+                                     boolean isConst) {
 
         final StringBuilder proto = new StringBuilder();
         int argIndex = 0;
 
-        if (info.catchException) {
-            proto.append("nsresult ");
-        } else {
-            proto.append(getNativeReturnType(returnType, info)).append(' ');
-        }
+        proto.append("auto ");
 
         if (includeScope) {
             proto.append(clsName).append("::");
@@ -161,7 +181,7 @@ public class CodeGenerator {
             proto.append(", ");
         }
 
-        if (info.catchException && returnType != void.class) {
+        if (info.catchException && !returnType.equals(void.class)) {
             proto.append(getNativeReturnType(returnType, info)).append('*');
             if (includeArgName) {
                 proto.append(" a").append(argIndex++);
@@ -173,7 +193,18 @@ public class CodeGenerator {
             proto.setLength(proto.length() - 2);
         }
 
-        return proto.append(')').toString();
+        proto.append(')');
+
+        if (isConst) {
+            proto.append(" const");
+        }
+
+        if (info.catchException) {
+            proto.append(" -> nsresult");
+        } else {
+            proto.append(" -> ").append(getNativeReturnType(returnType, info));
+        }
+        return proto.toString();
     }
 
     /**
@@ -186,8 +217,8 @@ public class CodeGenerator {
 
         return (isStatic ? "static " : "") +
             generatePrototype(name, argTypes, returnType, info,
-                              /* includeScope */ false, /* includeArgName */ false) +
-            (isStatic ? ";" : " const;");
+                              /* includeScope */ false, /* includeArgName */ false,
+                              /* isConst */ !isStatic) + ';';
     }
 
     /**
@@ -199,11 +230,8 @@ public class CodeGenerator {
 
         final StringBuilder def = new StringBuilder(
                 generatePrototype(name, argTypes, returnType, info,
-                                  /* includeScope */ true, /* includeArgName */ true));
-
-        if (!isStatic) {
-            def.append(" const");
-        }
+                                  /* includeScope */ true, /* includeArgName */ true,
+                                  /* isConst */ !isStatic));
         def.append("\n{\n");
 
 
@@ -211,7 +239,7 @@ public class CodeGenerator {
         // We initialize rv to NS_OK instead of NS_ERROR_* because loading NS_OK (0) uses
         // fewer instructions. We are guaranteed to set rv to the correct value later.
 
-        if (info.catchException && returnType == void.class) {
+        if (info.catchException && returnType.equals(void.class)) {
             def.append(
                     "    nsresult rv = NS_OK;\n" +
                     "    ");
@@ -322,14 +350,14 @@ public class CodeGenerator {
     private String getLiteral(Object val, AnnotationInfo info) {
         final Class<?> type = val.getClass();
 
-        if (type == char.class || type == Character.class) {
+        if (type.equals(char.class) || type.equals(Character.class)) {
             final char c = (char) val;
             if (c >= 0x20 && c < 0x7F) {
                 return "'" + c + '\'';
             }
             return "u'\\u" + Integer.toHexString(0x10000 | (int) c).substring(1) + '\'';
 
-        } else if (type == CharSequence.class || type == String.class) {
+        } else if (type.equals(CharSequence.class) || type.equals(String.class)) {
             final CharSequence str = (CharSequence) val;
             final StringBuilder out = new StringBuilder(info.narrowChars ? "u8\"" : "u\"");
             for (int i = 0; i < str.length(); i++) {
@@ -361,9 +389,10 @@ public class CodeGenerator {
         final boolean isStatic = Utils.isStatic(field);
         final boolean isFinal = Utils.isFinal(field);
 
-        if (isStatic && isFinal && (type.isPrimitive() || type == String.class)) {
+        if (isStatic && isFinal && (type.isPrimitive() || type.equals(String.class))) {
             Object val = null;
             try {
+                field.setAccessible(true);
                 val = field.get(null);
             } catch (final IllegalAccessException e) {
             }
@@ -377,7 +406,7 @@ public class CodeGenerator {
                     "\n");
                 return;
 
-            } else if (val != null && type == String.class) {
+            } else if (val != null && type.equals(String.class)) {
                 final String nativeType = info.narrowChars ? "char" : "char16_t";
 
                 header.append(
@@ -483,6 +512,21 @@ public class CodeGenerator {
                         "expected member to be Constructor, Method, or Field");
             }
         }
+    }
+
+    public void generateClasses(final ClassWithOptions[] classes) {
+        if (classes.length == 0) {
+            return;
+        }
+
+        header.append(
+                "public:\n");
+        for (final ClassWithOptions cls : classes) {
+            // Extract "Inner" from "Outer::Inner".
+            header.append(
+                    "    class " + Utils.getUnqualifiedName(cls.generatedName) + ";\n");
+        }
+        header.append('\n');
     }
 
     /**

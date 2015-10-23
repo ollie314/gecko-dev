@@ -12,7 +12,6 @@
 #include "prlink.h"
 #include "prclist.h"
 #include "nsIPluginTag.h"
-#include "nsPluginPlayPreviewInfo.h"
 #include "nsPluginsDir.h"
 #include "nsPluginDirServiceProvider.h"
 #include "nsAutoPtr.h"
@@ -69,8 +68,8 @@ public:
   int64_t     mLastModifiedTime;
   bool        mSeen;
 
-  nsRefPtr<nsInvalidPluginTag> mPrev;
-  nsRefPtr<nsInvalidPluginTag> mNext;
+  RefPtr<nsInvalidPluginTag> mPrev;
+  RefPtr<nsInvalidPluginTag> mNext;
 };
 
 class nsPluginHost final : public nsIPluginHost,
@@ -192,6 +191,8 @@ public:
 
   // checks whether aType is a type we recognize for potential special handling
   enum SpecialType { eSpecialType_None,
+                     // Needed to whitelist for async init support
+                     eSpecialType_Test,
                      // Informs some decisions about OOP and quirks
                      eSpecialType_Flash,
                      // Binds to the <applet> tag, has various special
@@ -217,7 +218,7 @@ public:
   nsNPAPIPluginInstance *FindOldestStoppedInstance();
   uint32_t StoppedInstanceCount();
 
-  nsTArray< nsRefPtr<nsNPAPIPluginInstance> > *InstanceArray();
+  nsTArray< RefPtr<nsNPAPIPluginInstance> > *InstanceArray();
 
   // Return the tag for |aLibrary| if found, nullptr if not.
   nsPluginTag* FindTagForLibrary(PRLibrary* aLibrary);
@@ -366,12 +367,11 @@ private:
   // centralizes loading rules.
   bool ShouldAddPlugin(nsPluginTag* aPluginTag);
 
-  nsRefPtr<nsPluginTag> mPlugins;
-  nsRefPtr<nsPluginTag> mCachedPlugins;
-  nsRefPtr<nsInvalidPluginTag> mInvalidPlugins;
-  nsTArray< nsRefPtr<nsPluginPlayPreviewInfo> > mPlayPreviewMimeTypes;
+  RefPtr<nsPluginTag> mPlugins;
+  RefPtr<nsPluginTag> mCachedPlugins;
+  RefPtr<nsInvalidPluginTag> mInvalidPlugins;
 
-  nsTArray< nsRefPtr<nsFakePluginTag> > mFakePlugins;
+  nsTArray< RefPtr<nsFakePluginTag> > mFakePlugins;
 
   bool mPluginsLoaded;
 
@@ -385,11 +385,11 @@ private:
 
   // Any instances in this array will have valid plugin objects via GetPlugin().
   // When removing an instance it might not die - be sure to null out it's plugin.
-  nsTArray< nsRefPtr<nsNPAPIPluginInstance> > mInstances;
+  nsTArray< RefPtr<nsNPAPIPluginInstance> > mInstances;
 
   nsCOMPtr<nsIFile> mPluginRegFile;
 #ifdef XP_WIN
-  nsRefPtr<nsPluginDirServiceProvider> mPrivateDirServiceProvider;
+  RefPtr<nsPluginDirServiceProvider> mPrivateDirServiceProvider;
 
   // In order to reload plugins when they change, we watch the registry via
   // this object.
@@ -452,7 +452,7 @@ protected:
     PR_INSERT_AFTER(this, &sListHead);
   }
 
-  nsRefPtr<nsNPAPIPluginInstance> mInstance;
+  RefPtr<nsNPAPIPluginInstance> mInstance;
   bool mDelayedDestroy;
 
   static PRCList sListHead;

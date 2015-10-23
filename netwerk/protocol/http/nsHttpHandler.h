@@ -65,10 +65,10 @@ public:
     nsHttpHandler();
 
     nsresult Init();
-    nsresult AddStandardRequestHeaders(nsHttpHeaderArray *);
+    nsresult AddStandardRequestHeaders(nsHttpHeaderArray *, bool isSecure);
     nsresult AddConnectionHeader(nsHttpHeaderArray *,
                                  uint32_t capabilities);
-    bool     IsAcceptableEncoding(const char *encoding);
+    bool     IsAcceptableEncoding(const char *encoding, bool isSecure);
 
     const nsAFlatCString &UserAgent();
 
@@ -111,6 +111,7 @@ public:
     uint32_t       SpdySendingChunkSize() { return mSpdySendingChunkSize; }
     uint32_t       SpdySendBufferSize()      { return mSpdySendBufferSize; }
     uint32_t       SpdyPushAllowance()       { return mSpdyPushAllowance; }
+    uint32_t       SpdyPullAllowance()       { return mSpdyPullAllowance; }
     uint32_t       DefaultSpdyConcurrent()   { return mDefaultSpdyConcurrent; }
     PRIntervalTime SpdyPingThreshold() { return mSpdyPingThreshold; }
     PRIntervalTime SpdyPingTimeout() { return mSpdyPingTimeout; }
@@ -167,7 +168,6 @@ public:
     nsHttpConnectionMgr *ConnMgr()   { return mConnMgr; }
 
     // cache support
-    bool UseCache() const { return mUseCache; }
     uint32_t GenerateUniqueID() { return ++mLastUniqueID; }
     uint32_t SessionStartTime() { return mSessionStartTime; }
 
@@ -354,7 +354,7 @@ private:
 
     nsresult SetAccept(const char *);
     nsresult SetAcceptLanguages(const char *);
-    nsresult SetAcceptEncodings(const char *);
+    nsresult SetAcceptEncodings(const char *, bool mIsSecure);
 
     nsresult InitConnectionMgr();
 
@@ -431,7 +431,8 @@ private:
 
     nsCString mAccept;
     nsCString mAcceptLanguages;
-    nsCString mAcceptEncodings;
+    nsCString mHttpAcceptEncodings;
+    nsCString mHttpsAcceptEncodings;
 
     nsXPIDLCString mDefaultSocketType;
 
@@ -458,7 +459,6 @@ private:
     nsXPIDLCString mUserAgentOverride;
     bool           mUserAgentIsDirty; // true if mUserAgent should be rebuilt
 
-    bool           mUseCache;
 
     bool           mPromptTempRedirect;
     // mSendSecureXSiteReferrer: default is false,
@@ -504,6 +504,7 @@ private:
     uint32_t       mSpdySendingChunkSize;
     uint32_t       mSpdySendBufferSize;
     uint32_t       mSpdyPushAllowance;
+    uint32_t       mSpdyPullAllowance;
     uint32_t       mDefaultSpdyConcurrent;
     PRIntervalTime mSpdyPingThreshold;
     PRIntervalTime mSpdyPingTimeout;
@@ -555,7 +556,7 @@ private:
     // For Rate Pacing Certain Network Events. Only assign this pointer on
     // socket thread.
     void MakeNewRequestTokenBucket();
-    nsRefPtr<EventTokenBucket> mRequestTokenBucket;
+    RefPtr<EventTokenBucket> mRequestTokenBucket;
 
 public:
     // Socket thread only
@@ -574,7 +575,7 @@ public:
     }
 
 private:
-    nsRefPtr<Tickler> mWifiTickler;
+    RefPtr<Tickler> mWifiTickler;
     void TickleWifi(nsIInterfaceRequestor *cb);
 
 private:

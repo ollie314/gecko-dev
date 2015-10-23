@@ -22,6 +22,7 @@ Cu.import("resource://gre/modules/Task.jsm");
 Cu.import("resource://gre/modules/Timer.jsm");
 Cu.import("resource://gre/modules/TelemetrySend.jsm", this);
 Cu.import("resource://gre/modules/TelemetryUtils.jsm", this);
+Cu.import("resource://gre/modules/AppConstants.jsm");
 
 const Utils = TelemetryUtils;
 
@@ -44,11 +45,7 @@ const REASON_SHUTDOWN = "shutdown";
 const ENVIRONMENT_CHANGE_LISTENER = "TelemetrySession::onEnvironmentChange";
 
 const MS_IN_ONE_HOUR  = 60 * 60 * 1000;
-const MIN_SUBSESSION_LENGTH_MS = 10 * 60 * 1000;
-
-// This is the HG changeset of the Histogram.json file, used to associate
-// submitted ping data with its histogram definition (bug 832007)
-#expand const HISTOGRAMS_FILE_VERSION = "__HISTOGRAMS_FILE_VERSION__";
+const MIN_SUBSESSION_LENGTH_MS = Preferences.get("toolkit.telemetry.minSubsessionLength", 10 * 60) * 1000;
 
 const LOGGER_NAME = "Toolkit.Telemetry";
 const LOGGER_PREFIX = "TelemetrySession" + (Utils.isContentProcess ? "#content::" : "::");
@@ -56,7 +53,7 @@ const LOGGER_PREFIX = "TelemetrySession" + (Utils.isContentProcess ? "#content::
 const PREF_BRANCH = "toolkit.telemetry.";
 const PREF_PREVIOUS_BUILDID = PREF_BRANCH + "previousBuildID";
 const PREF_FHR_UPLOAD_ENABLED = "datareporting.healthreport.uploadEnabled";
-const PREF_ASYNC_PLUGIN_INIT = "dom.ipc.plugins.asyncInit";
+const PREF_ASYNC_PLUGIN_INIT = "dom.ipc.plugins.asyncInit.enabled";
 const PREF_UNIFIED = PREF_BRANCH + "unified";
 
 
@@ -75,28 +72,24 @@ const IS_UNIFIED_TELEMETRY = Preferences.get(PREF_UNIFIED, false);
 // Maximum number of content payloads that we are willing to store.
 const MAX_NUM_CONTENT_PAYLOADS = 10;
 
-// Do not gather data more than once a minute
-const TELEMETRY_INTERVAL = 60000;
+// Do not gather data more than once a minute (ms)
+const TELEMETRY_INTERVAL = 60 * 1000;
 // Delay before intializing telemetry (ms)
-const TELEMETRY_DELAY = 60000;
+const TELEMETRY_DELAY = Preferences.get("toolkit.telemetry.initDelay", 60) * 1000;
 // Delay before initializing telemetry if we're testing (ms)
 const TELEMETRY_TEST_DELAY = 100;
 // Execute a scheduler tick every 5 minutes.
-const SCHEDULER_TICK_INTERVAL_MS = 5 * 60 * 1000;
+const SCHEDULER_TICK_INTERVAL_MS = Preferences.get("toolkit.telemetry.scheduler.tickInterval", 5 * 60) * 1000;
 // When user is idle, execute a scheduler tick every 60 minutes.
-const SCHEDULER_TICK_IDLE_INTERVAL_MS = 60 * 60 * 1000;
+const SCHEDULER_TICK_IDLE_INTERVAL_MS = Preferences.get("toolkit.telemetry.scheduler.idleTickInterval", 60 * 60) * 1000;
 
 // The tolerance we have when checking if it's midnight (15 minutes).
 const SCHEDULER_MIDNIGHT_TOLERANCE_MS = 15 * 60 * 1000;
 
-// Coalesce the daily and aborted-session pings if they are both due within
-// two minutes from each other.
-const SCHEDULER_COALESCE_THRESHOLD_MS = 2 * 60 * 1000;
-
 // Seconds of idle time before pinging.
 // On idle-daily a gather-telemetry notification is fired, during it probes can
 // start asynchronous tasks to gather data.
-const IDLE_TIMEOUT_SECONDS = 5 * 60;
+const IDLE_TIMEOUT_SECONDS = Preferences.get("toolkit.telemetry.idleTimeout", 5 * 60);
 
 // The frequency at which we persist session data to the disk to prevent data loss
 // in case of aborted sessions (currently 5 minutes).
@@ -106,7 +99,7 @@ const TOPIC_CYCLE_COLLECTOR_BEGIN = "cycle-collector-begin";
 
 var gLastMemoryPoll = null;
 
-let gWasDebuggerAttached = false;
+var gWasDebuggerAttached = false;
 
 function getLocale() {
   return Cc["@mozilla.org/chrome/chrome-registry;1"].
@@ -147,8 +140,6 @@ XPCOMUtils.defineLazyModuleGetter(this, "ThirdPartyCookieProbe",
                                   "resource://gre/modules/ThirdPartyCookieProbe.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "UITelemetry",
                                   "resource://gre/modules/UITelemetry.jsm");
-XPCOMUtils.defineLazyModuleGetter(this, "UpdateChannel",
-                                  "resource://gre/modules/UpdateChannel.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "TelemetryEnvironment",
                                   "resource://gre/modules/TelemetryEnvironment.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "CommonUtils",
@@ -172,7 +163,7 @@ function getMsSinceProcessStart() {
 /**
  * This is a policy object used to override behavior for testing.
  */
-let Policy = {
+var Policy = {
   now: () => new Date(),
   monotonicNow: getMsSinceProcessStart,
   generateSessionUUID: () => generateUUID(),
@@ -228,7 +219,7 @@ function toLocalTimeISOString(date) {
 /**
  * Read current process I/O counters.
  */
-let processInfo = {
+var processInfo = {
   _initialized: false,
   _IO_COUNTERS: null,
   _kernel32: null,
@@ -369,7 +360,7 @@ SaveSerializer.prototype = {
  * reasoning about scheduling actions in a single place, making it easier to
  * coordinate jobs and coalesce them.
  */
-let TelemetryScheduler = {
+var TelemetryScheduler = {
   _lastDailyPingTime: 0,
   _lastSessionCheckpointTime: 0,
 
@@ -726,7 +717,7 @@ this.TelemetrySession = Object.freeze({
   },
 });
 
-let Impl = {
+var Impl = {
   _histograms: {},
   _initialized: false,
   _logger: null,
@@ -818,7 +809,7 @@ let Impl = {
     }
 
     if (si.process) {
-      for each (let field in Object.keys(si)) {
+      for (let field of Object.keys(si)) {
         if (field == "process")
           continue;
         ret[field] = si[field] - si.process
@@ -1049,7 +1040,7 @@ let Impl = {
 
     let ret = {
       reason: reason,
-      revision: HISTOGRAMS_FILE_VERSION,
+      revision: AppConstants.SOURCE_REVISION_URL,
       asyncPluginInit: Preferences.get(PREF_ASYNC_PLUGIN_INIT, false),
 
       // Date.getTimezoneOffset() unintuitively returns negative values if we are ahead of
@@ -1246,19 +1237,30 @@ let Impl = {
     this._log.trace("assemblePayloadWithMeasurements - reason: " + reason +
                     ", submitting subsession data: " + isSubsession);
 
+    // This allows wrapping data retrieval calls in a try-catch block so that
+    // failures don't break the rest of the ping assembly.
+    const protect = (fn) => {
+      try {
+        return fn();
+      } catch (ex) {
+        this.log.error("assemblePayloadWithMeasurements - caught exception", ex);
+        return null;
+      }
+    };
+
     // Payload common to chrome and content processes.
     let payloadObj = {
       ver: PAYLOAD_VERSION,
       simpleMeasurements: simpleMeasurements,
-      histograms: this.getHistograms(isSubsession, clearSubsession),
-      keyedHistograms: this.getKeyedHistograms(isSubsession, clearSubsession),
+      histograms: protect(() => this.getHistograms(isSubsession, clearSubsession)),
+      keyedHistograms: protect(() => this.getKeyedHistograms(isSubsession, clearSubsession)),
     };
 
     // Add extended set measurements common to chrome & content processes
     if (Telemetry.canRecordExtended) {
-      payloadObj.chromeHangs = Telemetry.chromeHangs;
-      payloadObj.threadHangStats = this.getThreadHangStats(Telemetry.threadHangStats);
-      payloadObj.log = TelemetryLog.entries();
+      payloadObj.chromeHangs = protect(() => Telemetry.chromeHangs);
+      payloadObj.threadHangStats = protect(() => this.getThreadHangStats(Telemetry.threadHangStats));
+      payloadObj.log = protect(() => TelemetryLog.entries());
     }
 
     if (Utils.isContentProcess) {
@@ -1270,20 +1272,21 @@ let Impl = {
 
     // Add extended set measurements for chrome process.
     if (Telemetry.canRecordExtended) {
-      payloadObj.slowSQL = Telemetry.slowSQL;
-      payloadObj.fileIOReports = Telemetry.fileIOReports;
-      payloadObj.lateWrites = Telemetry.lateWrites;
+      payloadObj.slowSQL = protect(() => Telemetry.slowSQL);
+      payloadObj.fileIOReports = protect(() => Telemetry.fileIOReports);
+      payloadObj.lateWrites = protect(() => Telemetry.lateWrites);
 
       // Add the addon histograms if they are present
-      let addonHistograms = this.getAddonHistograms();
-      if (Object.keys(addonHistograms).length > 0) {
+      let addonHistograms = protect(() => this.getAddonHistograms());
+      if (addonHistograms && Object.keys(addonHistograms).length > 0) {
         payloadObj.addonHistograms = addonHistograms;
       }
 
-      payloadObj.addonDetails = AddonManagerPrivate.getTelemetryDetails();
-      payloadObj.UIMeasurements = UITelemetry.getUIMeasurements();
+      payloadObj.addonDetails = protect(() => AddonManagerPrivate.getTelemetryDetails());
+      payloadObj.UIMeasurements = protect(() => UITelemetry.getUIMeasurements());
 
-      if (Object.keys(this._slowSQLStartup).length != 0 &&
+      if (this._slowSQLStartup &&
+          Object.keys(this._slowSQLStartup).length != 0 &&
           (Object.keys(this._slowSQLStartup.mainThread).length ||
            Object.keys(this._slowSQLStartup.otherThreads).length)) {
         payloadObj.slowSQLStartup = this._slowSQLStartup;
@@ -1291,7 +1294,7 @@ let Impl = {
     }
 
     if (this._childTelemetry.length) {
-      payloadObj.childPayloads = this.getChildPayloads();
+      payloadObj.childPayloads = protect(() => this.getChildPayloads());
     }
 
     return payloadObj;
@@ -1311,12 +1314,13 @@ let Impl = {
 
   getSessionPayload: function getSessionPayload(reason, clearSubsession) {
     this._log.trace("getSessionPayload - reason: " + reason + ", clearSubsession: " + clearSubsession);
-#if defined(MOZ_WIDGET_GONK) || defined(MOZ_WIDGET_ANDROID)
-    clearSubsession = false;
-    const isSubsession = false;
-#else
-    const isSubsession = !this._isClassicReason(reason);
-#endif
+
+    const isMobile = ["gonk", "android"].indexOf(AppConstants.platform) !== -1;
+    const isSubsession = isMobile ? false : !this._isClassicReason(reason);
+
+    if (isMobile) {
+      clearSubsession = false;
+    }
 
     let measurements =
       this.getSimpleMeasurements(reason == REASON_SAVED_SESSION, isSubsession, clearSubsession);
@@ -1421,9 +1425,9 @@ let Impl = {
                                       () => this._getState());
 
     Services.obs.addObserver(this, "sessionstore-windows-restored", false);
-#ifdef MOZ_WIDGET_ANDROID
-    Services.obs.addObserver(this, "application-background", false);
-#endif
+    if (AppConstants.platform === "android") {
+      Services.obs.addObserver(this, "application-background", false);
+    }
     Services.obs.addObserver(this, "xul-window-visible", false);
     this._hasWindowRestoredObserver = true;
     this._hasXulWindowVisibleObserver = true;
@@ -1633,9 +1637,9 @@ let Impl = {
       Services.obs.removeObserver(this, "xul-window-visible");
       this._hasXulWindowVisibleObserver = false;
     }
-#ifdef MOZ_WIDGET_ANDROID
-    Services.obs.removeObserver(this, "application-background", false);
-#endif
+    if (AppConstants.platform === "android") {
+      Services.obs.removeObserver(this, "application-background", false);
+    }
   },
 
   getPayload: function getPayload(reason, clearSubsession) {
@@ -1736,23 +1740,25 @@ let Impl = {
       }).bind(this), Ci.nsIThread.DISPATCH_NORMAL);
       break;
 
-#ifdef MOZ_WIDGET_ANDROID
-    // On Android, we can get killed without warning once we are in the background,
-    // but we may also submit data and/or come back into the foreground without getting
-    // killed. To deal with this, we save the current session data to file when we are
-    // put into the background. This handles the following post-backgrounding scenarios:
-    // 1) We are killed immediately. In this case the current session data (which we
-    //    save to a file) will be loaded and submitted on a future run.
-    // 2) We submit the data while in the background, and then are killed. In this case
-    //    the file that we saved will be deleted by the usual process in
-    //    finishPingRequest after it is submitted.
-    // 3) We submit the data, and then come back into the foreground. Same as case (2).
-    // 4) We do not submit the data, but come back into the foreground. In this case
-    //    we have the option of either deleting the file that we saved (since we will either
-    //    send the live data while in the foreground, or create the file again on the next
-    //    backgrounding), or not (in which case we will delete it on submit, or overwrite
-    //    it on the next backgrounding). Not deleting it is faster, so that's what we do.
     case "application-background":
+      if (AppConstants.platform !== "android") {
+        break;
+      }
+      // On Android, we can get killed without warning once we are in the background,
+      // but we may also submit data and/or come back into the foreground without getting
+      // killed. To deal with this, we save the current session data to file when we are
+      // put into the background. This handles the following post-backgrounding scenarios:
+      // 1) We are killed immediately. In this case the current session data (which we
+      //    save to a file) will be loaded and submitted on a future run.
+      // 2) We submit the data while in the background, and then are killed. In this case
+      //    the file that we saved will be deleted by the usual process in
+      //    finishPingRequest after it is submitted.
+      // 3) We submit the data, and then come back into the foreground. Same as case (2).
+      // 4) We do not submit the data, but come back into the foreground. In this case
+      //    we have the option of either deleting the file that we saved (since we will either
+      //    send the live data while in the foreground, or create the file again on the next
+      //    backgrounding), or not (in which case we will delete it on submit, or overwrite
+      //    it on the next backgrounding). Not deleting it is faster, so that's what we do.
       if (Telemetry.isOfficialTelemetry) {
         let payload = this.getSessionPayload(REASON_SAVED_SESSION, false);
         let options = {
@@ -1763,7 +1769,6 @@ let Impl = {
         TelemetryController.addPendingPing(getPingType(payload), payload, options);
       }
       break;
-#endif
     }
   },
 

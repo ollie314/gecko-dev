@@ -5,8 +5,6 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/EMEUtils.h"
-#include "nsServiceManagerUtils.h"
-#include "nsIConsoleService.h"
 
 namespace mozilla {
 
@@ -89,7 +87,6 @@ ParseKeySystem(const nsAString& aExpectedKeySystem,
 
 static const char16_t* sKeySystems[] = {
   MOZ_UTF16("org.w3.clearkey"),
-  MOZ_UTF16("com.adobe.access"),
   MOZ_UTF16("com.adobe.primetime"),
 };
 
@@ -112,16 +109,13 @@ ParseKeySystem(const nsAString& aInputKeySystem,
 }
 
 void
-LogToBrowserConsole(const nsAString& aMsg)
+ConstructKeySystem(const nsAString& aKeySystem,
+                   const nsAString& aCDMVersion,
+                   nsAString& aOutKeySystem)
 {
-  nsCOMPtr<nsIConsoleService> console(
-    do_GetService("@mozilla.org/consoleservice;1"));
-  if (!console) {
-    NS_WARNING("Failed to log message to console.");
-    return;
-  }
-  nsAutoString msg(aMsg);
-  console->LogStringMessage(msg.get());
+  aOutKeySystem.Append(aKeySystem);
+  aOutKeySystem.AppendLiteral(".");
+  aOutKeySystem.Append(aCDMVersion);
 }
 
 } // namespace mozilla

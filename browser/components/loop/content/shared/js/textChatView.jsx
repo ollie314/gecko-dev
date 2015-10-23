@@ -12,7 +12,7 @@ loop.shared.views.chat = (function(mozL10n) {
   var sharedMixins = loop.shared.mixins;
   var sharedViews = loop.shared.views;
   var CHAT_MESSAGE_TYPES = loop.store.CHAT_MESSAGE_TYPES;
-  var CHAT_CONTENT_TYPES = loop.store.CHAT_CONTENT_TYPES;
+  var CHAT_CONTENT_TYPES = loop.shared.utils.CHAT_CONTENT_TYPES;
 
   /**
    * Renders an individual entry for the text chat entries view.
@@ -41,8 +41,8 @@ loop.shared.views.chat = (function(mozL10n) {
       return (
         <span className="text-chat-entry-timestamp">
           {date.toLocaleTimeString(language,
-                                   {hour: "numeric", minute: "numeric",
-                                   hour12: false})}
+                                   { hour: "numeric", minute: "numeric",
+                                   hour12: false })}
         </span>
       );
     },
@@ -76,14 +76,13 @@ loop.shared.views.chat = (function(mozL10n) {
     mixins: [React.addons.PureRenderMixin],
 
     propTypes: {
-      message: React.PropTypes.string.isRequired,
-      useDesktopPaths: React.PropTypes.bool.isRequired
+      message: React.PropTypes.string.isRequired
     },
 
     render: function() {
       return (
-        <div className="text-chat-entry special room-name">
-          <p>{mozL10n.get("rooms_welcome_title", {conversationName: this.props.message})}</p>
+        <div className="text-chat-header special room-name">
+          <p>{mozL10n.get("rooms_welcome_title", { conversationName: this.props.message })}</p>
         </div>
       );
     }
@@ -141,7 +140,7 @@ loop.shared.views.chat = (function(mozL10n) {
       // If the number of received messages has increased, we play a sound.
       if (receivedMessageCount > this.state.receivedMessageCount) {
         this.play("message");
-        this.setState({receivedMessageCount: receivedMessageCount});
+        this.setState({ receivedMessageCount: receivedMessageCount });
       }
     },
 
@@ -180,8 +179,7 @@ loop.shared.views.chat = (function(mozL10n) {
                       return (
                         <TextChatRoomName
                           key={i}
-                          message={entry.message}
-                          useDesktopPaths={this.props.useDesktopPaths} />
+                          message={entry.message} />
                       );
                     case CHAT_CONTENT_TYPES.CONTEXT:
                       return (
@@ -380,9 +378,13 @@ loop.shared.views.chat = (function(mozL10n) {
 
     render: function() {
       var messageList;
+      var showingRoomName = false;
 
       if (this.props.showRoomName) {
         messageList = this.state.messageList;
+        showingRoomName = this.state.messageList.some(function(item) {
+          return item.contentType === CHAT_CONTENT_TYPES.ROOM_NAME;
+        });
       } else {
         messageList = this.state.messageList.filter(function(item) {
           return item.type !== CHAT_MESSAGE_TYPES.SPECIAL ||
@@ -396,6 +398,7 @@ loop.shared.views.chat = (function(mozL10n) {
       });
 
       var textChatViewClasses = React.addons.classSet({
+        "showing-room-name": showingRoomName,
         "text-chat-view": true,
         "text-chat-disabled": !this.state.textChatEnabled,
         "text-chat-entries-empty": !messageList.length

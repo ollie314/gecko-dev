@@ -286,7 +286,10 @@ static int nr_ice_component_initialize_udp(struct nr_ice_ctx_ *ctx,nr_ice_compon
           isock,turn_sock,RELAYED,0,
           &ctx->turn_servers[j].turn_server,component->component_id,&cand))
            ABORT(r);
-        cand->u.relayed.srvflx_candidate=srvflx_cand;
+        if (srvflx_cand) {
+          cand->u.relayed.srvflx_candidate=srvflx_cand;
+          srvflx_cand->u.srvrflx.relay_candidate=cand;
+        }
         cand->u.relayed.server=&ctx->turn_servers[j];
         TAILQ_INSERT_TAIL(&component->candidates,cand,entry_comp);
         component->candidate_ct++;
@@ -350,7 +353,7 @@ static int nr_ice_component_create_tcp_host_candidate(struct nr_ice_ctx_ *ctx,
 
       /* It would be better to stop trying if there is error other than
          port already used, but it'd require significant work to support this. */
-      r=nr_socket_multi_tcp_create(ctx,&addr,tcp_type,so_sock_ct,1,NR_STUN_MAX_MESSAGE_SIZE,&nrsock);
+      r=nr_socket_multi_tcp_create(ctx,&addr,tcp_type,so_sock_ct,NR_STUN_MAX_MESSAGE_SIZE,&nrsock);
 
     } while(r);
 
@@ -624,12 +627,7 @@ int nr_ice_component_initialize(struct nr_ice_ctx_ *ctx,nr_ice_component *compon
     cand=TAILQ_FIRST(&component->candidates);
     while(cand){
       if(cand->state!=NR_ICE_CAND_STATE_INITIALIZING){
-        if(r=nr_ice_candidate_initialize(cand,nr_ice_gather_finished_cb,cand)){
-          if(r!=R_WOULDBLOCK){
-            ctx->uninitialized_candidates--;
-            cand->state=NR_ICE_CAND_STATE_FAILED;
-          }
-        }
+        nr_ice_candidate_initialize(cand,nr_ice_gather_finished_cb,cand);
       }
       cand=TAILQ_NEXT(cand,entry_comp);
     }
@@ -667,8 +665,9 @@ int nr_ice_component_maybe_prune_candidate(nr_ice_ctx *ctx, nr_ice_component *co
          !nr_transport_addr_cmp(&c1->addr,&c2->addr,NR_TRANSPORT_ADDR_CMP_MODE_ALL)){
 
         if((c1->type == c2->type) ||
-           (c1->type==HOST && c2->type == SERVER_REFLEXIVE) ||
-           (c2->type==HOST && c1->type == SERVER_REFLEXIVE)){
+           (!(ctx->flags & NR_ICE_CTX_FLAGS_ONLY_DEFAULT_ADDRS) &&
+            ((c1->type==HOST && c2->type == SERVER_REFLEXIVE) ||
+             (c2->type==HOST && c1->type == SERVER_REFLEXIVE)))){
 
           /*
              These are redundant. Remove the lower pri one, or if pairing has
@@ -749,7 +748,7 @@ static int nr_ice_component_process_incoming_check(nr_ice_component *comp, nr_tr
         /* OK, there is a conflict. Who's right? */
         r_log(LOG_ICE,LOG_INFO,"ICE-PEER(%s): role conflict, both controlled",comp->stream->pctx->label);
 
-        if(attr->u.ice_controlling < comp->stream->pctx->tiebreaker){
+        if(attr->u.ice_controlled < comp->stream->pctx->tiebreaker){
           /* Update the peer ctx. This will propagate to all candidate pairs
              in the context. */
           nr_ice_peer_ctx_switch_controlling_role(comp->stream->pctx);
@@ -1363,7 +1362,7 @@ int nr_ice_component_get_default_candidate(nr_ice_component *comp, nr_ice_candid
     */
     cand=TAILQ_FIRST(&comp->candidates);
     while(cand){
-      if (cand->state == NR_ICE_CAND_STATE_INITIALIZED &&
+      if (!nr_ice_ctx_hide_candidate(comp->ctx, cand) &&
           cand->addr.ip_version == ip_version) {
         if (!best_cand) {
           best_cand = cand;

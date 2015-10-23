@@ -604,8 +604,8 @@ public:
 private:
   ~CallOnMessageAvailable() {}
 
-  nsRefPtr<WebSocketChannel> mChannel;
-  nsRefPtr<BaseWebSocketChannel::ListenerAndContextContainer> mListenerMT;
+  RefPtr<WebSocketChannel> mChannel;
+  RefPtr<BaseWebSocketChannel::ListenerAndContextContainer> mListenerMT;
   nsCString mData;
   int32_t mLen;
 };
@@ -642,8 +642,8 @@ public:
 private:
   ~CallOnStop() {}
 
-  nsRefPtr<WebSocketChannel> mChannel;
-  nsRefPtr<BaseWebSocketChannel::ListenerAndContextContainer> mListenerMT;
+  RefPtr<WebSocketChannel> mChannel;
+  RefPtr<BaseWebSocketChannel::ListenerAndContextContainer> mListenerMT;
   nsresult mReason;
 };
 NS_IMPL_ISUPPORTS(CallOnStop, nsIRunnable)
@@ -679,8 +679,8 @@ public:
 private:
   ~CallOnServerClose() {}
 
-  nsRefPtr<WebSocketChannel> mChannel;
-  nsRefPtr<BaseWebSocketChannel::ListenerAndContextContainer> mListenerMT;
+  RefPtr<WebSocketChannel> mChannel;
+  RefPtr<BaseWebSocketChannel::ListenerAndContextContainer> mListenerMT;
   uint16_t mCode;
   nsCString mReason;
 };
@@ -713,8 +713,8 @@ public:
 private:
   ~CallAcknowledge() {}
 
-  nsRefPtr<WebSocketChannel> mChannel;
-  nsRefPtr<BaseWebSocketChannel::ListenerAndContextContainer> mListenerMT;
+  RefPtr<WebSocketChannel> mChannel;
+  RefPtr<BaseWebSocketChannel::ListenerAndContextContainer> mListenerMT;
   uint32_t mSize;
 };
 
@@ -745,7 +745,7 @@ public:
 private:
   ~CallOnTransportAvailable() {}
 
-  nsRefPtr<WebSocketChannel>     mChannel;
+  RefPtr<WebSocketChannel>     mChannel;
   nsCOMPtr<nsISocketTransport>   mTransport;
   nsCOMPtr<nsIAsyncInputStream>  mSocketIn;
   nsCOMPtr<nsIAsyncOutputStream> mSocketOut;
@@ -1111,7 +1111,7 @@ public:
 private:
   ~OutboundEnqueuer() {}
 
-  nsRefPtr<WebSocketChannel>  mChannel;
+  RefPtr<WebSocketChannel>  mChannel;
   OutboundMessage            *mMessage;
 };
 NS_IMPL_ISUPPORTS(OutboundEnqueuer, nsIRunnable)
@@ -2170,7 +2170,7 @@ namespace {
 
 class RemoveObserverRunnable : public nsRunnable
 {
-  nsRefPtr<WebSocketChannel> mChannel;
+  RefPtr<WebSocketChannel> mChannel;
 
 public:
   explicit RemoveObserverRunnable(WebSocketChannel* aChannel)
@@ -2331,7 +2331,7 @@ WebSocketChannel::StopSession(nsresult reason)
 
     nsWSAdmissionManager::OnStopSession(this, reason);
 
-    nsRefPtr<CallOnStop> runnable = new CallOnStop(this, reason);
+    RefPtr<CallOnStop> runnable = new CallOnStop(this, reason);
     mTargetThread->Dispatch(runnable, NS_DISPATCH_NORMAL);
   }
 }
@@ -2360,8 +2360,8 @@ WebSocketChannel::AbortSession(nsresult reason)
     return;
   mStopped = 1;
 
-  if (mTransport && reason != NS_BASE_STREAM_CLOSED &&
-      !mRequestedClose && !mClientClosed && !mServerClosed) {
+  if (mTransport && reason != NS_BASE_STREAM_CLOSED && !mRequestedClose &&
+      !mClientClosed && !mServerClosed && mConnecting == NOT_CONNECTING) {
     mRequestedClose = 1;
     mStopOnClose = reason;
     mSocketThread->Dispatch(
@@ -3072,16 +3072,14 @@ WebSocketChannel::Notify(nsITimer *timer)
     }
 
     if (!mPingOutstanding) {
-      // Allow for the case where a PING was force-sent even though ping
-      // interval isn't enabled. Only issue a new PING if it truly is enabled.
-      if (mPingInterval || mPingForced) {
-        LOG(("nsWebSocketChannel:: Generating Ping\n"));
-        mPingOutstanding = 1;
-        mPingForced = 0;
-        GeneratePing();
-        mPingTimer->InitWithCallback(this, mPingResponseTimeout,
-                                     nsITimer::TYPE_ONE_SHOT);
-      }
+      // Ping interval must be non-null or PING was forced by OnNetworkChanged()
+      MOZ_ASSERT(mPingInterval || mPingForced);
+      LOG(("nsWebSocketChannel:: Generating Ping\n"));
+      mPingOutstanding = 1;
+      mPingForced = 0;
+      GeneratePing();
+      mPingTimer->InitWithCallback(this, mPingResponseTimeout,
+                                   nsITimer::TYPE_ONE_SHOT);
     } else {
       LOG(("nsWebSocketChannel:: Timed out Ping\n"));
       mPingTimer = nullptr;
@@ -3121,7 +3119,11 @@ WebSocketChannel::AsyncOpen(nsIURI *aURI,
 {
   LOG(("WebSocketChannel::AsyncOpen() %p\n", this));
 
-  MOZ_ASSERT(NS_IsMainThread(), "not main thread");
+  if (!NS_IsMainThread()) {
+    MOZ_ASSERT(false, "not main thread");
+    LOG(("WebSocketChannel::AsyncOpen() called off the main thread"));
+    return NS_ERROR_UNEXPECTED;
+  }
 
   if (!aURI || !aListener) {
     LOG(("WebSocketChannel::AsyncOpen() Uri or Listener null"));
@@ -3242,6 +3244,8 @@ WebSocketChannel::AsyncOpen(nsIURI *aURI,
     return rv;
   }
 
+  // Ideally we'd call newChannelFromURIWithLoadInfo here, but that doesn't
+  // allow setting proxy uri/flags
   rv = io2->NewChannelFromURIWithProxyFlags2(
               localURI,
               mURI,
@@ -3252,7 +3256,7 @@ WebSocketChannel::AsyncOpen(nsIURI *aURI,
               mLoadInfo->LoadingPrincipal(),
               mLoadInfo->TriggeringPrincipal(),
               mLoadInfo->GetSecurityFlags(),
-              mLoadInfo->GetContentPolicyType(),
+              mLoadInfo->InternalContentPolicyType(),
               getter_AddRefs(localChannel));
   NS_ENSURE_SUCCESS(rv, rv);
 
@@ -3264,6 +3268,26 @@ WebSocketChannel::AsyncOpen(nsIURI *aURI,
   // Pass most GetInterface() requests through to our instantiator, but handle
   // nsIChannelEventSink in this object in order to deal with redirects
   localChannel->SetNotificationCallbacks(this);
+
+  class MOZ_STACK_CLASS CleanUpOnFailure
+  {
+  public:
+    explicit CleanUpOnFailure(WebSocketChannel* aWebSocketChannel)
+      : mWebSocketChannel(aWebSocketChannel)
+    {}
+
+    ~CleanUpOnFailure()
+    {
+      if (!mWebSocketChannel->mWasOpened) {
+        mWebSocketChannel->mChannel = nullptr;
+        mWebSocketChannel->mHttpChannel = nullptr;
+      }
+    }
+
+    WebSocketChannel *mWebSocketChannel;
+  };
+
+  CleanUpOnFailure cuof(this);
 
   mChannel = do_QueryInterface(localChannel, &rv);
   NS_ENSURE_SUCCESS(rv, rv);
@@ -3329,7 +3353,7 @@ WebSocketChannel::Close(uint16_t code, const nsACString & reason)
   mScriptCloseReason = reason;
   mScriptCloseCode = code;
 
-  if (!mTransport) {
+  if (!mTransport || mConnecting != NOT_CONNECTING) {
     nsresult rv;
     if (code == CLOSE_GOING_AWAY) {
       // Not an error: for example, tab has closed or navigated away
@@ -3376,6 +3400,11 @@ WebSocketChannel::SendMsgCommon(const nsACString *aMsg, bool aIsBinary,
                                 uint32_t aLength, nsIInputStream *aStream)
 {
   MOZ_ASSERT(IsOnTargetThread(), "not target thread");
+
+  if (!mDataStarted) {
+    LOG(("WebSocketChannel:: Error: data not started yet\n"));
+    return NS_ERROR_UNEXPECTED;
+  }
 
   if (mRequestedClose) {
     LOG(("WebSocketChannel:: Error: send when closed\n"));
@@ -3830,7 +3859,7 @@ WebSocketChannel::SaveNetworkStats(bool enforce)
 
   // Create the event to save the network statistics.
   // the event is then dispathed to the main thread.
-  nsRefPtr<nsRunnable> event =
+  RefPtr<nsRunnable> event =
     new SaveNetworkStatsEvent(mAppId, mIsInBrowser, mActiveNetworkInfo,
                               countRecv, countSent, false);
   NS_DispatchToMainThread(event);

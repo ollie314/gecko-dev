@@ -122,6 +122,12 @@ input[type=button] {
   pointer-events: none;
 }
 
+/*
+ * If you change the sizes here, make sure you
+ * change the preferences:
+ * toolkit.pageThumbs.minWidth
+ * toolkit.pageThumbs.minHeight
+ */
 /* CELLS */
 .newtab-cell,
 .newtab-intro-cell,
@@ -213,6 +219,8 @@ input[type=button] {
 .newtab-title {
   left: 0;
   padding: 0 4px;
+  border: 1px solid #FFFFFF;
+  border-radius: 0px 0px 8px 8px;
 }
 
 .newtab-sponsored {
@@ -340,6 +348,7 @@ input[type=button] {
   display: -moz-box;
   position: relative;
   -moz-box-pack: center;
+  margin: 40px 0 15px;
 }
 
 #newtab-search-container[page-disabled] {

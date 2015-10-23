@@ -46,7 +46,7 @@ static void DrawDebugOverlay(mozilla::gfx::DrawTarget* dt, int x, int y, int wid
 
   // Draw border
   c.NewPath();
-  c.SetDeviceColor(gfxRGBA(0.0, 0.0, 0.0, 1.0));
+  c.SetDeviceColor(Color(0.f, 0.f, 0.f));
   c.Rectangle(gfxRect(0, 0, width, height));
   c.Stroke();
 
@@ -63,12 +63,12 @@ static void DrawDebugOverlay(mozilla::gfx::DrawTarget* dt, int x, int y, int wid
   int textWidth = extents.width + 6;
 
   c.NewPath();
-  c.SetDeviceColor(gfxRGBA(0.0, 0.0, 0.0, 1.0));
+  c.SetDeviceColor(Color(0.f, 0.f, 0.f));
   c.Rectangle(gfxRect(gfxPoint(2,2),gfxSize(textWidth, 30)));
   c.Fill();
 
   c.NewPath();
-  c.SetDeviceColor(gfxRGBA(1.0, 0.0, 0.0, 1.0));
+  c.SetDeviceColor(Color(1.0, 0.0, 0.0));
   c.Rectangle(gfxRect(gfxPoint(2,2),gfxSize(textWidth, 30)));
   c.Stroke();
 
@@ -89,7 +89,7 @@ namespace layers {
 
 MultiTiledContentClient::MultiTiledContentClient(ClientTiledPaintedLayer* aPaintedLayer,
                                                  ClientLayerManager* aManager)
-  : TiledContentClient(aManager)
+  : TiledContentClient(aManager, "Multi")
 {
   MOZ_COUNT_CTOR(MultiTiledContentClient);
 
@@ -442,7 +442,7 @@ gfxShmSharedReadLock::GetReadCount() {
 class TileExpiry final : public nsExpirationTracker<TileClient, 3>
 {
   public:
-    TileExpiry() : nsExpirationTracker<TileClient, 3>(1000) {}
+    TileExpiry() : nsExpirationTracker<TileClient, 3>(1000, "TileExpiry") {}
 
     static void AddTile(TileClient* aTile)
     {
@@ -929,7 +929,7 @@ ClientMultiTiledLayerBuffer::PaintThebes(const nsIntRegion& aNewValidRegion,
   NS_ASSERTION(!aPaintRegion.GetBounds().IsEmpty(), "Empty paint region\n");
 
   if (!gfxPrefs::TiledDrawTargetEnabled()) {
-    nsRefPtr<gfxContext> ctxt;
+    RefPtr<gfxContext> ctxt;
 
     const IntRect bounds = aPaintRegion.GetBounds();
     {
@@ -964,7 +964,7 @@ ClientMultiTiledLayerBuffer::PaintThebes(const nsIntRegion& aNewValidRegion,
     PROFILER_LABEL("ClientMultiTiledLayerBuffer", "PaintThebesSingleBufferDraw",
       js::ProfileEntry::Category::GRAPHICS);
 
-    mCallback(mPaintedLayer, ctxt, aPaintRegion, &aDirtyRegion,
+    mCallback(mPaintedLayer, ctxt, aPaintRegion, aDirtyRegion,
               DrawRegionClip::NONE, nsIntRegion(), mCallbackData);
   }
 
@@ -1171,7 +1171,7 @@ void ClientMultiTiledLayerBuffer::Update(const nsIntRegion& newValidRegion,
     ctx->SetMatrix(
       ctx->CurrentMatrix().Scale(mResolution, mResolution).Translate(ThebesPoint(-mTilingOrigin)));
 
-    mCallback(mPaintedLayer, ctx, aPaintRegion, &aDirtyRegion,
+    mCallback(mPaintedLayer, ctx, aPaintRegion, aDirtyRegion,
               DrawRegionClip::DRAW, nsIntRegion(), mCallbackData);
     mMoz2DTiles.clear();
     // Reset:
@@ -1240,7 +1240,8 @@ ClientMultiTiledLayerBuffer::ValidateTile(TileClient& aTile,
   if (aTile.IsPlaceholderTile()) {
     aTile.SetLayerManager(mManager);
     aTile.SetTextureAllocator(mManager->GetTexturePool(
-      gfxPlatform::GetPlatform()->Optimal2DFormatForContent(content)));
+      gfxPlatform::GetPlatform()->Optimal2DFormatForContent(content),
+      TextureFlags::DISALLOW_BIGIMAGE | TextureFlags::IMMEDIATE_UPLOAD));
   }
   aTile.SetCompositableClient(mCompositableClient);
 
@@ -1398,14 +1399,16 @@ ClientMultiTiledLayerBuffer::ValidateTile(TileClient& aTile,
  * transformed into the painted layer's LayerPixel coordinates, accounting
  * for the compositor state.
  */
-static LayerRect
+static Maybe<LayerRect>
 GetCompositorSideCompositionBounds(const LayerMetricsWrapper& aScrollAncestor,
                                    const Matrix4x4& aTransformToCompBounds,
-                                   const ViewTransform& aAPZTransform)
+                                   const ViewTransform& aAPZTransform,
+                                   const LayerRect& aClip)
 {
   Matrix4x4 transform = aTransformToCompBounds * Matrix4x4(aAPZTransform);
-  return TransformTo<LayerPixel>(transform.Inverse(),
-            aScrollAncestor.Metrics().GetCompositionBounds());
+
+  return UntransformTo<LayerPixel>(transform.Inverse(),
+    aScrollAncestor.Metrics().GetCompositionBounds(), aClip);
 }
 
 bool
@@ -1484,12 +1487,18 @@ ClientMultiTiledLayerBuffer::ComputeProgressiveUpdateRegion(const nsIntRegion& a
     }
   }
 
-  LayerRect transformedCompositionBounds =
+  Maybe<LayerRect> transformedCompositionBounds =
     GetCompositorSideCompositionBounds(scrollAncestor,
                                        aPaintData->mTransformToCompBounds,
-                                       viewTransform);
+                                       viewTransform,
+                                       ViewAs<LayerPixel>(Rect(mPaintedLayer->GetLayerBounds())));
 
-  TILING_LOG("TILING %p: Progressive update transformed compositor bounds %s\n", mPaintedLayer, Stringify(transformedCompositionBounds).c_str());
+  if (!transformedCompositionBounds) {
+    aPaintData->mPaintFinished = true;
+    return false;
+  }
+
+  TILING_LOG("TILING %p: Progressive update transformed compositor bounds %s\n", mPaintedLayer, Stringify(*transformedCompositionBounds).c_str());
 
   // Compute a "coherent update rect" that we should paint all at once in a
   // single transaction. This is to avoid rendering glitches on animated
@@ -1502,9 +1511,9 @@ ClientMultiTiledLayerBuffer::ComputeProgressiveUpdateRegion(const nsIntRegion& a
   // the browser, so we always use the entire user-visible area.
   IntRect coherentUpdateRect(LayerIntRect::ToUntyped(RoundedOut(
 #ifdef MOZ_WIDGET_ANDROID
-    transformedCompositionBounds.Intersect(aPaintData->mCompositionBounds)
+    transformedCompositionBounds->Intersect(aPaintData->mCompositionBounds)
 #else
-    transformedCompositionBounds
+    *transformedCompositionBounds
 #endif
   )));
 
@@ -1661,7 +1670,7 @@ void
 TiledContentClient::PrintInfo(std::stringstream& aStream, const char* aPrefix)
 {
   aStream << aPrefix;
-  aStream << nsPrintfCString("TiledContentClient (0x%p)", this).get();
+  aStream << nsPrintfCString("%sTiledContentClient (0x%p)", mName, this).get();
 
   if (profiler_feature_active("displaylistdump")) {
     nsAutoCString pfx(aPrefix);
@@ -1674,9 +1683,19 @@ TiledContentClient::PrintInfo(std::stringstream& aStream, const char* aPrefix)
 void
 TiledContentClient::Dump(std::stringstream& aStream,
                          const char* aPrefix,
-                         bool aDumpHtml)
+                         bool aDumpHtml,
+                         TextureDumpMode aCompress)
 {
-  GetTiledBuffer()->Dump(aStream, aPrefix, aDumpHtml);
+  GetTiledBuffer()->Dump(aStream, aPrefix, aDumpHtml, aCompress);
+}
+
+void
+BasicTiledLayerPaintData::ResetPaintData()
+{
+  mLowPrecisionPaintCount = 0;
+  mPaintFinished = false;
+  mCompositionBounds.SetEmpty();
+  mCriticalDisplayPort.SetEmpty();
 }
 
 } // namespace layers

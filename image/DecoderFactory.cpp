@@ -6,7 +6,7 @@
 #include "DecoderFactory.h"
 
 #include "nsMimeTypes.h"
-#include "mozilla/nsRefPtr.h"
+#include "mozilla/RefPtr.h"
 #include "nsString.h"
 
 #include "Decoder.h"
@@ -72,7 +72,7 @@ DecoderFactory::GetDecoder(DecoderType aType,
                            RasterImage* aImage,
                            bool aIsRedecode)
 {
-  nsRefPtr<Decoder> decoder;
+  RefPtr<Decoder> decoder;
 
   switch (aType) {
     case DecoderType::PNG:
@@ -109,40 +109,62 @@ DecoderFactory::CreateDecoder(DecoderType aType,
                               RasterImage* aImage,
                               SourceBuffer* aSourceBuffer,
                               const Maybe<IntSize>& aTargetSize,
-                              uint32_t aFlags,
-                              int aSampleSize,
-                              const IntSize& aResolution,
-                              bool aIsRedecode,
-                              bool aImageIsTransient,
-                              bool aImageIsLocked)
+                              DecoderFlags aDecoderFlags,
+                              SurfaceFlags aSurfaceFlags,
+                              int aSampleSize)
 {
   if (aType == DecoderType::UNKNOWN) {
     return nullptr;
   }
 
-  nsRefPtr<Decoder> decoder = GetDecoder(aType, aImage, aIsRedecode);
+  RefPtr<Decoder> decoder =
+    GetDecoder(aType, aImage, bool(aDecoderFlags & DecoderFlags::IS_REDECODE));
   MOZ_ASSERT(decoder, "Should have a decoder now");
 
   // Initialize the decoder.
   decoder->SetMetadataDecode(false);
   decoder->SetIterator(aSourceBuffer->Iterator());
-  decoder->SetFlags(aFlags);
+  decoder->SetDecoderFlags(aDecoderFlags | DecoderFlags::FIRST_FRAME_ONLY);
+  decoder->SetSurfaceFlags(aSurfaceFlags);
   decoder->SetSampleSize(aSampleSize);
-  decoder->SetResolution(aResolution);
-  decoder->SetSendPartialInvalidations(!aIsRedecode);
-  decoder->SetImageIsTransient(aImageIsTransient);
-
-  if (aImageIsLocked) {
-    decoder->SetImageIsLocked();
-  }
 
   // Set a target size for downscale-during-decode if applicable.
   if (aTargetSize) {
     DebugOnly<nsresult> rv = decoder->SetTargetSize(*aTargetSize);
-    MOZ_ASSERT(nsresult(rv) != NS_ERROR_NOT_AVAILABLE,
-               "We're downscale-during-decode but decoder doesn't support it?");
     MOZ_ASSERT(NS_SUCCEEDED(rv), "Bad downscale-during-decode target size?");
   }
+
+  decoder->Init();
+  if (NS_FAILED(decoder->GetDecoderError())) {
+    return nullptr;
+  }
+
+  return decoder.forget();
+}
+
+/* static */ already_AddRefed<Decoder>
+DecoderFactory::CreateAnimationDecoder(DecoderType aType,
+                                       RasterImage* aImage,
+                                       SourceBuffer* aSourceBuffer,
+                                       DecoderFlags aDecoderFlags,
+                                       SurfaceFlags aSurfaceFlags)
+{
+  if (aType == DecoderType::UNKNOWN) {
+    return nullptr;
+  }
+
+  MOZ_ASSERT(aType == DecoderType::GIF || aType == DecoderType::PNG,
+             "Calling CreateAnimationDecoder for non-animating DecoderType");
+
+  RefPtr<Decoder> decoder =
+    GetDecoder(aType, aImage, /* aIsRedecode = */ true);
+  MOZ_ASSERT(decoder, "Should have a decoder now");
+
+  // Initialize the decoder.
+  decoder->SetMetadataDecode(false);
+  decoder->SetIterator(aSourceBuffer->Iterator());
+  decoder->SetDecoderFlags(aDecoderFlags | DecoderFlags::IS_REDECODE);
+  decoder->SetSurfaceFlags(aSurfaceFlags);
 
   decoder->Init();
   if (NS_FAILED(decoder->GetDecoderError())) {
@@ -156,14 +178,13 @@ DecoderFactory::CreateDecoder(DecoderType aType,
 DecoderFactory::CreateMetadataDecoder(DecoderType aType,
                                       RasterImage* aImage,
                                       SourceBuffer* aSourceBuffer,
-                                      int aSampleSize,
-                                      const IntSize& aResolution)
+                                      int aSampleSize)
 {
   if (aType == DecoderType::UNKNOWN) {
     return nullptr;
   }
 
-  nsRefPtr<Decoder> decoder =
+  RefPtr<Decoder> decoder =
     GetDecoder(aType, aImage, /* aIsRedecode = */ false);
   MOZ_ASSERT(decoder, "Should have a decoder now");
 
@@ -171,7 +192,6 @@ DecoderFactory::CreateMetadataDecoder(DecoderType aType,
   decoder->SetMetadataDecode(true);
   decoder->SetIterator(aSourceBuffer->Iterator());
   decoder->SetSampleSize(aSampleSize);
-  decoder->SetResolution(aResolution);
 
   decoder->Init();
   if (NS_FAILED(decoder->GetDecoderError())) {
@@ -184,28 +204,58 @@ DecoderFactory::CreateMetadataDecoder(DecoderType aType,
 /* static */ already_AddRefed<Decoder>
 DecoderFactory::CreateAnonymousDecoder(DecoderType aType,
                                        SourceBuffer* aSourceBuffer,
-                                       uint32_t aFlags)
+                                       SurfaceFlags aSurfaceFlags)
 {
   if (aType == DecoderType::UNKNOWN) {
     return nullptr;
   }
 
-  nsRefPtr<Decoder> decoder =
+  RefPtr<Decoder> decoder =
     GetDecoder(aType, /* aImage = */ nullptr, /* aIsRedecode = */ false);
   MOZ_ASSERT(decoder, "Should have a decoder now");
 
   // Initialize the decoder.
   decoder->SetMetadataDecode(false);
   decoder->SetIterator(aSourceBuffer->Iterator());
-  decoder->SetFlags(aFlags);
-  decoder->SetImageIsTransient(true);
+
+  // Anonymous decoders are always transient; we don't want to optimize surfaces
+  // or do any other expensive work that might be wasted.
+  DecoderFlags decoderFlags = DecoderFlags::IMAGE_IS_TRANSIENT;
 
   // Without an image, the decoder can't store anything in the SurfaceCache, so
   // callers will only be able to retrieve the most recent frame via
   // Decoder::GetCurrentFrame(). That means that anonymous decoders should
   // always be first-frame-only decoders, because nobody ever wants the *last*
   // frame.
-  decoder->SetIsFirstFrameDecode();
+  decoderFlags |= DecoderFlags::FIRST_FRAME_ONLY;
+
+  decoder->SetDecoderFlags(decoderFlags);
+  decoder->SetSurfaceFlags(aSurfaceFlags);
+
+  decoder->Init();
+  if (NS_FAILED(decoder->GetDecoderError())) {
+    return nullptr;
+  }
+
+  return decoder.forget();
+}
+
+/* static */ already_AddRefed<Decoder>
+DecoderFactory::CreateAnonymousMetadataDecoder(DecoderType aType,
+                                               SourceBuffer* aSourceBuffer)
+{
+  if (aType == DecoderType::UNKNOWN) {
+    return nullptr;
+  }
+
+  RefPtr<Decoder> decoder =
+    GetDecoder(aType, /* aImage = */ nullptr, /* aIsRedecode = */ false);
+  MOZ_ASSERT(decoder, "Should have a decoder now");
+
+  // Initialize the decoder.
+  decoder->SetMetadataDecode(true);
+  decoder->SetIterator(aSourceBuffer->Iterator());
+  decoder->SetDecoderFlags(DecoderFlags::FIRST_FRAME_ONLY);
 
   decoder->Init();
   if (NS_FAILED(decoder->GetDecoderError())) {

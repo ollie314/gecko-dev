@@ -43,6 +43,8 @@ public:
                        const nsAString& aTopLevelOrigin,
                        bool aInPrivateBrowsingMode,
                        UniquePtr<GetNodeIdCallback>&& aCallback) override;
+  NS_IMETHOD UpdateTrialCreateState(const nsAString& aKeySystem,
+                                    uint32_t aState) override;
 
   NS_DECL_MOZIGECKOMEDIAPLUGINCHROMESERVICE
   NS_DECL_NSIOBSERVER
@@ -99,8 +101,8 @@ private:
 
 protected:
   friend class GMPParent;
-  void ReAddOnGMPThread(const nsRefPtr<GMPParent>& aOld);
-  void PluginTerminated(const nsRefPtr<GMPParent>& aOld);
+  void ReAddOnGMPThread(const RefPtr<GMPParent>& aOld);
+  void PluginTerminated(const RefPtr<GMPParent>& aOld);
   virtual void InitializePlugins() override;
   virtual bool GetContentParentFrom(const nsACString& aNodeId,
                                     const nsCString& aAPI,
@@ -132,16 +134,16 @@ private:
     NS_DECL_NSIRUNNABLE
 
   private:
-    nsRefPtr<GeckoMediaPluginServiceParent> mService;
+    RefPtr<GeckoMediaPluginServiceParent> mService;
     nsString mPath;
     EOperation mOperation;
     bool mDefer;
   };
 
   // Protected by mMutex from the base class.
-  nsTArray<nsRefPtr<GMPParent>> mPlugins;
+  nsTArray<RefPtr<GMPParent>> mPlugins;
   bool mShuttingDown;
-  nsTArray<nsRefPtr<GMPParent>> mAsyncShutdownPlugins;
+  nsTArray<RefPtr<GMPParent>> mAsyncShutdownPlugins;
 
 #ifdef MOZ_CRASHREPORTER
   Mutex mAsyncShutdownPluginStatesMutex; // Protects mAsyncShutdownPluginStates.
@@ -219,13 +221,15 @@ public:
                                             nsTArray<nsCString>&& aTags,
                                             bool* aHasPlugin,
                                             nsCString* aVersion);
+  virtual bool RecvUpdateGMPTrialCreateState(const nsString& aKeySystem,
+                                             const uint32_t& aState) override;
 
   virtual void ActorDestroy(ActorDestroyReason aWhy) override;
 
   static PGMPServiceParent* Create(Transport* aTransport, ProcessId aOtherPid);
 
 private:
-  nsRefPtr<GeckoMediaPluginServiceParent> mService;
+  RefPtr<GeckoMediaPluginServiceParent> mService;
 };
 
 } // namespace gmp

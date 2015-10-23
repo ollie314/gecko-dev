@@ -94,9 +94,6 @@ class nsObjectLoadingContent : public nsImageLoadingContent
       eFallbackVulnerableUpdatable = nsIObjectLoadingContent::PLUGIN_VULNERABLE_UPDATABLE,
       // The plugin is vulnerable (no update available)
       eFallbackVulnerableNoUpdate = nsIObjectLoadingContent::PLUGIN_VULNERABLE_NO_UPDATE,
-      // The plugin is disabled and play preview content is displayed until
-      // the extension code enables it by sending the MozPlayPlugin event
-      eFallbackPlayPreview = nsIObjectLoadingContent::PLUGIN_PLAY_PREVIEW
     };
 
     nsObjectLoadingContent();
@@ -224,10 +221,6 @@ class nsObjectLoadingContent : public nsImageLoadingContent
     bool HasRunningPlugin() const
     {
       return !!mInstanceOwner;
-    }
-    void CancelPlayPreview(mozilla::ErrorResult& aRv)
-    {
-      aRv = CancelPlayPreview();
     }
     void SwapFrameLoaders(nsXULElement& aOtherOwner, mozilla::ErrorResult& aRv)
     {
@@ -526,6 +519,8 @@ class nsObjectLoadingContent : public nsImageLoadingContent
      */
     nsPluginFrame* GetExistingFrame();
 
+    bool IsYoutubeEmbed();
+
     // Helper class for SetupProtoChain
     class SetupProtoChainRunner final : public nsIRunnable
     {
@@ -540,7 +535,7 @@ class nsObjectLoadingContent : public nsImageLoadingContent
     private:
       // We store an nsIObjectLoadingContent because we can
       // unambiguously refcount that.
-      nsRefPtr<nsIObjectLoadingContent> mContent;
+      RefPtr<nsIObjectLoadingContent> mContent;
     };
 
     // Utility getter for getting our nsNPAPIPluginInstance in a safe way.
@@ -558,7 +553,7 @@ class nsObjectLoadingContent : public nsImageLoadingContent
     nsCOMPtr<nsIStreamListener> mFinalListener;
 
     // Frame loader, for content documents we load.
-    nsRefPtr<nsFrameLoader>     mFrameLoader;
+    RefPtr<nsFrameLoader>     mFrameLoader;
 
     // Track if we have a pending AsyncInstantiateEvent
     nsCOMPtr<nsIRunnable>       mPendingInstantiateEvent;
@@ -622,22 +617,19 @@ class nsObjectLoadingContent : public nsImageLoadingContent
     // activated by PlayPlugin(). (see ShouldPlay())
     bool                        mActivated : 1;
 
-    // Used to keep track of whether or not a plugin is blocked by play-preview.
-    bool                        mPlayPreviewCanceled : 1;
-
     // Protects DoStopPlugin from reentry (bug 724781).
     bool                        mIsStopping : 1;
 
     // Protects LoadObject from re-entry
     bool                        mIsLoading : 1;
 
-    // For plugin stand-in types (click-to-play, play preview, ...) tracks
+    // For plugin stand-in types (click-to-play) tracks
     // whether content js has tried to access the plugin script object.
     bool                        mScriptRequested : 1;
 
     nsWeakFrame                 mPrintFrame;
 
-    nsRefPtr<nsPluginInstanceOwner> mInstanceOwner;
+    RefPtr<nsPluginInstanceOwner> mInstanceOwner;
     nsTArray<mozilla::dom::MozPluginParameter> mCachedAttributes;
     nsTArray<mozilla::dom::MozPluginParameter> mCachedParameters;
 };

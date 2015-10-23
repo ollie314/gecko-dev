@@ -17,7 +17,8 @@ PointerEvent::PointerEvent(EventTarget* aOwner,
                            nsPresContext* aPresContext,
                            WidgetPointerEvent* aEvent)
   : MouseEvent(aOwner, aPresContext,
-               aEvent ? aEvent : new WidgetPointerEvent(false, 0, nullptr))
+               aEvent ? aEvent :
+                        new WidgetPointerEvent(false, eVoidEvent, nullptr))
 {
   NS_ASSERTION(mEvent->mClass == ePointerEventClass,
                "event type mismatch ePointerEventClass");
@@ -74,7 +75,7 @@ PointerEvent::Constructor(EventTarget* aOwner,
                           const nsAString& aType,
                           const PointerEventInit& aParam)
 {
-  nsRefPtr<PointerEvent> e = new PointerEvent(aOwner, nullptr, nullptr);
+  RefPtr<PointerEvent> e = new PointerEvent(aOwner, nullptr, nullptr);
   bool trusted = e->Init(aOwner);
 
   e->InitMouseEvent(aType, aParam.mBubbles, aParam.mCancelable,
@@ -169,6 +170,6 @@ NS_NewDOMPointerEvent(EventTarget* aOwner,
                       nsPresContext* aPresContext,
                       WidgetPointerEvent *aEvent)
 {
-  nsRefPtr<PointerEvent> it = new PointerEvent(aOwner, aPresContext, aEvent);
+  RefPtr<PointerEvent> it = new PointerEvent(aOwner, aPresContext, aEvent);
   return it.forget();
 }

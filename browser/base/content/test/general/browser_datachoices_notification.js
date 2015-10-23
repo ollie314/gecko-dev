@@ -6,8 +6,8 @@
 
 // Pass an empty scope object to the import to prevent "leaked window property"
 // errors in tests.
-let Preferences = Cu.import("resource://gre/modules/Preferences.jsm", {}).Preferences;
-let TelemetryReportingPolicy =
+var Preferences = Cu.import("resource://gre/modules/Preferences.jsm", {}).Preferences;
+var TelemetryReportingPolicy =
   Cu.import("resource://gre/modules/TelemetryReportingPolicy.jsm", {}).TelemetryReportingPolicy;
 
 XPCOMUtils.defineLazyGetter(this, "gDatareportingService",
@@ -84,7 +84,7 @@ function triggerInfoBar(expectedTimeoutMs) {
   showInfobarCallback();
 }
 
-let checkInfobarButton = Task.async(function* (aNotification) {
+var checkInfobarButton = Task.async(function* (aNotification) {
   // Check that the button on the data choices infobar does the right thing.
   let buttons = aNotification.getElementsByTagName("button");
   Assert.equal(buttons.length, 1, "There is 1 button in the data reporting notification.");
@@ -100,11 +100,6 @@ let checkInfobarButton = Task.async(function* (aNotification) {
   // Wait for the preferences panel to open.
   let preferenceWindow = yield paneLoadedPromise;
   yield promiseNextTick();
-  // If the prefs are being displayed in a dialog we need to close it.
-  // If in a tab (ie, in-content prefs) it closes with the window.
-  if (!Services.prefs.getBoolPref("browser.preferences.inContent")) {
-    prefWin.close();
-  }
 });
 
 add_task(function* setup(){

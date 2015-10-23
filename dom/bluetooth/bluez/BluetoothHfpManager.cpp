@@ -477,7 +477,7 @@ BluetoothHfpManager::Init()
   nsresult rv = settings->CreateLock(nullptr, getter_AddRefs(settingsLock));
   NS_ENSURE_SUCCESS(rv, false);
 
-  nsRefPtr<GetVolumeTask> callback = new GetVolumeTask();
+  RefPtr<GetVolumeTask> callback = new GetVolumeTask();
   rv = settingsLock->Get(AUDIO_VOLUME_BT_SCO_ID, callback);
   NS_ENSURE_SUCCESS(rv, false);
 
@@ -590,7 +590,8 @@ BluetoothHfpManager::HandleVolumeChanged(nsISupports* aSubject)
   //  {"key":"volumeup", "value":10}
   //  {"key":"volumedown", "value":2}
 
-  RootedDictionary<dom::SettingChangeNotification> setting(nsContentUtils::RootingCx());
+  RootedDictionary<dom::SettingChangeNotification>
+    setting(nsContentUtils::RootingCx());
 
   if (!WrappedJSToDictionary(aSubject, setting)) {
     return;
@@ -843,7 +844,8 @@ BluetoothHfpManager::ReceiveSocketData(BluetoothSocket* aSocket,
     if (!atCommandValues[0].EqualsLiteral("3") ||
         !atCommandValues[1].EqualsLiteral("0")) {
       if (mCMEE) {
-        SendCommand(RESPONSE_CME_ERROR, BluetoothCmeError::OPERATION_NOT_SUPPORTED);
+        SendCommand(RESPONSE_CME_ERROR,
+                    BluetoothCmeError::OPERATION_NOT_SUPPORTED);
       } else {
         SendLine("ERROR");
       }
@@ -1225,7 +1227,8 @@ BluetoothHfpManager::Disconnect(BluetoothProfileController* aController)
 
   if (!mSocket) {
     if (aController) {
-      aController->NotifyCompletion(NS_LITERAL_STRING(ERR_ALREADY_DISCONNECTED));
+      aController->NotifyCompletion(
+        NS_LITERAL_STRING(ERR_ALREADY_DISCONNECTED));
     }
     return;
   }
@@ -1500,15 +1503,17 @@ BluetoothHfpManager::HandleCallStateChanged(uint32_t aCallIndex,
   }
   mCurrentCallArray[aCallIndex].mNumber = aNumber;
 
-  nsRefPtr<nsRunnable> sendRingTask;
+  RefPtr<nsRunnable> sendRingTask;
   nsString address;
 
   switch (aCallState) {
     case nsITelephonyService::CALL_STATE_HELD:
       switch (prevCallState) {
         case nsITelephonyService::CALL_STATE_CONNECTED: {
-          uint32_t numActive = GetNumberOfCalls(nsITelephonyService::CALL_STATE_CONNECTED);
-          uint32_t numHeld = GetNumberOfCalls(nsITelephonyService::CALL_STATE_HELD);
+          uint32_t numActive =
+            GetNumberOfCalls(nsITelephonyService::CALL_STATE_CONNECTED);
+          uint32_t numHeld =
+            GetNumberOfCalls(nsITelephonyService::CALL_STATE_HELD);
           uint32_t numConCalls = GetNumberOfConCalls();
 
           /**
@@ -1530,20 +1535,24 @@ BluetoothHfpManager::HandleCallStateChanged(uint32_t aCallIndex,
           if (!aIsConference) {
             if (numActive + numHeld == 1) {
               // A single active call is put on hold.
-              sCINDItems[CINDType::CALLHELD].value = CallHeldState::ONHOLD_NOACTIVE;
+              sCINDItems[CINDType::CALLHELD].value =
+                CallHeldState::ONHOLD_NOACTIVE;
             } else {
               // An active call is placed on hold or active/held calls swapped.
-              sCINDItems[CINDType::CALLHELD].value = CallHeldState::ONHOLD_ACTIVE;
+              sCINDItems[CINDType::CALLHELD].value =
+                CallHeldState::ONHOLD_ACTIVE;
             }
             SendCommand(RESPONSE_CIEV, CINDType::CALLHELD);
           } else if (GetNumberOfConCalls(nsITelephonyService::CALL_STATE_HELD)
                      == numConCalls) {
             if (numActive + numHeld == numConCalls) {
               // An active conference call is put on hold.
-              sCINDItems[CINDType::CALLHELD].value = CallHeldState::ONHOLD_NOACTIVE;
+              sCINDItems[CINDType::CALLHELD].value =
+                CallHeldState::ONHOLD_NOACTIVE;
             } else {
               // Active calls are placed on hold or active/held calls swapped.
-              sCINDItems[CINDType::CALLHELD].value = CallHeldState::ONHOLD_ACTIVE;
+              sCINDItems[CINDType::CALLHELD].value =
+                CallHeldState::ONHOLD_ACTIVE;
             }
             SendCommand(RESPONSE_CIEV, CINDType::CALLHELD);
           }
@@ -2082,7 +2091,7 @@ BluetoothHfpManager::OnConnect(const nsAString& aErrorStr)
    */
   NS_ENSURE_TRUE_VOID(mController);
 
-  nsRefPtr<BluetoothProfileController> controller = mController.forget();
+  RefPtr<BluetoothProfileController> controller = mController.forget();
   controller->NotifyCompletion(aErrorStr);
 }
 
@@ -2101,7 +2110,7 @@ BluetoothHfpManager::OnDisconnect(const nsAString& aErrorStr)
    */
   NS_ENSURE_TRUE_VOID(mController);
 
-  nsRefPtr<BluetoothProfileController> controller = mController.forget();
+  RefPtr<BluetoothProfileController> controller = mController.forget();
   controller->NotifyCompletion(aErrorStr);
 }
 

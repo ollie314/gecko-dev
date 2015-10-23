@@ -20,8 +20,8 @@ import org.mozilla.gecko.R;
 import org.mozilla.gecko.Tab;
 import org.mozilla.gecko.Tabs;
 import org.mozilla.gecko.util.ColorUtils;
-import org.mozilla.gecko.widget.ThemedImageButton;
-import org.mozilla.gecko.widget.ThemedLinearLayout;
+import org.mozilla.gecko.widget.themed.ThemedImageButton;
+import org.mozilla.gecko.widget.themed.ThemedLinearLayout;
 
 public class TabStrip extends ThemedLinearLayout
                       implements Refreshable {
@@ -40,7 +40,7 @@ public class TabStrip extends ThemedLinearLayout
         super(context, attrs);
         setOrientation(HORIZONTAL);
 
-        LayoutInflater.from(context).inflate(R.layout.tab_strip, this);
+        LayoutInflater.from(context).inflate(R.layout.tab_strip_inner, this);
         tabStripView = (TabStripView) findViewById(R.id.tab_strip);
 
         addTabButton = (ThemedImageButton) findViewById(R.id.add_tab);

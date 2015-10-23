@@ -49,6 +49,8 @@ if CONFIG['INTEL_ARCHITECTURE'] and CONFIG['GNU_CC'] and CONFIG['OS_ARCH'] != 'W
             'skia/src/opts/SkBlitRow_opts_SSE4_asm.S',
         ]
 
+ALLOW_COMPILER_WARNINGS = True
+
 FINAL_LIBRARY = 'gkmedias'
 LOCAL_INCLUDES += [
     'skia/include/config',
@@ -94,10 +96,6 @@ if CONFIG['MOZ_WIDGET_TOOLKIT'] in {
   } or CONFIG['MOZ_WIDGET_GTK']:
     DEFINES['SK_FONTHOST_DOES_NOT_USE_FONTMGR'] = 1
 
-if CONFIG['GKMEDIAS_SHARED_LIBRARY']:
-    DEFINES['SKIA_DLL'] = 1
-    DEFINES['GR_DLL'] = 1
-
 # We should autogenerate these SSE related flags.
 
 if CONFIG['_MSC_VER']:
@@ -137,13 +135,23 @@ DEFINES['GR_IMPLEMENTATION'] = 1
 
 if CONFIG['GNU_CXX']:
     CXXFLAGS += [
+        '-Wno-deprecated-declarations',
         '-Wno-overloaded-virtual',
+        '-Wno-sign-compare',
         '-Wno-unused-function',
     ]
     if CONFIG['CLANG_CXX']:
-        CXXFLAGS += ['-Wno-inconsistent-missing-override']
+        CXXFLAGS += [
+            '-Wno-implicit-fallthrough',
+            '-Wno-inconsistent-missing-override',
+            '-Wno-macro-redefined',
+            '-Wno-unused-private-field',
+        ]
     else:
-        CXXFLAGS += ['-Wno-logical-op']
+        CXXFLAGS += [
+            '-Wno-logical-op',
+            '-Wno-maybe-uninitialized',
+        ]
     if CONFIG['CPU_ARCH'] == 'arm':
         SOURCES['skia/src/opts/SkBlitRow_opts_arm.cpp'].flags += ['-fomit-frame-pointer']
 

@@ -8,16 +8,19 @@ dump("######################## BrowserElementChildPreload.js loaded\n");
 
 var BrowserElementIsReady = false;
 
-let { classes: Cc, interfaces: Ci, results: Cr, utils: Cu }  = Components;
+var { classes: Cc, interfaces: Ci, results: Cr, utils: Cu }  = Components;
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/BrowserElementPromptService.jsm");
+Cu.import("resource://gre/modules/Task.jsm");
+Cu.import("resource://gre/modules/Microformats.js");
+Cu.import("resource://gre/modules/ExtensionContent.jsm");
 
 XPCOMUtils.defineLazyServiceGetter(this, "acs",
                                    "@mozilla.org/audiochannel/service;1",
                                    "nsIAudioChannelService");
 
-let kLongestReturnedString = 128;
+var kLongestReturnedString = 128;
 
 function debug(msg) {
   //dump("BrowserElementChildPreload - " + msg + "\n");
@@ -51,7 +54,7 @@ function sendSyncMsg(msg, data) {
   return sendSyncMessage('browser-element-api:call', data);
 }
 
-let CERTIFICATE_ERROR_PAGE_PREF = 'security.alternate_certificate_error_page';
+var CERTIFICATE_ERROR_PAGE_PREF = 'security.alternate_certificate_error_page';
 
 const OBSERVED_EVENTS = [
   'xpcom-shutdown',
@@ -63,6 +66,8 @@ const OBSERVED_EVENTS = [
 const COMMAND_MAP = {
   'cut': 'cmd_cut',
   'copy': 'cmd_copyAndCollapseToEnd',
+  'copyImage': 'cmd_copyImage',
+  'copyLink': 'cmd_copyLink',
   'paste': 'cmd_paste',
   'selectall': 'cmd_selectAll'
 };
@@ -249,7 +254,8 @@ BrowserElementChild.prototype = {
       "set-audio-channel-volume": this._recvSetAudioChannelVolume,
       "get-audio-channel-muted": this._recvGetAudioChannelMuted,
       "set-audio-channel-muted": this._recvSetAudioChannelMuted,
-      "get-is-audio-channel-active": this._recvIsAudioChannelActive
+      "get-is-audio-channel-active": this._recvIsAudioChannelActive,
+      "get-structured-data": this._recvGetStructuredData
     }
 
     addMessageListener("browser-element-api:call", function(aMessage) {
@@ -568,33 +574,42 @@ BrowserElementChild.prototype = {
       return;
     }
 
-    if (!e.target.name) {
+    var name = e.target.name;
+    var property = e.target.getAttributeNS(null, "property");
+
+    if (!name && !property) {
       return;
     }
 
-    debug('Got metaChanged: (' + e.target.name + ') ' + e.target.content);
+    debug('Got metaChanged: (' + (name || property) + ') ' +
+          e.target.content);
 
     let handlers = {
-      'viewmode': this._genericMetaHandler.bind(null, 'viewmode'),
-      'theme-color': this._genericMetaHandler.bind(null, 'theme-color'),
-      'theme-group': this._genericMetaHandler.bind(null, 'theme-group'),
+      'viewmode': this._genericMetaHandler,
+      'theme-color': this._genericMetaHandler,
+      'theme-group': this._genericMetaHandler,
       'application-name': this._applicationNameChangedHandler
     };
+    let handler = handlers[name];
 
-    let handler = handlers[e.target.name];
+    if ((property || name).match(/^og:/)) {
+      name = property || name;
+      handler = this._genericMetaHandler;
+    }
+
     if (handler) {
-      handler(e.type, e.target);
+      handler(name, e.type, e.target);
     }
   },
 
-  _applicationNameChangedHandler: function(eventType, target) {
+  _applicationNameChangedHandler: function(name, eventType, target) {
     if (eventType !== 'DOMMetaAdded') {
       // Bug 1037448 - Decide what to do when <meta name="application-name">
       // changes
       return;
     }
 
-    let meta = { name: 'application-name',
+    let meta = { name: name,
                  content: target.content };
 
     let lang;
@@ -855,6 +870,18 @@ BrowserElementChild.prototype = {
     var elem = e.target;
     var menuData = {systemTargets: [], contextmenu: null};
     var ctxMenuId = null;
+    var clipboardPlainTextOnly = Services.prefs.getBoolPref('clipboard.plainTextOnly');
+    var copyableElements = {
+      image: false,
+      link: false,
+      hasElements: function() {
+        return this.image || this.link;
+      }
+    };
+
+    // Set the event target as the copy image command needs it to
+    // determine what was context-clicked on.
+    docShell.contentViewer.QueryInterface(Ci.nsIContentViewerEdit).setCommandNode(elem);
 
     while (elem && elem.parentNode) {
       var ctxData = this._getSystemCtxMenuData(elem);
@@ -868,19 +895,30 @@ BrowserElementChild.prototype = {
       if (!ctxMenuId && 'hasAttribute' in elem && elem.hasAttribute('contextmenu')) {
         ctxMenuId = elem.getAttribute('contextmenu');
       }
+
+      // Enable copy image/link option
+      if (elem.nodeName == 'IMG') {
+        copyableElements.image = !clipboardPlainTextOnly;
+      } else if (elem.nodeName == 'A') {
+        copyableElements.link = true;
+      }
+
       elem = elem.parentNode;
     }
 
-    if (ctxMenuId) {
-      var menu = e.target.ownerDocument.getElementById(ctxMenuId);
-      if (menu) {
-        menuData.contextmenu = this._buildMenuObj(menu, '');
+    if (ctxMenuId || copyableElements.hasElements()) {
+      var menu = null;
+      if (ctxMenuId) {
+        menu = e.target.ownerDocument.getElementById(ctxMenuId);
       }
+      menuData.contextmenu = this._buildMenuObj(menu, '', copyableElements);
     }
 
     // Pass along the position where the context menu should be located
     menuData.clientX = e.clientX;
     menuData.clientY = e.clientY;
+    menuData.screenX = e.screenX;
+    menuData.screenY = e.screenY;
 
     // The value returned by the contextmenu sync call is true if the embedder
     // called preventDefault() on its contextmenu event.
@@ -1208,31 +1246,58 @@ BrowserElementChild.prototype = {
 
   _recvFireCtxCallback: function(data) {
     debug("Received fireCtxCallback message: (" + data.json.menuitem + ")");
-    // We silently ignore if the embedder uses an incorrect id in the callback
-    if (data.json.menuitem in this._ctxHandlers) {
+
+    if (data.json.menuitem == 'copy-image') {
+      // Set command
+      data.json.command = 'copyImage';
+      this._recvDoCommand(data);
+    } else if (data.json.menuitem == 'copy-link') {
+      // Set command
+      data.json.command = 'copyLink';
+      this._recvDoCommand(data);
+    } else if (data.json.menuitem in this._ctxHandlers) {
       this._ctxHandlers[data.json.menuitem].click();
       this._ctxHandlers = {};
     } else {
+      // We silently ignore if the embedder uses an incorrect id in the callback
       debug("Ignored invalid contextmenu invocation");
     }
   },
 
-  _buildMenuObj: function(menu, idPrefix) {
-    var menuObj = {type: 'menu', items: []};
-    this._maybeCopyAttribute(menu, menuObj, 'label');
+  _buildMenuObj: function(menu, idPrefix, copyableElements) {
+    var menuObj = {type: 'menu', customized: false, items: []};
+    // Customized context menu
+    if (menu) {
+      this._maybeCopyAttribute(menu, menuObj, 'label');
 
-    for (var i = 0, child; child = menu.children[i++];) {
-      if (child.nodeName === 'MENU') {
-        menuObj.items.push(this._buildMenuObj(child, idPrefix + i + '_'));
-      } else if (child.nodeName === 'MENUITEM') {
-        var id = this._ctxCounter + '_' + idPrefix + i;
-        var menuitem = {id: id, type: 'menuitem'};
-        this._maybeCopyAttribute(child, menuitem, 'label');
-        this._maybeCopyAttribute(child, menuitem, 'icon');
-        this._ctxHandlers[id] = child;
-        menuObj.items.push(menuitem);
+      for (var i = 0, child; child = menu.children[i++];) {
+        if (child.nodeName === 'MENU') {
+          menuObj.items.push(this._buildMenuObj(child, idPrefix + i + '_', false));
+        } else if (child.nodeName === 'MENUITEM') {
+          var id = this._ctxCounter + '_' + idPrefix + i;
+          var menuitem = {id: id, type: 'menuitem'};
+          this._maybeCopyAttribute(child, menuitem, 'label');
+          this._maybeCopyAttribute(child, menuitem, 'icon');
+          this._ctxHandlers[id] = child;
+          menuObj.items.push(menuitem);
+        }
+      }
+
+      if (menuObj.items.length > 0) {
+        menuObj.customized = true;
       }
     }
+    // Note: Display "Copy Link" first in order to make sure "Copy Image" is
+    //       put together with other image options if elem is an image link.
+    // "Copy Link" menu item
+    if (copyableElements.link) {
+      menuObj.items.push({id: 'copy-link'});
+    }
+    // "Copy Image" menu item
+    if (copyableElements.image) {
+      menuObj.items.push({id: 'copy-image'});
+    }
+
     return menuObj;
   },
 
@@ -1500,6 +1565,300 @@ BrowserElementChild.prototype = {
     sendAsyncMsg('got-set-input-method-active', msgData);
   },
 
+  _processMicroformatValue(field, value) {
+    if (['node', 'resolvedNode', 'semanticType'].includes(field)) {
+      return null;
+    } else if (Array.isArray(value)) {
+      var result = value.map(i => this._processMicroformatValue(field, i))
+                        .filter(i => i !== null);
+      return result.length ? result : null;
+    } else if (typeof value == 'string') {
+      return value;
+    } else if (typeof value == 'object' && value !== null) {
+      return this._processMicroformatItem(value);
+    }
+    return null;
+  },
+
+  // This function takes legacy Microformat data (hCard and hCalendar)
+  // and produces the same result that the equivalent Microdata data
+  // would produce.
+  _processMicroformatItem(microformatData) {
+    var result = {};
+
+    if (microformatData.semanticType == 'geo') {
+      return microformatData.latitude + ';' + microformatData.longitude;
+    }
+
+    if (microformatData.semanticType == 'hCard') {
+      result.type = ["http://microformats.org/profile/hcard"];
+    } else if (microformatData.semanticType == 'hCalendar') {
+      result.type = ["http://microformats.org/profile/hcalendar#vevent"];
+    }
+
+    for (let field of Object.getOwnPropertyNames(microformatData)) {
+      var processed = this._processMicroformatValue(field, microformatData[field]);
+      if (processed === null) {
+        continue;
+      }
+      if (!result.properties) {
+        result.properties = {};
+      }
+      if (Array.isArray(processed)) {
+        result.properties[field] = processed;
+      } else {
+        result.properties[field] = [processed];
+      }
+    }
+
+    return result;
+  },
+
+  _findItemProperties: function(node, properties, alreadyProcessed) {
+    if (node.itemProp) {
+      var value;
+
+      if (node.itemScope) {
+        value = this._processItem(node, alreadyProcessed);
+      } else {
+        value = node.itemValue;
+      }
+
+      for (let i = 0; i < node.itemProp.length; ++i) {
+        var property = node.itemProp[i];
+        if (!properties[property]) {
+          properties[property] = [];
+        }
+
+        properties[property].push(value);
+      }
+    }
+
+    if (!node.itemScope) {
+      var childNodes = node.childNodes;
+      for (var childNode of childNodes) {
+        this._findItemProperties(childNode, properties, alreadyProcessed);
+      }
+    }
+  },
+
+  _processItem: function(node, alreadyProcessed = []) {
+    if (alreadyProcessed.includes(node)) {
+      return "ERROR";
+    }
+
+    alreadyProcessed.push(node);
+
+    var result = {};
+
+    if (node.itemId) {
+      result.id = node.itemId;
+    }
+    if (node.itemType) {
+      result.type = [];
+      for (let i = 0; i < node.itemType.length; ++i) {
+        result.type.push(node.itemType[i]);
+      }
+    }
+
+    var properties = {};
+
+    var childNodes = node.childNodes;
+    for (var childNode of childNodes) {
+      this._findItemProperties(childNode, properties, alreadyProcessed);
+    }
+
+    if (node.itemRef) {
+      for (let i = 0; i < node.itemRef.length; ++i) {
+        var refNode = content.document.getElementById(node.itemRef[i]);
+        this._findItemProperties(refNode, properties, alreadyProcessed);
+      }
+    }
+
+    result.properties = properties;
+    return result;
+  },
+
+  _recvGetStructuredData: function(data) {
+    var result = {
+      items: []
+    };
+
+    var microdataItems = content.document.getItems();
+
+    for (let microdataItem of microdataItems) {
+      result.items.push(this._processItem(microdataItem));
+    }
+
+    var hCardItems = Microformats.get("hCard", content.document);
+    for (let hCardItem of hCardItems) {
+      if (!hCardItem.node.itemScope) {  // If it's also marked with Microdata, ignore the Microformat
+        result.items.push(this._processMicroformatItem(hCardItem));
+      }
+    }
+
+    var hCalendarItems = Microformats.get("hCalendar", content.document);
+    for (let hCalendarItem of hCalendarItems) {
+      if (!hCalendarItem.node.itemScope) {  // If it's also marked with Microdata, ignore the Microformat
+        result.items.push(this._processMicroformatItem(hCalendarItem));
+      }
+    }
+
+    var resultString = JSON.stringify(result);
+
+    sendAsyncMsg('got-structured-data', {
+      id: data.json.id,
+      successRv: resultString
+    });
+  },
+
+  _processMicroformatValue(field, value) {
+    if (['node', 'resolvedNode', 'semanticType'].includes(field)) {
+      return null;
+    } else if (Array.isArray(value)) {
+      var result = value.map(i => this._processMicroformatValue(field, i))
+                        .filter(i => i !== null);
+      return result.length ? result : null;
+    } else if (typeof value == 'string') {
+      return value;
+    } else if (typeof value == 'object' && value !== null) {
+      return this._processMicroformatItem(value);
+    }
+    return null;
+  },
+
+  // This function takes legacy Microformat data (hCard and hCalendar)
+  // and produces the same result that the equivalent Microdata data
+  // would produce.
+  _processMicroformatItem(microformatData) {
+    var result = {};
+
+    if (microformatData.semanticType == 'geo') {
+      return microformatData.latitude + ';' + microformatData.longitude;
+    }
+
+    if (microformatData.semanticType == 'hCard') {
+      result.type = ["http://microformats.org/profile/hcard"];
+    } else if (microformatData.semanticType == 'hCalendar') {
+      result.type = ["http://microformats.org/profile/hcalendar#vevent"];
+    }
+
+    for (let field of Object.getOwnPropertyNames(microformatData)) {
+      var processed = this._processMicroformatValue(field, microformatData[field]);
+      if (processed === null) {
+        continue;
+      }
+      if (!result.properties) {
+        result.properties = {};
+      }
+      if (Array.isArray(processed)) {
+        result.properties[field] = processed;
+      } else {
+        result.properties[field] = [processed];
+      }
+    }
+
+    return result;
+  },
+
+  _findItemProperties: function(node, properties, alreadyProcessed) {
+    if (node.itemProp) {
+      var value;
+
+      if (node.itemScope) {
+        value = this._processItem(node, alreadyProcessed);
+      } else {
+        value = node.itemValue;
+      }
+
+      for (let i = 0; i < node.itemProp.length; ++i) {
+        var property = node.itemProp[i];
+        if (!properties[property]) {
+          properties[property] = [];
+        }
+
+        properties[property].push(value);
+      }
+    }
+
+    if (!node.itemScope) {
+      var childNodes = node.childNodes;
+      for (var childNode of childNodes) {
+        this._findItemProperties(childNode, properties, alreadyProcessed);
+      }
+    }
+  },
+
+  _processItem: function(node, alreadyProcessed = []) {
+    if (alreadyProcessed.includes(node)) {
+      return "ERROR";
+    }
+
+    alreadyProcessed.push(node);
+
+    var result = {};
+
+    if (node.itemId) {
+      result.id = node.itemId;
+    }
+    if (node.itemType) {
+      result.type = [];
+      for (let i = 0; i < node.itemType.length; ++i) {
+        result.type.push(node.itemType[i]);
+      }
+    }
+
+    var properties = {};
+
+    var childNodes = node.childNodes;
+    for (var childNode of childNodes) {
+      this._findItemProperties(childNode, properties, alreadyProcessed);
+    }
+
+    if (node.itemRef) {
+      for (let i = 0; i < node.itemRef.length; ++i) {
+        var refNode = content.document.getElementById(node.itemRef[i]);
+        this._findItemProperties(refNode, properties, alreadyProcessed);
+      }
+    }
+
+    result.properties = properties;
+    return result;
+  },
+
+  _recvGetStructuredData: function(data) {
+    var result = {
+      items: []
+    };
+
+    var microdataItems = content.document.getItems();
+
+    for (let microdataItem of microdataItems) {
+      result.items.push(this._processItem(microdataItem));
+    }
+
+    var hCardItems = Microformats.get("hCard", content.document);
+    for (let hCardItem of hCardItems) {
+      if (!hCardItem.node.itemScope) {  // If it's also marked with Microdata, ignore the Microformat
+        result.items.push(this._processMicroformatItem(hCardItem));
+      }
+    }
+
+    var hCalendarItems = Microformats.get("hCalendar", content.document);
+    for (let hCalendarItem of hCalendarItems) {
+      if (!hCalendarItem.node.itemScope) {  // If it's also marked with Microdata, ignore the Microformat
+        result.items.push(this._processMicroformatItem(hCalendarItem));
+      }
+    }
+
+    var resultString = JSON.stringify(result);
+
+    sendAsyncMsg('got-structured-data', {
+      id: data.json.id,
+      successRv: resultString
+    });
+  },
+
   // The docShell keeps a weak reference to the progress listener, so we need
   // to keep a strong ref to it ourselves.
   _progressListener: {
@@ -1537,12 +1896,7 @@ BrowserElementChild.prototype = {
       }
 
       if (stateFlags & Ci.nsIWebProgressListener.STATE_STOP) {
-        let bgColor = 'transparent';
-        try {
-          bgColor = content.getComputedStyle(content.document.body)
-                           .getPropertyValue('background-color');
-        } catch (e) {}
-        sendAsyncMsg('loadend', {backgroundColor: bgColor});
+        sendAsyncMsg('loadend');
 
         switch (status) {
           case Cr.NS_OK :
@@ -1731,5 +2085,13 @@ BrowserElementChild.prototype = {
   }
 };
 
-var api = new BrowserElementChild();
-
+var api = null;
+if ('DoPreloadPostfork' in this && typeof this.DoPreloadPostfork === 'function') {
+  // If we are preloaded, instantiate BrowserElementChild after a content
+  // process is forked.
+  this.DoPreloadPostfork(function() {
+    api = new BrowserElementChild();
+  });
+} else {
+  api = new BrowserElementChild();
+}

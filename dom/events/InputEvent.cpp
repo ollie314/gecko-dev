@@ -15,7 +15,8 @@ InputEvent::InputEvent(EventTarget* aOwner,
                        nsPresContext* aPresContext,
                        InternalEditorInputEvent* aEvent)
   : UIEvent(aOwner, aPresContext,
-            aEvent ? aEvent : new InternalEditorInputEvent(false, 0, nullptr))
+            aEvent ? aEvent :
+                     new InternalEditorInputEvent(false, eVoidEvent, nullptr))
 {
   NS_ASSERTION(mEvent->mClass == eEditorInputEventClass,
                "event type mismatch");
@@ -47,7 +48,7 @@ InputEvent::Constructor(const GlobalObject& aGlobal,
                         ErrorResult& aRv)
 {
   nsCOMPtr<EventTarget> t = do_QueryInterface(aGlobal.GetAsSupports());
-  nsRefPtr<InputEvent> e = new InputEvent(t, nullptr, nullptr);
+  RefPtr<InputEvent> e = new InputEvent(t, nullptr, nullptr);
   bool trusted = e->Init(t);
   aRv = e->InitUIEvent(aType, aParam.mBubbles, aParam.mCancelable,
                        aParam.mView, aParam.mDetail);
@@ -68,6 +69,6 @@ NS_NewDOMInputEvent(EventTarget* aOwner,
                     nsPresContext* aPresContext,
                     InternalEditorInputEvent* aEvent)
 {
-  nsRefPtr<InputEvent> it = new InputEvent(aOwner, aPresContext, aEvent);
+  RefPtr<InputEvent> it = new InputEvent(aOwner, aPresContext, aEvent);
   return it.forget();
 }

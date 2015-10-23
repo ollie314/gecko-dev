@@ -25,18 +25,17 @@ public:
                      bool aDXVAEnabled);
   ~WMFVideoMFTManager();
 
-  virtual already_AddRefed<MFTDecoder> Init() override;
+  bool Init();
 
-  virtual HRESULT Input(MediaRawData* aSample) override;
+  HRESULT Input(MediaRawData* aSample) override;
 
-  virtual HRESULT Output(int64_t aStreamOffset,
-                         nsRefPtr<MediaData>& aOutput) override;
+  HRESULT Output(int64_t aStreamOffset, RefPtr<MediaData>& aOutput) override;
 
-  virtual void Shutdown() override;
+  void Shutdown() override;
 
-  virtual bool IsHardwareAccelerated() const override;
+  bool IsHardwareAccelerated(nsACString& aFailureReason) const override;
 
-  virtual TrackInfo::TrackType GetType() override {
+  TrackInfo::TrackType GetType() override {
     return TrackInfo::kVideoTrack;
   }
 
@@ -44,7 +43,7 @@ private:
 
   bool InitializeDXVA(bool aForceD3D9);
 
-  already_AddRefed<MFTDecoder> InitInternal(bool aForceD3D9);
+  bool InitInternal(bool aForceD3D9);
 
   HRESULT ConfigureVideoFrameGeometry();
 
@@ -56,6 +55,10 @@ private:
                               int64_t aStreamOffset,
                               VideoData** aOutVideoData);
 
+  HRESULT SetDecoderMediaTypes();
+
+  bool CanUseDXVA(IMFMediaType* aType);
+
   // Video frame geometry.
   VideoInfo mVideoInfo;
   uint32_t mVideoStride;
@@ -63,13 +66,17 @@ private:
   uint32_t mVideoHeight;
   nsIntRect mPictureRegion;
 
-  RefPtr<MFTDecoder> mDecoder;
   RefPtr<layers::ImageContainer> mImageContainer;
   nsAutoPtr<DXVA2Manager> mDXVA2Manager;
 
-  const bool mDXVAEnabled;
+  RefPtr<IMFSample> mLastInput;
+  float mLastDuration;
+
+  bool mDXVAEnabled;
   const layers::LayersBackend mLayersBackend;
   bool mUseHwAccel;
+
+  nsCString mDXVAFailureReason;
 
   enum StreamType {
     Unknown,

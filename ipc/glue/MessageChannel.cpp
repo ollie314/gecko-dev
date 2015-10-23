@@ -277,7 +277,7 @@ private:
 
 namespace {
 
-class MOZ_STACK_CLASS MaybeScriptBlocker {
+class MOZ_RAII MaybeScriptBlocker {
 public:
     explicit MaybeScriptBlocker(MessageChannel *aChannel, bool aBlock
                                 MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
@@ -922,6 +922,7 @@ MessageChannel::Send(Message* aMsg, Message* aReply)
         return false;
     }
 
+    bool handleWindowsMessages = mListener->HandleWindowsMessages(*aMsg);
     mLink->SendMessage(msg.forget());
 
     while (true) {
@@ -942,7 +943,7 @@ MessageChannel::Send(Message* aMsg, Message* aReply)
 
         MOZ_ASSERT(!mTimedOutMessageSeqno);
 
-        bool maybeTimedOut = !WaitForSyncNotify();
+        bool maybeTimedOut = !WaitForSyncNotify(handleWindowsMessages);
 
         if (!Connected()) {
             ReportConnectionError("MessageChannel::SendAndWait");
@@ -995,7 +996,6 @@ MessageChannel::Call(Message* aMsg, Message* aReply)
 
 #ifdef OS_WIN
     SyncStackFrame frame(this, true);
-    NeuteredWindowRegion neuteredRgn(mFlags & REQUIRE_DEFERRED_MESSAGE_PROTECTION);
 #endif
 
     // This must come before MonitorAutoLock, as its destructor acquires the
@@ -1035,9 +1035,16 @@ MessageChannel::Call(Message* aMsg, Message* aReply)
         }
 
 #ifdef OS_WIN
-        /* We should pump messages at this point to ensure that the IPC peer
-           does not become deadlocked on a pending inter-thread SendMessage() */
-        neuteredRgn.PumpOnce();
+        // We need to limit the scoped of neuteredRgn to this spot in the code.
+        // Window neutering can't be enabled during some plugin calls because
+        // we then risk the neutered window procedure being subclassed by a
+        // plugin.
+        {
+            NeuteredWindowRegion neuteredRgn(mFlags & REQUIRE_DEFERRED_MESSAGE_PROTECTION);
+            /* We should pump messages at this point to ensure that the IPC peer
+               does not become deadlocked on a pending inter-thread SendMessage() */
+            neuteredRgn.PumpOnce();
+        }
 #endif
 
         // Now might be the time to process a message deferred because of race
@@ -1570,7 +1577,7 @@ MessageChannel::WaitResponse(bool aWaitTimedOut)
 
 #ifndef OS_WIN
 bool
-MessageChannel::WaitForSyncNotify()
+MessageChannel::WaitForSyncNotify(bool /* aHandleWindowsMessages */)
 {
     PRIntervalTime timeout = (kNoTimeout == mTimeoutMs) ?
                              PR_INTERVAL_NO_TIMEOUT :
@@ -1588,7 +1595,7 @@ MessageChannel::WaitForSyncNotify()
 bool
 MessageChannel::WaitForInterruptNotify()
 {
-    return WaitForSyncNotify();
+    return WaitForSyncNotify(true);
 }
 
 void

@@ -42,7 +42,7 @@ namespace {
 // screen orientation.  Similar to what Android SensorManager.remapCoordinateSystem
 // does, except only for a fixed number of transforms that we need.
 Matrix4x4
-RemapMatrixForOrientation(ScreenOrientation screenConfig, const Matrix4x4& aMatrix)
+RemapMatrixForOrientation(ScreenOrientationInternal screenConfig, const Matrix4x4& aMatrix)
 {
   Matrix4x4 out;
   const float *in = &aMatrix._11;
@@ -342,7 +342,7 @@ VRHMDManagerCardboard::Init()
   if (mCardboardInitialized)
     return true;
 
-  nsRefPtr<HMDInfoCardboard> hmd = new HMDInfoCardboard();
+  RefPtr<HMDInfoCardboard> hmd = new HMDInfoCardboard();
   mCardboardHMDs.AppendElement(hmd);
 
   mCardboardInitialized = true;
@@ -364,7 +364,7 @@ VRHMDManagerCardboard::Destroy()
 }
 
 void
-VRHMDManagerCardboard::GetHMDs(nsTArray<nsRefPtr<VRHMDInfo>>& aHMDResult)
+VRHMDManagerCardboard::GetHMDs(nsTArray<RefPtr<VRHMDInfo>>& aHMDResult)
 {
   Init();
   for (size_t i = 0; i < mCardboardHMDs.Length(); ++i) {

@@ -6,6 +6,10 @@
 
 #include "BroadcastChannelParent.h"
 #include "FileDescriptorSetParent.h"
+#ifdef MOZ_WEBRTC
+#include "CamerasParent.h"
+#endif
+#include "mozilla/media/MediaParent.h"
 #include "mozilla/AppProcessChecker.h"
 #include "mozilla/Assertions.h"
 #include "mozilla/dom/ContentParent.h"
@@ -13,6 +17,7 @@
 #include "mozilla/dom/PBlobParent.h"
 #include "mozilla/dom/MessagePortParent.h"
 #include "mozilla/dom/ServiceWorkerRegistrar.h"
+#include "mozilla/dom/asmjscache/AsmJSCache.h"
 #include "mozilla/dom/cache/ActorUtils.h"
 #include "mozilla/dom/indexedDB/ActorsParent.h"
 #include "mozilla/dom/ipc/BlobParent.h"
@@ -25,7 +30,7 @@
 #include "nsIAppsService.h"
 #include "nsNetUtil.h"
 #include "nsIScriptSecurityManager.h"
-#include "mozilla/nsRefPtr.h"
+#include "mozilla/RefPtr.h"
 #include "nsThreadUtils.h"
 #include "nsTraceRefcnt.h"
 #include "nsXULAppAPI.h"
@@ -38,6 +43,7 @@
 #endif
 
 using mozilla::ipc::AssertIsOnBackgroundThread;
+using mozilla::dom::asmjscache::PAsmJSCacheEntryParent;
 using mozilla::dom::cache::PCacheParent;
 using mozilla::dom::cache::PCacheStorageParent;
 using mozilla::dom::cache::PCacheStreamControlParent;
@@ -260,7 +266,7 @@ BackgroundParentImpl::AllocPVsyncParent()
   AssertIsInMainProcess();
   AssertIsOnBackgroundThread();
 
-  nsRefPtr<mozilla::layout::VsyncParent> actor =
+  RefPtr<mozilla::layout::VsyncParent> actor =
       mozilla::layout::VsyncParent::Create();
   // There still has one ref-count after return, and it will be released in
   // DeallocPVsyncParent().
@@ -275,8 +281,37 @@ BackgroundParentImpl::DeallocPVsyncParent(PVsyncParent* aActor)
   MOZ_ASSERT(aActor);
 
   // This actor already has one ref-count. Please check AllocPVsyncParent().
-  nsRefPtr<mozilla::layout::VsyncParent> actor =
+  RefPtr<mozilla::layout::VsyncParent> actor =
       dont_AddRef(static_cast<mozilla::layout::VsyncParent*>(aActor));
+  return true;
+}
+
+camera::PCamerasParent*
+BackgroundParentImpl::AllocPCamerasParent()
+{
+  AssertIsInMainProcess();
+  AssertIsOnBackgroundThread();
+
+#ifdef MOZ_WEBRTC
+  RefPtr<mozilla::camera::CamerasParent> actor =
+      mozilla::camera::CamerasParent::Create();
+  return actor.forget().take();
+#else
+  return nullptr;
+#endif
+}
+
+bool
+BackgroundParentImpl::DeallocPCamerasParent(camera::PCamerasParent *aActor)
+{
+  AssertIsInMainProcess();
+  AssertIsOnBackgroundThread();
+  MOZ_ASSERT(aActor);
+
+#ifdef MOZ_WEBRTC
+  RefPtr<mozilla::camera::CamerasParent> actor =
+      dont_AddRef(static_cast<mozilla::camera::CamerasParent*>(aActor));
+#endif
   return true;
 }
 
@@ -309,7 +344,7 @@ public:
 private:
   ~InitUDPSocketParentCallback() {};
 
-  nsRefPtr<UDPSocketParent> mActor;
+  RefPtr<UDPSocketParent> mActor;
   nsCString mFilter;
 };
 
@@ -320,7 +355,7 @@ BackgroundParentImpl::AllocPUDPSocketParent(const OptionalPrincipalInfo& /* unus
                                             const nsCString& /* unused */)
   -> PUDPSocketParent*
 {
-  nsRefPtr<UDPSocketParent> p = new UDPSocketParent(this);
+  RefPtr<UDPSocketParent> p = new UDPSocketParent(this);
 
   return p.forget().take();
 }
@@ -405,7 +440,7 @@ public:
 
     struct MOZ_STACK_CLASS RunRAII
     {
-      explicit RunRAII(nsRefPtr<ContentParent>& aContentParent)
+      explicit RunRAII(RefPtr<ContentParent>& aContentParent)
         : mContentParent(aContentParent)
       {}
 
@@ -414,7 +449,7 @@ public:
         mContentParent = nullptr;
       }
 
-      nsRefPtr<ContentParent>& mContentParent;
+      RefPtr<ContentParent>& mContentParent;
     };
 
     RunRAII raii(mContentParent);
@@ -445,7 +480,7 @@ public:
   }
 
 private:
-  nsRefPtr<ContentParent> mContentParent;
+  RefPtr<ContentParent> mContentParent;
   PrincipalInfo mPrincipalInfo;
   nsCString mOrigin;
   nsCOMPtr<nsIThread> mBackgroundThread;
@@ -464,7 +499,7 @@ BackgroundParentImpl::RecvPBroadcastChannelConstructor(
   AssertIsInMainProcess();
   AssertIsOnBackgroundThread();
 
-  nsRefPtr<ContentParent> parent = BackgroundParent::GetContentParent(this);
+  RefPtr<ContentParent> parent = BackgroundParent::GetContentParent(this);
 
   // If the ContentParent is null we are dealing with a same-process actor.
   if (!parent) {
@@ -472,7 +507,7 @@ BackgroundParentImpl::RecvPBroadcastChannelConstructor(
     return true;
   }
 
-  nsRefPtr<CheckPrincipalRunnable> runnable =
+  RefPtr<CheckPrincipalRunnable> runnable =
     new CheckPrincipalRunnable(parent.forget(), aPrincipalInfo, aOrigin);
   nsresult rv = NS_DispatchToMainThread(runnable);
   MOZ_ALWAYS_TRUE(NS_SUCCEEDED(rv));
@@ -523,7 +558,7 @@ BackgroundParentImpl::RecvShutdownServiceWorkerRegistrar()
     return false;
   }
 
-  nsRefPtr<dom::ServiceWorkerRegistrar> service =
+  RefPtr<dom::ServiceWorkerRegistrar> service =
     dom::ServiceWorkerRegistrar::Get();
   MOZ_ASSERT(service);
 
@@ -617,6 +652,30 @@ BackgroundParentImpl::RecvMessagePortForceClose(const nsID& aUUID,
   AssertIsOnBackgroundThread();
 
   return MessagePortParent::ForceClose(aUUID, aDestinationUUID, aSequenceID);
+}
+
+PAsmJSCacheEntryParent*
+BackgroundParentImpl::AllocPAsmJSCacheEntryParent(
+                               const dom::asmjscache::OpenMode& aOpenMode,
+                               const dom::asmjscache::WriteParams& aWriteParams,
+                               const PrincipalInfo& aPrincipalInfo)
+{
+  AssertIsInMainProcess();
+  AssertIsOnBackgroundThread();
+
+  return
+    dom::asmjscache::AllocEntryParent(aOpenMode, aWriteParams, aPrincipalInfo);
+}
+
+bool
+BackgroundParentImpl::DeallocPAsmJSCacheEntryParent(
+                                                 PAsmJSCacheEntryParent* aActor)
+{
+  AssertIsInMainProcess();
+  AssertIsOnBackgroundThread();
+
+  dom::asmjscache::DeallocEntryParent(aActor);
+  return true;
 }
 
 } // namespace ipc

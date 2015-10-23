@@ -52,7 +52,9 @@ bool ParseKeySystem(const nsAString& aKeySystem,
                     int32_t& aOutMinCDMVersion);
 
 void
-LogToBrowserConsole(const nsAString& aMsg);
+ConstructKeySystem(const nsAString& aKeySystem,
+                   const nsAString& aCDMVersion,
+                   nsAString& aOutKeySystem);
 
 } // namespace mozilla
 

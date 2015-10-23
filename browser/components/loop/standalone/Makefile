@@ -21,6 +21,25 @@ install: npm_install
 npm_install:
 	@npm install
 
+# build the dist dir, which contains a production version of the code and
+# assets
+.PHONY: dist
+dist:
+	mkdir -p dist
+	cp -pR content/* dist
+	NODE_ENV="production" $(NODE_LOCAL_BIN)/webpack \
+		-p -v --display-errors
+	sed 's#webappEntryPoint.js#js/standalone.js#' \
+		< content/index.html > dist/index.html
+
+.PHONY: distclean
+distclean:
+	rm -fr dist
+
+.PHONY: distserver
+distserver: remove_old_config dist
+	LOOP_CONTENT_DIR=dist node server.js
+
 test:
 	@echo "Not implemented yet."
 
@@ -68,10 +87,6 @@ config:
 	@echo "loop.config.privacyWebsiteUrl = '`echo $(LOOP_PRIVACY_WEBSITE_URL)`';" >> content/config.js
 	@echo "loop.config.legalWebsiteUrl = '`echo $(LOOP_LEGAL_WEBSITE_URL)`';" >> content/config.js
 	@echo "loop.config.learnMoreUrl = '`echo $(LOOP_PRODUCT_HOMEPAGE_URL)`';" >> content/config.js
-	@echo "loop.config.fxosApp = loop.config.fxosApp || {};" >> content/config.js
-	@echo "loop.config.fxosApp.name = 'Loop';" >> content/config.js
-	@echo "loop.config.fxosApp.rooms = true;" >> content/config.js
-	@echo "loop.config.fxosApp.manifestUrl = 'http://fake-market.herokuapp.com/apps/packagedApp/manifest.webapp';" >> content/config.js
 	@echo "loop.config.roomsSupportUrl = 'https://support.mozilla.org/kb/group-conversations-firefox-hello-webrtc';" >> content/config.js
 	@echo "loop.config.guestSupportUrl = 'https://support.mozilla.org/kb/respond-firefox-hello-invitation-guest-mode';" >> content/config.js
 	@echo "loop.config.generalSupportUrl = 'https://support.mozilla.org/kb/respond-firefox-hello-invitation-guest-mode';" >> content/config.js

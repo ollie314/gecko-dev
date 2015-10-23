@@ -49,6 +49,7 @@ public:
 
   // XXX evaluate if this is fast enough.
   size_t IndexInParent() const { return Parent()->mChildren.IndexOf(this); }
+  uint32_t EmbeddedChildCount() const;
   int32_t IndexOfEmbeddedChild(const ProxyAccessible*);
   ProxyAccessible* EmbeddedChildAt(size_t aChildIdx);
   bool MustPruneChildren() const;
@@ -131,7 +132,7 @@ public:
 
   int32_t CaretLineNumber();
   int32_t CaretOffset();
-  bool SetCaretOffset(int32_t aOffset);
+  void SetCaretOffset(int32_t aOffset);
 
   int32_t CharacterCount();
   int32_t SelectionCount();
@@ -217,10 +218,25 @@ public:
   bool IsLinkValid();
 
   // XXX checking mRole alone may not result in same behavior as Accessibles
-  // due to ARIA roles
-  inline bool IsTable() const { return mRole == roles::TABLE; }
-  inline bool IsTableRow() const { return mRole == roles::ROW; }
-  inline bool IsTableCell() const { return mRole == roles::CELL; }
+  // due to ARIA roles. See bug 1210477.
+  inline bool IsTable() const
+  {
+    return mRole == roles::TABLE || mRole == roles::MATHML_TABLE;
+  }
+  inline bool IsTableRow() const
+  {
+    return (mRole == roles::ROW ||
+            mRole == roles::MATHML_TABLE_ROW ||
+            mRole == roles::MATHML_LABELED_ROW);
+  }
+  inline bool IsTableCell() const
+  {
+    return (mRole == roles::CELL ||
+            mRole == roles::COLUMNHEADER ||
+            mRole == roles::ROWHEADER ||
+            mRole == roles::GRID_CELL ||
+            mRole == roles::MATHML_CELL);
+  }
 
   uint32_t AnchorCount(bool* aOk);
 
@@ -281,6 +297,8 @@ public:
   void TableUnselectColumn(uint32_t aCol);
   void TableUnselectRow(uint32_t aRow);
   bool TableIsProbablyForLayout();
+  ProxyAccessible* AtkTableColumnHeader(int32_t aCol);
+  ProxyAccessible* AtkTableRowHeader(int32_t aRow);
 
   void SelectedItems(nsTArray<ProxyAccessible*>* aSelectedItems);
   uint32_t SelectedItemCount();
@@ -291,12 +309,16 @@ public:
   bool SelectAll();
   bool UnselectAll();
 
+  void TakeSelection();
+  void SetSelected(bool aSelect);
+
   bool DoAction(uint8_t aIndex);
   uint8_t ActionCount();
   void ActionDescriptionAt(uint8_t aIndex, nsString& aDescription);
   void ActionNameAt(uint8_t aIndex, nsString& aName);
   KeyBinding AccessKey();
   KeyBinding KeyboardShortcut();
+  void AtkKeyBinding(nsString& aBinding);
 
   double CurValue();
   bool SetCurValue(double aValue);
@@ -317,6 +339,12 @@ public:
   void MimeType(nsString aMime);
   void URLDocTypeMimeType(nsString& aURL, nsString& aDocType,
                           nsString& aMimeType);
+
+  ProxyAccessible* AccessibleAtPoint(int32_t aX, int32_t aY,
+                                     bool aNeedsScreenCoords);
+
+  void Extents(bool aNeedsScreenCoords, int32_t* aX, int32_t* aY,
+               int32_t* aWidth, int32_t* aHeight);
 
   /**
    * Allow the platform to store a pointers worth of data on us.
@@ -369,6 +397,8 @@ enum Interfaces
   TABLE = 16,
   TABLECELL = 32,
   DOCUMENT = 64,
+  SELECTION = 128,
+  ACTION = 256,
 };
 
 }

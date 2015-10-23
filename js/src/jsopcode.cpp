@@ -10,9 +10,13 @@
 
 #include "jsopcodeinlines.h"
 
+#define __STDC_FORMAT_MACROS
+
 #include "mozilla/SizePrintfMacros.h"
 
+#include <algorithm>
 #include <ctype.h>
+#include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -32,7 +36,9 @@
 #include "asmjs/AsmJSModule.h"
 #include "frontend/BytecodeCompiler.h"
 #include "frontend/SourceNotes.h"
+#include "gc/GCInternals.h"
 #include "js/CharacterEncoding.h"
+#include "vm/CodeCoverage.h"
 #include "vm/Opcodes.h"
 #include "vm/ScopeObject.h"
 #include "vm/Shape.h"
@@ -120,6 +126,7 @@ js::StackUses(JSScript* script, jsbytecode* pc)
       case JSOP_POPN:
         return GET_UINT16(pc);
       case JSOP_NEW:
+      case JSOP_SUPERCALL:
         return 2 + GET_ARGC(pc) + 1;
       default:
         /* stack: fun, this, [argc arguments] */
@@ -170,7 +177,8 @@ js::DumpPCCounts(JSContext* cx, HandleScript script, Sprinter* sp)
             return;
 
         Sprint(sp, "                  {");
-        double val = script->getPCCounts(pc).numExec();
+        PCCounts* counts = script->maybeGetPCCounts(pc);
+        double val = counts ? counts->numExec() : 0.0;
         if (val)
             Sprint(sp, "\"%s\": %.0f", PCCounts::numExecName, val);
         Sprint(sp, "}\n");
@@ -263,9 +271,9 @@ class BytecodeParser
         bool captureOffsetStack(LifoAlloc& alloc, const uint32_t* stack, uint32_t depth) {
             stackDepth = depth;
             offsetStack = alloc.newArray<uint32_t>(stackDepth);
+            if (!offsetStack)
+                return false;
             if (stackDepth) {
-                if (!offsetStack)
-                    return false;
                 for (uint32_t n = 0; n < stackDepth; n++)
                     offsetStack[n] = stack[n];
             }
@@ -1606,11 +1614,6 @@ ReleaseScriptCounts(FreeOp* fop)
     JSRuntime* rt = fop->runtime();
     MOZ_ASSERT(rt->scriptAndCountsVector);
 
-    ScriptAndCountsVector& vec = rt->scriptAndCountsVector->get();
-
-    for (size_t i = 0; i < vec.length(); i++)
-        vec[i].scriptCounts.destroy(fop);
-
     fop->delete_(rt->scriptAndCountsVector);
     rt->scriptAndCountsVector = nullptr;
 }
@@ -1651,11 +1654,8 @@ js::StopPCCountProfiling(JSContext* cx)
         for (ZoneCellIter i(zone, AllocKind::SCRIPT); !i.done(); i.next()) {
             JSScript* script = i.get<JSScript>();
             if (script->hasScriptCounts() && script->types()) {
-                ScriptAndCounts sac;
-                sac.script = script;
-                sac.scriptCounts.set(script->releaseScriptCounts());
-                if (!vec->append(sac))
-                    sac.scriptCounts.destroy(rt->defaultFreeOp());
+                if (!vec->append(script))
+                    return;
             }
         }
     }
@@ -1700,20 +1700,6 @@ AppendJSONProperty(StringBuffer& buf, const char* name, MaybeComma comma = COMMA
     buf.append("\":", 2);
 }
 
-static void
-AppendArrayJSONProperties(JSContext* cx, StringBuffer& buf,
-                          double* values, const char * const* names, unsigned count,
-                          MaybeComma& comma)
-{
-    for (unsigned i = 0; i < count; i++) {
-        if (values[i]) {
-            AppendJSONProperty(buf, names[i], comma);
-            comma = COMMA;
-            NumberValueToStringBuffer(cx, DoubleValue(values[i]), buf);
-        }
-    }
-}
-
 JS_FRIEND_API(JSString*)
 js::GetPCCountScriptSummary(JSContext* cx, size_t index)
 {
@@ -1755,21 +1741,21 @@ js::GetPCCountScriptSummary(JSContext* cx, size_t index)
         }
     }
 
-    double total = 0.0;
+    uint64_t total = 0;
 
     jsbytecode* codeEnd = script->codeEnd();
     for (jsbytecode* pc = script->code(); pc < codeEnd; pc = GetNextPc(pc)) {
-        PCCounts& counts = sac.getPCCounts(pc);
-        double value = counts.numExec();
-        total += value;
+        const PCCounts* counts = sac.maybeGetPCCounts(pc);
+        if (!counts)
+            continue;
+        total += counts->numExec();
     }
 
     AppendJSONProperty(buf, "totals");
     buf.append('{');
 
-    MaybeComma comma = NO_COMMA;
-
-    AppendArrayJSONProperties(cx, buf, &total, &PCCounts::numExecName, 1, comma);
+    AppendJSONProperty(buf, PCCounts::numExecName, NO_COMMA);
+    NumberValueToStringBuffer(cx, DoubleValue(total), buf);
 
     uint64_t ionActivity = 0;
     jit::IonScriptCounts* ionCounts = sac.getIonCounts();
@@ -1779,7 +1765,7 @@ js::GetPCCountScriptSummary(JSContext* cx, size_t index)
         ionCounts = ionCounts->previous();
     }
     if (ionActivity) {
-        AppendJSONProperty(buf, "ion", comma);
+        AppendJSONProperty(buf, "ion", COMMA);
         NumberValueToStringBuffer(cx, DoubleValue(ionActivity), buf);
     }
 
@@ -1814,11 +1800,18 @@ GetPCCountJSON(JSContext* cx, const ScriptAndCounts& sac, StringBuffer& buf)
     bool comma = false;
 
     SrcNoteLineScanner scanner(script->notes(), script->lineno());
+    uint64_t hits = 0;
 
-    for (jsbytecode* pc = script->code(); pc < script->codeEnd(); pc += GetBytecodeLength(pc)) {
+    jsbytecode* end = script->codeEnd();
+    for (jsbytecode* pc = script->code(); pc < end; pc = GetNextPc(pc)) {
         size_t offset = script->pcToOffset(pc);
+        JSOp op = JSOp(*pc);
 
-        JSOp op = (JSOp) *pc;
+        // If the current instruction is a jump target,
+        // then update the number of hits.
+        const PCCounts* counts = sac.maybeGetPCCounts(pc);
+        if (counts)
+            hits = counts->numExec();
 
         if (comma)
             buf.append(',');
@@ -1859,19 +1852,22 @@ GetPCCountJSON(JSContext* cx, const ScriptAndCounts& sac, StringBuffer& buf)
             buf.append(str);
         }
 
-        PCCounts& counts = sac.getPCCounts(pc);
-
         AppendJSONProperty(buf, "counts");
         buf.append('{');
 
-        double value = counts.numExec();
-        if (value > 0) {
+        if (hits > 0) {
             AppendJSONProperty(buf, PCCounts::numExecName, NO_COMMA);
-            NumberValueToStringBuffer(cx, DoubleValue(value), buf);
+            NumberValueToStringBuffer(cx, DoubleValue(hits), buf);
         }
 
         buf.append('}');
         buf.append('}');
+
+        // If the current instruction has thrown,
+        // then decrement the hit counts with the number of throws.
+        counts = sac.maybeGetThrowCounts(pc);
+        if (counts)
+            hits -= counts->numExec();
     }
 
     buf.append(']');
@@ -1949,4 +1945,123 @@ js::GetPCCountScriptContents(JSContext* cx, size_t index)
     }
 
     return buf.finishString();
+}
+
+static bool
+GenerateLcovInfo(JSContext* cx, JSCompartment* comp, GenericPrinter& out)
+{
+    JSRuntime* rt = cx->runtime();
+
+    // Collect the list of scripts which are part of the current compartment.
+    {
+        js::gc::AutoPrepareForTracing apft(rt, SkipAtoms);
+    }
+    Rooted<ScriptVector> topScripts(cx, ScriptVector(cx));
+    for (ZonesIter zone(rt, SkipAtoms); !zone.done(); zone.next()) {
+        for (ZoneCellIter i(zone, AllocKind::SCRIPT); !i.done(); i.next()) {
+            JSScript* script = i.get<JSScript>();
+            if (script->compartment() != comp ||
+                !script->isTopLevel() ||
+                !script->filename())
+            {
+                continue;
+            }
+
+            if (!topScripts.append(script))
+                return false;
+        }
+    }
+
+    if (topScripts.length() == 0)
+        return true;
+
+    // Sort the information to avoid generating multiple file entries, and to
+    // generate functions in the right order.
+    auto lessFun = [](const JSScript* lhs, const JSScript* rhs) -> bool {
+        return strcmp(lhs->filename(), rhs->filename()) < 0;
+    };
+    std::sort(topScripts.begin(), topScripts.end(), lessFun);
+
+    // Collect code coverage info for one compartment.
+    coverage::LCovCompartment compCover;
+    for (JSScript* topLevel: topScripts) {
+        RootedScript topScript(cx, topLevel);
+
+        // We found the top-level script, visit all the functions reachable
+        // from the top-level function, and delazify them.
+        Rooted<ScriptVector> queue(cx, ScriptVector(cx));
+        if (!queue.append(topLevel))
+            return false;
+
+        RootedScript script(cx);
+        do {
+            script = queue.popCopy();
+
+            // Iterate from the last to the first object in order to have
+            // the functions them visited in the opposite order when popping
+            // elements from the stack of remaining scripts, such that the
+            // functions are more-less listed with increasing line numbers.
+            if (!script->hasObjects())
+                continue;
+            size_t idx = script->objects()->length;
+            while (idx--) {
+                JSObject* obj = script->getObject(idx);
+
+                // Only continue on JSFunction objects.
+                if (!obj->is<JSFunction>())
+                    continue;
+                JSFunction& fun = obj->as<JSFunction>();
+
+                // Let's skip asm.js for now.
+                if (!fun.isInterpreted())
+                    continue;
+
+                // Queue the script in the list of script associated to the
+                // current source.
+                JSScript* childScript = fun.getOrCreateScript(cx);
+                if (!childScript || !queue.append(childScript))
+                    return false;
+            }
+        } while (!queue.empty());
+
+        compCover.collectSourceFile(comp, &topScript->scriptSourceUnwrap());
+        compCover.collectCodeCoverageInfo(comp, topScript->sourceObject(), topScript);
+    }
+
+    compCover.exportInto(out);
+    if (out.hadOutOfMemory())
+        return false;
+    return true;
+}
+
+JS_FRIEND_API(char*)
+js::GetCodeCoverageSummary(JSContext* cx, size_t* length)
+{
+    Sprinter out(cx);
+
+    if (!out.init())
+        return nullptr;
+
+    if (!GenerateLcovInfo(cx, cx->compartment(), out)) {
+        JS_ReportOutOfMemory(cx);
+        return nullptr;
+    }
+
+    if (out.hadOutOfMemory()) {
+        JS_ReportOutOfMemory(cx);
+        return nullptr;
+    }
+
+    ptrdiff_t len = out.stringEnd() - out.string();
+    char* res = cx->pod_malloc<char>(len + 1);
+    if (!res) {
+        JS_ReportOutOfMemory(cx);
+        return nullptr;
+    }
+
+    js_memcpy(res, out.string(), len);
+    res[len] = 0;
+    if (length)
+        *length = len;
+    return res;
 }

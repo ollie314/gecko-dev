@@ -12,11 +12,6 @@
 
 extern PRLogModuleInfo* GetSourceBufferResourceLog();
 
-/* Polyfill __func__ on MSVC to pass to the log. */
-#ifdef _MSC_VER
-#define __func__ __FUNCTION__
-#endif
-
 #define SBR_DEBUG(arg, ...) MOZ_LOG(GetSourceBufferResourceLog(), mozilla::LogLevel::Debug, ("ResourceQueue(%p)::%s: " arg, this, __func__, ##__VA_ARGS__))
 #define SBR_DEBUGV(arg, ...) MOZ_LOG(GetSourceBufferResourceLog(), mozilla::LogLevel::Verbose, ("ResourceQueue(%p)::%s: " arg, this, __func__, ##__VA_ARGS__))
 
@@ -113,7 +108,7 @@ uint32_t ResourceQueue::EvictBefore(uint64_t aOffset, ErrorResult& aRv)
       uint32_t offset = aOffset - mOffset;
       mOffset += offset;
       evicted += offset;
-      nsRefPtr<MediaByteBuffer> data = new MediaByteBuffer;
+      RefPtr<MediaByteBuffer> data = new MediaByteBuffer;
       if (!data->AppendElements(item->mData->Elements() + offset,
                                 item->mData->Length() - offset,
                                 fallible)) {

@@ -160,8 +160,10 @@ this.ForgetAboutSite = {
                                caUtils);
     let httpURI = caUtils.makeURI("http://" + aDomain);
     let httpsURI = caUtils.makeURI("https://" + aDomain);
-    qm.clearStoragesForURI(httpURI);
-    qm.clearStoragesForURI(httpsURI);
+    let httpPrincipal = Services.scriptSecurityManager.createCodebasePrincipal(httpURI, {});
+    let httpsPrincipal = Services.scriptSecurityManager.createCodebasePrincipal(httpsURI, {});
+    qm.clearStoragesForPrincipal(httpPrincipal);
+    qm.clearStoragesForPrincipal(httpsPrincipal);
 
     function onContentPrefsRemovalFinished() {
       // Everybody else (including extensions)
@@ -172,7 +174,7 @@ this.ForgetAboutSite = {
     let cps2 = Cc["@mozilla.org/content-pref/service;1"].
                getService(Ci.nsIContentPrefService2);
     cps2.removeBySubdomain(aDomain, null, {
-      handleCompletion: function() onContentPrefsRemovalFinished(),
+      handleCompletion: () => onContentPrefsRemovalFinished(),
       handleError: function() {}
     });
 

@@ -31,6 +31,7 @@
 #include "imgIRequest.h"
 #include "nsThreadUtils.h"
 #include "nsNetCID.h"
+#include "nsNetUtil.h"
 #include "nsCRT.h"
 #include "nsIInterfaceRequestorUtils.h"
 #include "nsIProtocolHandler.h"
@@ -70,10 +71,10 @@ RequestMapInitEntry(PLDHashEntryHdr *hdr, const void *key)
 }
 
 static const PLDHashTableOps gMapOps = {
-  PL_DHashVoidPtrKeyStub,
+  PLDHashTable::HashVoidPtrKeyStub,
   RequestMapMatchEntry,
-  PL_DHashMoveEntryStub,
-  PL_DHashClearEntryStub,
+  PLDHashTable::MoveEntryStub,
+  PLDHashTable::ClearEntryStub,
   RequestMapInitEntry
 };
 
@@ -263,18 +264,24 @@ nsSecureBrowserUIImpl::MapInternalToExternalState(uint32_t* aState, lockIconStat
       *aState |= nsIWebProgressListener::STATE_IDENTITY_EV_TOPLEVEL;
     }
   }
-  // * If so, the state should be broken; overriding the previous state
-  // set by the lock parameter.
+  // * If so, the state should be broken or insecure; overriding the previous
+  // state set by the lock parameter.
+  uint32_t tempState = STATE_IS_BROKEN;
+  if (lock == lis_no_security) {
+      // this is to ensure that http: pages with mixed content in nested
+      // iframes don't get marked as broken instead of insecure
+      tempState = STATE_IS_INSECURE;
+  }
   if (docShell->GetHasMixedActiveContentLoaded() &&
       docShell->GetHasMixedDisplayContentLoaded()) {
-      *aState = STATE_IS_BROKEN |
+      *aState = tempState |
                 nsIWebProgressListener::STATE_LOADED_MIXED_ACTIVE_CONTENT |
                 nsIWebProgressListener::STATE_LOADED_MIXED_DISPLAY_CONTENT;
   } else if (docShell->GetHasMixedActiveContentLoaded()) {
-      *aState = STATE_IS_BROKEN |
+      *aState = tempState |
                 nsIWebProgressListener::STATE_LOADED_MIXED_ACTIVE_CONTENT;
   } else if (docShell->GetHasMixedDisplayContentLoaded()) {
-      *aState = STATE_IS_BROKEN |
+      *aState = tempState |
                 nsIWebProgressListener::STATE_LOADED_MIXED_DISPLAY_CONTENT;
   }
 
@@ -853,7 +860,7 @@ nsSecureBrowserUIImpl::OnStateChange(nsIWebProgress* aWebProgress,
     // means, there has already been data transfered.
 
     ReentrantMonitorAutoEnter lock(mReentrantMonitor);
-    PL_DHashTableAdd(&mTransferringRequests, aRequest, fallible);
+    mTransferringRequests.Add(aRequest, fallible);
 
     return NS_OK;
   }
@@ -866,8 +873,9 @@ nsSecureBrowserUIImpl::OnStateChange(nsIWebProgress* aWebProgress,
   {
     { /* scope for the ReentrantMonitorAutoEnter */
       ReentrantMonitorAutoEnter lock(mReentrantMonitor);
-      if (PL_DHashTableSearch(&mTransferringRequests, aRequest)) {
-        PL_DHashTableRemove(&mTransferringRequests, aRequest);
+      PLDHashEntryHdr* entry = mTransferringRequests.Search(aRequest);
+      if (entry) {
+        mTransferringRequests.RemoveEntry(entry);
         requestHasTransferedData = true;
       }
     }

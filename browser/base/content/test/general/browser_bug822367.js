@@ -10,14 +10,12 @@ const PREF_ACTIVE = "security.mixed_content.block_active_content";
 const gHttpTestRoot = "https://example.com/browser/browser/base/content/test/general/";
 const gHttpTestRoot2 = "https://test1.example.com/browser/browser/base/content/test/general/";
 
-var origBlockDisplay;
-var origBlockActive;
 var gTestBrowser = null;
 
 registerCleanupFunction(function() {
   // Set preferences back to their original values
-  Services.prefs.setBoolPref(PREF_DISPLAY, origBlockDisplay);
-  Services.prefs.setBoolPref(PREF_ACTIVE, origBlockActive);
+  Services.prefs.clearUserPref(PREF_DISPLAY);
+  Services.prefs.clearUserPref(PREF_ACTIVE);
 });
 
 function MixedTestsCompleted() {
@@ -28,9 +26,6 @@ function MixedTestsCompleted() {
 
 function test() {
   waitForExplicitFinish();
-
-  origBlockDisplay = Services.prefs.getBoolPref(PREF_DISPLAY);
-  origBlockActive = Services.prefs.getBoolPref(PREF_ACTIVE);
 
   Services.prefs.setBoolPref(PREF_DISPLAY, true);
   Services.prefs.setBoolPref(PREF_ACTIVE, true);
@@ -57,7 +52,7 @@ function MixedTest1A() {
   gIdentityHandler.disableMixedContentProtection();
 }
 function MixedTest1B() {
-  waitForCondition(function() content.document.getElementById('p1').innerHTML == "hello", MixedTest1C, "Waited too long for mixed script to run in Test 1");
+  waitForCondition(() => content.document.getElementById('p1').innerHTML == "hello", MixedTest1C, "Waited too long for mixed script to run in Test 1");
 }
 function MixedTest1C() {
   ok(content.document.getElementById('p1').innerHTML == "hello","Mixed script didn't load in Test 1");
@@ -94,10 +89,10 @@ function MixedTest3A() {
   gIdentityHandler.disableMixedContentProtection();
 }
 function MixedTest3B() {
-  waitForCondition(function() content.document.getElementById('p1').innerHTML == "hello", MixedTest3C, "Waited too long for mixed script to run in Test 3");
+  waitForCondition(() => content.document.getElementById('p1').innerHTML == "hello", MixedTest3C, "Waited too long for mixed script to run in Test 3");
 }
 function MixedTest3C() {
-  waitForCondition(function() content.document.getElementById('p2').innerHTML == "bye", MixedTest3D, "Waited too long for mixed image to load in Test 3");
+  waitForCondition(() => content.document.getElementById('p2').innerHTML == "bye", MixedTest3D, "Waited too long for mixed image to load in Test 3");
 }
 function MixedTest3D() {
   ok(content.document.getElementById('p1').innerHTML == "hello","Mixed script didn't load in Test 3");
@@ -123,7 +118,7 @@ function MixedTest4A() {
   gIdentityHandler.disableMixedContentProtection();
 }
 function MixedTest4B() {
-  waitForCondition(function() content.document.location == gHttpTestRoot + "file_bug822367_4B.html", MixedTest4C, "Waited too long for mixed script to run in Test 4");
+  waitForCondition(() => content.document.location == gHttpTestRoot + "file_bug822367_4B.html", MixedTest4C, "Waited too long for mixed script to run in Test 4");
 }
 function MixedTest4C() {
   ok(content.document.location == gHttpTestRoot + "file_bug822367_4B.html", "Location didn't change in test 4");
@@ -131,7 +126,7 @@ function MixedTest4C() {
   assertMixedContentBlockingState(gTestBrowser, {activeLoaded: false, activeBlocked: true, passiveLoaded: false});
 
   let {gIdentityHandler} = gTestBrowser.ownerGlobal;
-  waitForCondition(function() content.document.getElementById('p1').innerHTML == "", MixedTest4D, "Mixed script loaded in test 4 after location change!");
+  waitForCondition(() => content.document.getElementById('p1').innerHTML == "", MixedTest4D, "Mixed script loaded in test 4 after location change!");
 }
 function MixedTest4D() {
   ok(content.document.getElementById('p1').innerHTML == "","p1.innerHTML changed; mixed script loaded after location change in Test 4");
@@ -155,7 +150,7 @@ function MixedTest5A() {
   gIdentityHandler.disableMixedContentProtection();
 }
 function MixedTest5B() {
-  waitForCondition(function() content.document.getElementById('p1').innerHTML == "hello", MixedTest5C, "Waited too long for mixed script to run in Test 5");
+  waitForCondition(() => content.document.getElementById('p1').innerHTML == "hello", MixedTest5C, "Waited too long for mixed script to run in Test 5");
 }
 function MixedTest5C() {
   ok(content.document.getElementById('p1').innerHTML == "hello","Mixed script didn't load in Test 5");

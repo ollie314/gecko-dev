@@ -7,6 +7,7 @@
 #include <CoreFoundation/CFString.h>
 
 #include "AppleCMLinker.h"
+#include "AppleDecoderModule.h"
 #include "AppleUtils.h"
 #include "AppleVTDecoder.h"
 #include "AppleVTLinker.h"
@@ -19,8 +20,8 @@
 #include "VideoUtils.h"
 #include "gfxPlatform.h"
 
-PRLogModuleInfo* GetAppleMediaLog();
-#define LOG(...) MOZ_LOG(GetAppleMediaLog(), mozilla::LogLevel::Debug, (__VA_ARGS__))
+extern PRLogModuleInfo* GetPDMLog();
+#define LOG(...) MOZ_LOG(GetPDMLog(), mozilla::LogLevel::Debug, (__VA_ARGS__))
 //#define LOG_MEDIA_SHA1
 
 #ifdef LOG_MEDIA_SHA1
@@ -51,7 +52,7 @@ AppleVTDecoder::~AppleVTDecoder()
   MOZ_COUNT_DTOR(AppleVTDecoder);
 }
 
-nsRefPtr<MediaDataDecoder::InitPromise>
+RefPtr<MediaDataDecoder::InitPromise>
 AppleVTDecoder::Init()
 {
   nsresult rv = InitializeSession();
@@ -106,7 +107,7 @@ AppleVTDecoder::Input(MediaRawData* aSample)
   mInputIncoming++;
 
   nsCOMPtr<nsIRunnable> runnable =
-      NS_NewRunnableMethodWithArg<nsRefPtr<MediaRawData>>(
+      NS_NewRunnableMethodWithArg<RefPtr<MediaRawData>>(
           this, &AppleVTDecoder::SubmitFrame, aSample);
   mTaskQueue->Dispatch(runnable.forget());
   return NS_OK;
@@ -167,18 +168,14 @@ PlatformCallback(void* decompressionOutputRefCon,
   // Validate our arguments.
   if (status != noErr || !image) {
     NS_WARNING("VideoToolbox decoder returned no data");
-    return;
-  }
-  if (flags & kVTDecodeInfo_FrameDropped) {
+    image = nullptr;
+  } else if (flags & kVTDecodeInfo_FrameDropped) {
     NS_WARNING("  ...frame tagged as dropped...");
+  } else {
+    MOZ_ASSERT(CFGetTypeID(image) == CVPixelBufferGetTypeID(),
+      "VideoToolbox returned an unexpected image type");
   }
-  MOZ_ASSERT(CFGetTypeID(image) == CVPixelBufferGetTypeID(),
-    "VideoToolbox returned an unexpected image type");
-
-  nsCOMPtr<nsIRunnable> task =
-    NS_NewRunnableMethodWithArgs<CFRefPtr<CVPixelBufferRef>, AppleVTDecoder::AppleFrameRef>(
-      decoder, &AppleVTDecoder::OutputFrame, image, *frameRef);
-  decoder->DispatchOutputTask(task.forget());
+  decoder->OutputFrame(image, *frameRef);
 }
 
 nsresult
@@ -242,6 +239,8 @@ AppleVTDecoder::SubmitFrame(MediaRawData* aSample)
     return NS_ERROR_FAILURE;
   }
 
+  mQueuedSamples++;
+
   VTDecodeFrameFlags decodeFlags =
     kVTDecodeFrame_EnableAsynchronousDecompression;
   rv = VTDecompressionSessionDecodeFrame(mSession,
@@ -257,7 +256,7 @@ AppleVTDecoder::SubmitFrame(MediaRawData* aSample)
   }
 
   // Ask for more data.
-  if (!mInputIncoming) {
+  if (!mInputIncoming && mQueuedSamples <= mMaxRefFrames) {
     LOG("AppleVTDecoder task queue empty; requesting more data");
     mCallback->InputExhausted();
   }
@@ -384,7 +383,7 @@ AppleVTDecoder::CreateDecoderSpecification()
 
   const void* specKeys[] = { AppleVTLinker::skPropEnableHWAccel };
   const void* specValues[1];
-  if (gfxPlatform::GetPlatform()->CanUseHardwareVideoDecoding()) {
+  if (AppleDecoderModule::sCanUseHardwareVideoDecoder) {
     specValues[0] = kCFBooleanTrue;
   } else {
     // This GPU is blacklisted for hardware decoding.

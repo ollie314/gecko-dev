@@ -11,6 +11,8 @@
 #include "jsobjinlines.h"
 
 using namespace js;
+
+using JS::IsArrayAnswer;
 using mozilla::ArrayLength;
 
 static inline bool
@@ -846,7 +848,7 @@ ScriptedDirectProxyHandler::has(JSContext* cx, HandleObject proxy, HandleId id, 
 
 // ES6 (22 May, 2014) 9.5.8 Proxy.[[GetP]](P, Receiver)
 bool
-ScriptedDirectProxyHandler::get(JSContext* cx, HandleObject proxy, HandleObject receiver,
+ScriptedDirectProxyHandler::get(JSContext* cx, HandleObject proxy, HandleValue receiver,
                                 HandleId id, MutableHandleValue vp) const
 {
     // step 2
@@ -877,7 +879,7 @@ ScriptedDirectProxyHandler::get(JSContext* cx, HandleObject proxy, HandleObject 
     Value argv[] = {
         ObjectOrNullValue(target),
         value,
-        ObjectOrNullValue(receiver)
+        receiver
     };
     RootedValue trapResult(cx);
     if (!Invoke(cx, ObjectValue(*handler), trap, ArrayLength(argv), argv, &trapResult))
@@ -1052,8 +1054,12 @@ ScriptedDirectProxyHandler::construct(JSContext* cx, HandleObject proxy, const C
 
     // step 6
     if (trap.isUndefined()) {
+        ConstructArgs cargs(cx);
+        if (!FillArgumentsFromArraylike(cx, cargs, args))
+            return false;
+
         RootedValue targetv(cx, ObjectValue(*target));
-        return InvokeConstructor(cx, targetv, args.length(), args.array(), true, args.rval());
+        return Construct(cx, targetv, cargs, args.newTarget(), args.rval());
     }
 
     // step 8-9
@@ -1076,7 +1082,7 @@ ScriptedDirectProxyHandler::construct(JSContext* cx, HandleObject proxy, const C
 
 bool
 ScriptedDirectProxyHandler::nativeCall(JSContext* cx, IsAcceptableThis test, NativeImpl impl,
-                                       CallArgs args) const
+                                       const CallArgs& args) const
 {
     ReportIncompatible(cx, args);
     return false;
@@ -1096,23 +1102,23 @@ ScriptedDirectProxyHandler::hasInstance(JSContext* cx, HandleObject proxy, Mutab
 }
 
 bool
-ScriptedDirectProxyHandler::objectClassIs(HandleObject proxy, ESClassValue classValue,
-                                          JSContext* cx) const
+ScriptedDirectProxyHandler::getBuiltinClass(JSContext* cx, HandleObject proxy,
+                                            ESClassValue* classValue) const
 {
-    // Special case IsArray. In every other instance ES wants to have exactly
-    // one object type and not a proxy around it, so return false.
-    if (classValue != ESClass_IsArray)
-        return false;
+    *classValue = ESClass_Other;
+    return true;
+}
 
-    // In ES6 IsArray is supposed to poke at the Proxy target, instead we do this here.
-    // The reason for this is that we have proxies for which looking at the target might
-    // be impossible. So instead we use our little objectClassIs function that just works
-    // already across different wrappers.
+bool
+ScriptedDirectProxyHandler::isArray(JSContext* cx, HandleObject proxy,
+                                    IsArrayAnswer* answer) const
+{
     RootedObject target(cx, proxy->as<ProxyObject>().target());
-    if (!target)
-        return false;
+    if (target)
+        return JS::IsArray(cx, target, answer);
 
-    return IsArray(target, cx);
+    *answer = IsArrayAnswer::RevokedProxy;
+    return true;
 }
 
 const char*
@@ -1236,10 +1242,8 @@ js::proxy(JSContext* cx, unsigned argc, Value* vp)
 {
     CallArgs args = CallArgsFromVp(argc, vp);
 
-    if (!args.isConstructing()) {
-        JS_ReportErrorNumber(cx, GetErrorMessage, nullptr, JSMSG_NOT_FUNCTION, "Proxy");
+    if (!ThrowIfNotConstructing(cx, args, "Proxy"))
         return false;
-    }
 
     return NewScriptedProxy(cx, args, "Proxy");
 }

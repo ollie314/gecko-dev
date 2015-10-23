@@ -11,6 +11,7 @@
 
 #include "nsAttrAndChildArray.h"
 
+#include "mozilla/CheckedInt.h"
 #include "mozilla/MathAlgorithms.h"
 #include "mozilla/MemoryReporting.h"
 
@@ -22,6 +23,8 @@
 #include "nsUnicharUtils.h"
 #include "nsAutoPtr.h"
 #include "nsContentUtils.h" // nsAutoScriptBlocker
+
+using mozilla::CheckedUint32;
 
 /*
 CACHE_POINTER_SHIFT indicates how many steps to downshift the |this| pointer.
@@ -462,7 +465,7 @@ nsAttrAndChildArray::RemoveAttrAt(uint32_t aPos, nsAttrValue& aValue)
       return NS_OK;
     }
 
-    nsRefPtr<nsMappedAttributes> mapped =
+    RefPtr<nsMappedAttributes> mapped =
       GetModifiableMapped(nullptr, nullptr, false);
 
     mapped->RemoveAttrAt(aPos, aValue);
@@ -579,7 +582,7 @@ nsAttrAndChildArray::SetAndTakeMappedAttr(nsIAtom* aLocalName,
     willAdd = !mImpl->mMappedAttrs->GetAttr(aLocalName);
   }
 
-  nsRefPtr<nsMappedAttributes> mapped =
+  RefPtr<nsMappedAttributes> mapped =
     GetModifiableMapped(aContent, aSheet, willAdd);
 
   mapped->SetAndTakeAttr(aLocalName, aValue);
@@ -596,7 +599,7 @@ nsAttrAndChildArray::DoSetMappedAttrStyleSheet(nsHTMLStyleSheet* aSheet)
     return NS_OK;
   }
 
-  nsRefPtr<nsMappedAttributes> mapped =
+  RefPtr<nsMappedAttributes> mapped =
     GetModifiableMapped(nullptr, nullptr, false);
 
   mapped->SetStyleSheet(aSheet);
@@ -735,13 +738,13 @@ nsAttrAndChildArray::MakeMappedUnique(nsMappedAttributes* aAttributes)
   if (!aAttributes->GetStyleSheet()) {
     // This doesn't currently happen, but it could if we do loading right
 
-    nsRefPtr<nsMappedAttributes> mapped(aAttributes);
+    RefPtr<nsMappedAttributes> mapped(aAttributes);
     mapped.swap(mImpl->mMappedAttrs);
 
     return NS_OK;
   }
 
-  nsRefPtr<nsMappedAttributes> mapped =
+  RefPtr<nsMappedAttributes> mapped =
     aAttributes->GetStyleSheet()->UniqueMappedAttributes(aAttributes);
   NS_ENSURE_TRUE(mapped, NS_ERROR_OUT_OF_MEMORY);
 

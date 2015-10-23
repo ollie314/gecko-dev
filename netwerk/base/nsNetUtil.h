@@ -45,6 +45,8 @@ class nsIStreamLoaderObserver;
 class nsIUnicharStreamLoader;
 class nsIUnicharStreamLoaderObserver;
 
+namespace mozilla { class OriginAttributes; }
+
 template <class> class nsCOMPtr;
 template <typename> struct already_AddRefed;
 
@@ -288,8 +290,7 @@ nsresult NS_NewInputStreamChannelInternal(nsIChannel        **outChannel,
                                           nsIPrincipal       *aLoadingPrincipal,
                                           nsIPrincipal       *aTriggeringPrincipal,
                                           nsSecurityFlags     aSecurityFlags,
-                                          nsContentPolicyType aContentPolicyType,
-                                          nsIURI             *aBaseURI = nullptr);
+                                          nsContentPolicyType aContentPolicyType);
 
 
 nsresult /* NS_NewInputStreamChannelPrincipal */
@@ -311,8 +312,7 @@ nsresult NS_NewInputStreamChannelInternal(nsIChannel        **outChannel,
                                           nsIPrincipal       *aTriggeringPrincipal,
                                           nsSecurityFlags     aSecurityFlags,
                                           nsContentPolicyType aContentPolicyType,
-                                          bool                aIsSrcdocChannel = false,
-                                          nsIURI             *aBaseURI = nullptr);
+                                          bool                aIsSrcdocChannel = false);
 
 nsresult NS_NewInputStreamChannel(nsIChannel        **outChannel,
                                   nsIURI             *aUri,
@@ -321,8 +321,7 @@ nsresult NS_NewInputStreamChannel(nsIChannel        **outChannel,
                                   nsIPrincipal       *aLoadingPrincipal,
                                   nsSecurityFlags     aSecurityFlags,
                                   nsContentPolicyType aContentPolicyType,
-                                  bool                aIsSrcdocChannel = false,
-                                  nsIURI             *aBaseURI = nullptr);
+                                  bool                aIsSrcdocChannel = false);
 
 nsresult NS_NewInputStreamPump(nsIInputStreamPump **result,
                                nsIInputStream      *stream,
@@ -489,9 +488,13 @@ nsresult NS_GetURLSpecFromDir(nsIFile      *file,
 nsresult NS_GetReferrerFromChannel(nsIChannel *channel,
                                    nsIURI **referrer);
 
-nsresult NS_ParseContentType(const nsACString &rawContentType,
-                             nsCString        &contentType,
-                             nsCString        &contentCharset);
+nsresult NS_ParseRequestContentType(const nsACString &rawContentType,
+                                    nsCString        &contentType,
+                                    nsCString        &contentCharset);
+
+nsresult NS_ParseResponseContentType(const nsACString &rawContentType,
+                                     nsCString        &contentType,
+                                     nsCString        &contentCharset);
 
 nsresult NS_ExtractCharsetFromContentType(const nsACString &rawContentType,
                                           nsCString        &contentCharset,
@@ -691,6 +694,12 @@ NS_QueryNotificationCallbacks(nsIInterfaceRequestor  *callbacks,
  * Returns false if channel's callbacks don't implement nsILoadContext.
  */
 bool NS_UsePrivateBrowsing(nsIChannel *channel);
+
+/**
+ * Extract the OriginAttributes from the channel's triggering principal.
+ */
+bool NS_GetOriginAttributes(nsIChannel *aChannel,
+                            mozilla::OriginAttributes &aAttributes);
 
 // Constants duplicated from nsIScriptSecurityManager so we avoid having necko
 // know about script security manager.

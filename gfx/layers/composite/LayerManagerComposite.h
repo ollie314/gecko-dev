@@ -25,7 +25,7 @@
 #include "mozilla/RefPtr.h"
 #include "mozilla/UniquePtr.h"
 #include "nsAString.h"
-#include "mozilla/nsRefPtr.h"                   // for nsRefPtr
+#include "mozilla/RefPtr.h"                   // for nsRefPtr
 #include "nsCOMPtr.h"                   // for already_AddRefed
 #include "nsDebug.h"                    // for NS_ASSERTION
 #include "nsISupportsImpl.h"            // for Layer::AddRef, etc
@@ -306,6 +306,11 @@ private:
 #endif
 
   /**
+   * We need to know our invalid region before we're ready to render.
+   */
+  void InvalidateDebugOverlay(const gfx::IntRect& aBounds);
+
+  /**
    * Render debug overlays such as the FPS/FrameCounter above the frame.
    */
   void RenderDebugOverlay(const gfx::Rect& aBounds);
@@ -554,7 +559,7 @@ RenderWithAllMasks(Layer* aLayer, Compositor* aCompositor,
   gfx::Matrix4x4 transform = aLayer->GetEffectiveTransform();
   // TODO: Use RenderTargetIntRect and TransformTo<...> here
   gfx::IntRect surfaceRect =
-    RoundedOut(transform.TransformBounds(visibleRect)).Intersect(aClipRect);
+    RoundedOut(transform.TransformAndClipBounds(visibleRect, gfx::Rect(aClipRect)));
   if (surfaceRect.IsEmpty()) {
     return;
   }

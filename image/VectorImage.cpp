@@ -32,6 +32,7 @@
 #include "SVGDocumentWrapper.h"
 #include "nsIDOMEventListener.h"
 #include "SurfaceCache.h"
+#include "nsDocument.h"
 
 // undef the GetCurrentTime macro defined in WinBase.h from the MS Platform SDK
 #undef GetCurrentTime
@@ -111,7 +112,7 @@ protected:
   }
 
   // Private data
-  const nsRefPtr<SVGDocumentWrapper> mDocWrapper;
+  const RefPtr<SVGDocumentWrapper> mDocWrapper;
   VectorImage* const mVectorImage;   // Raw pointer because it owns me.
   bool mHonoringInvalidations;
 };
@@ -151,7 +152,7 @@ public:
 
     // OnSVGDocumentParsed will release our owner's reference to us, so ensure
     // we stick around long enough to complete our work.
-    nsRefPtr<SVGParseCompleteListener> kungFuDeathGroup(this);
+    RefPtr<SVGParseCompleteListener> kungFuDeathGroup(this);
 
     mImage->OnSVGDocumentParsed();
   }
@@ -210,7 +211,7 @@ public:
 
     // OnSVGDocumentLoaded/OnSVGDocumentError will release our owner's reference
     // to us, so ensure we stick around long enough to complete our work.
-    nsRefPtr<SVGLoadEventListener> kungFuDeathGroup(this);
+    RefPtr<SVGLoadEventListener> kungFuDeathGroup(this);
 
     nsAutoString eventType;
     aEvent->GetType(eventType);
@@ -262,10 +263,10 @@ public:
   { }
   virtual bool operator()(gfxContext* aContext,
                           const gfxRect& aFillRect,
-                          const GraphicsFilter& aFilter,
+                          const Filter& aFilter,
                           const gfxMatrix& aTransform);
 private:
-  nsRefPtr<SVGDocumentWrapper> mSVGDocumentWrapper;
+  RefPtr<SVGDocumentWrapper> mSVGDocumentWrapper;
   const IntRect              mViewport;
   const IntSize                mSize;
   uint32_t                     mImageFlags;
@@ -275,7 +276,7 @@ private:
 bool
 SVGDrawingCallback::operator()(gfxContext* aContext,
                                const gfxRect& aFillRect,
-                               const GraphicsFilter& aFilter,
+                               const Filter& aFilter,
                                const gfxMatrix& aTransform)
 {
   MOZ_ASSERT(mSVGDocumentWrapper, "need an SVGDocumentWrapper");
@@ -496,14 +497,23 @@ NS_IMETHODIMP
 VectorImage::GetWidth(int32_t* aWidth)
 {
   if (mError || !mIsFullyLoaded) {
-    *aWidth = -1;
-  } else {
-    SVGSVGElement* rootElem = mSVGDocumentWrapper->GetRootSVGElem();
-    MOZ_ASSERT(rootElem, "Should have a root SVG elem, since we finished "
-                         "loading without errors");
-    *aWidth = rootElem->GetIntrinsicWidth();
+    // XXXdholbert Technically we should leave outparam untouched when we
+    // fail. But since many callers don't check for failure, we set it to 0 on
+    // failure, for sane/predictable results.
+    *aWidth = 0;
+    return NS_ERROR_FAILURE;
   }
-  return *aWidth >= 0 ? NS_OK : NS_ERROR_FAILURE;
+
+  SVGSVGElement* rootElem = mSVGDocumentWrapper->GetRootSVGElem();
+  MOZ_ASSERT(rootElem, "Should have a root SVG elem, since we finished "
+             "loading without errors");
+  int32_t rootElemWidth = rootElem->GetIntrinsicWidth();
+  if (rootElemWidth < 0) {
+    *aWidth = 0;
+    return NS_ERROR_FAILURE;
+  }
+  *aWidth = rootElemWidth;
+  return NS_OK;
 }
 
 //******************************************************************************
@@ -560,14 +570,23 @@ NS_IMETHODIMP
 VectorImage::GetHeight(int32_t* aHeight)
 {
   if (mError || !mIsFullyLoaded) {
-    *aHeight = -1;
-  } else {
-    SVGSVGElement* rootElem = mSVGDocumentWrapper->GetRootSVGElem();
-    MOZ_ASSERT(rootElem, "Should have a root SVG elem, since we finished "
-                         "loading without errors");
-    *aHeight = rootElem->GetIntrinsicHeight();
+    // XXXdholbert Technically we should leave outparam untouched when we
+    // fail. But since many callers don't check for failure, we set it to 0 on
+    // failure, for sane/predictable results.
+    *aHeight = 0;
+    return NS_ERROR_FAILURE;
   }
-  return *aHeight >= 0 ? NS_OK : NS_ERROR_FAILURE;
+
+  SVGSVGElement* rootElem = mSVGDocumentWrapper->GetRootSVGElem();
+  MOZ_ASSERT(rootElem, "Should have a root SVG elem, since we finished "
+             "loading without errors");
+  int32_t rootElemHeight = rootElem->GetIntrinsicHeight();
+  if (rootElemHeight < 0) {
+    *aHeight = 0;
+    return NS_ERROR_FAILURE;
+  }
+  *aHeight = rootElemHeight;
+  return NS_OK;
 }
 
 //******************************************************************************
@@ -667,19 +686,8 @@ VectorImage::IsOpaque()
 /* [noscript] SourceSurface getFrame(in uint32_t aWhichFrame,
  *                                   in uint32_t aFlags; */
 NS_IMETHODIMP_(already_AddRefed<SourceSurface>)
-VectorImage::GetFrame(uint32_t aWhichFrame,
-                      uint32_t aFlags)
+VectorImage::GetFrame(uint32_t aWhichFrame, uint32_t aFlags)
 {
-  MOZ_ASSERT(aWhichFrame <= FRAME_MAX_VALUE);
-
-  if (aWhichFrame > FRAME_MAX_VALUE) {
-    return nullptr;
-  }
-
-  if (mError || !mIsFullyLoaded) {
-    return nullptr;
-  }
-
   // Look up height & width
   // ----------------------
   SVGSVGElement* svgElem = mSVGDocumentWrapper->GetRootSVGElem();
@@ -694,23 +702,41 @@ VectorImage::GetFrame(uint32_t aWhichFrame,
     return nullptr;
   }
 
+  return GetFrameAtSize(imageIntSize, aWhichFrame, aFlags);
+}
+
+NS_IMETHODIMP_(already_AddRefed<SourceSurface>)
+VectorImage::GetFrameAtSize(const IntSize& aSize,
+                            uint32_t aWhichFrame,
+                            uint32_t aFlags)
+{
+  MOZ_ASSERT(aWhichFrame <= FRAME_MAX_VALUE);
+
+  if (aSize.IsEmpty()) {
+    return nullptr;
+  }
+
+  if (aWhichFrame > FRAME_MAX_VALUE) {
+    return nullptr;
+  }
+
+  if (mError || !mIsFullyLoaded) {
+    return nullptr;
+  }
+
   // Make our surface the size of what will ultimately be drawn to it.
   // (either the full image size, or the restricted region)
   RefPtr<DrawTarget> dt = gfxPlatform::GetPlatform()->
-    CreateOffscreenContentDrawTarget(IntSize(imageIntSize.width,
-                                             imageIntSize.height),
-                                     SurfaceFormat::B8G8R8A8);
+    CreateOffscreenContentDrawTarget(aSize, SurfaceFormat::B8G8R8A8);
   if (!dt) {
     NS_ERROR("Could not create a DrawTarget");
     return nullptr;
   }
 
-  nsRefPtr<gfxContext> context = new gfxContext(dt);
+  RefPtr<gfxContext> context = new gfxContext(dt);
 
-  auto result = Draw(context, imageIntSize,
-                     ImageRegion::Create(imageIntSize),
-                     aWhichFrame, GraphicsFilter::FILTER_NEAREST,
-                     Nothing(), aFlags);
+  auto result = Draw(context, aSize, ImageRegion::Create(aSize),
+                     aWhichFrame, Filter::POINT, Nothing(), aFlags);
 
   return result == DrawResult::SUCCESS ? dt->Snapshot() : nullptr;
 }
@@ -733,7 +759,7 @@ struct SVGDrawingParameters
   SVGDrawingParameters(gfxContext* aContext,
                        const nsIntSize& aSize,
                        const ImageRegion& aRegion,
-                       GraphicsFilter aFilter,
+                       Filter aFilter,
                        const Maybe<SVGImageContext>& aSVGContext,
                        float aAnimationTime,
                        uint32_t aFlags)
@@ -758,7 +784,7 @@ struct SVGDrawingParameters
   IntSize                       size;
   IntRect                       imageRect;
   ImageRegion                   region;
-  GraphicsFilter                filter;
+  Filter                        filter;
   const Maybe<SVGImageContext>& svgContext;
   nsIntSize                     viewportSize;
   float                         animationTime;
@@ -771,7 +797,7 @@ struct SVGDrawingParameters
  *                      [const] in nsIntSize aSize,
  *                      [const] in ImageRegion aRegion,
  *                      in uint32_t aWhichFrame,
- *                      in gfxGraphicsFilter aFilter,
+ *                      in Filter aFilter,
  *                      [const] in MaybeSVGImageContext aSVGContext,
  *                      in uint32_t aFlags); */
 NS_IMETHODIMP_(DrawResult)
@@ -779,7 +805,7 @@ VectorImage::Draw(gfxContext* aContext,
                   const nsIntSize& aSize,
                   const ImageRegion& aRegion,
                   uint32_t aWhichFrame,
-                  GraphicsFilter aFilter,
+                  Filter aFilter,
                   const Maybe<SVGImageContext>& aSVGContext,
                   uint32_t aFlags)
 {
@@ -836,7 +862,7 @@ VectorImage::Draw(gfxContext* aContext,
   if (result) {
     RefPtr<SourceSurface> surface = result.DrawableRef()->GetSurface();
     if (surface) {
-      nsRefPtr<gfxDrawable> svgDrawable =
+      RefPtr<gfxDrawable> svgDrawable =
         new gfxSurfaceDrawable(surface, result.DrawableRef()->GetSize());
       Show(svgDrawable, params);
       return DrawResult::SUCCESS;
@@ -857,13 +883,13 @@ VectorImage::CreateSurfaceAndShow(const SVGDrawingParameters& aParams)
   mSVGDocumentWrapper->UpdateViewportBounds(aParams.viewportSize);
   mSVGDocumentWrapper->FlushImageTransformInvalidation();
 
-  nsRefPtr<gfxDrawingCallback> cb =
+  RefPtr<gfxDrawingCallback> cb =
     new SVGDrawingCallback(mSVGDocumentWrapper,
                            IntRect(IntPoint(0, 0), aParams.viewportSize),
                            aParams.size,
                            aParams.flags);
 
-  nsRefPtr<gfxDrawable> svgDrawable =
+  RefPtr<gfxDrawable> svgDrawable =
     new gfxCallbackDrawable(cb, aParams.size);
 
   bool bypassCache = bool(aParams.flags & FLAG_BYPASS_SURFACE_CACHE) ||
@@ -886,11 +912,11 @@ VectorImage::CreateSurfaceAndShow(const SVGDrawingParameters& aParams)
 
   // Try to create an imgFrame, initializing the surface it contains by drawing
   // our gfxDrawable into it. (We use FILTER_NEAREST since we never scale here.)
-  nsRefPtr<imgFrame> frame = new imgFrame;
+  RefPtr<imgFrame> frame = new imgFrame;
   nsresult rv =
     frame->InitWithDrawable(svgDrawable, aParams.size,
                             SurfaceFormat::B8G8R8A8,
-                            GraphicsFilter::FILTER_NEAREST, aParams.flags);
+                            Filter::POINT, aParams.flags);
 
   // If we couldn't create the frame, it was probably because it would end
   // up way too big. Generally it also wouldn't fit in the cache, but the prefs
@@ -910,11 +936,10 @@ VectorImage::CreateSurfaceAndShow(const SVGDrawingParameters& aParams)
   SurfaceCache::Insert(frame, ImageKey(this),
                        VectorSurfaceKey(aParams.size,
                                         aParams.svgContext,
-                                        aParams.animationTime),
-                       Lifetime::Persistent);
+                                        aParams.animationTime));
 
   // Draw.
-  nsRefPtr<gfxDrawable> drawable =
+  RefPtr<gfxDrawable> drawable =
     new gfxSurfaceDrawable(surface, aParams.size);
   Show(drawable, aParams);
 
@@ -1196,9 +1221,6 @@ VectorImage::OnSVGDocumentError()
 {
   CancelAllListeners();
 
-  // XXXdholbert Need to do something more for the parsing failed case -- right
-  // now, this just makes us draw the "object" icon, rather than the (jagged)
-  // "broken image" icon.  See bug 594505.
   mError = true;
 
   if (mProgressTracker) {
@@ -1250,10 +1272,28 @@ VectorImage::InvalidateObserversOnNextRefreshDriverTick()
   }
 }
 
+void
+VectorImage::PropagateUseCounters(nsIDocument* aParentDocument)
+{
+  nsIDocument* doc = mSVGDocumentWrapper->GetDocument();
+  if (doc) {
+    doc->PropagateUseCounters(aParentDocument);
+  }
+}
+
+void
+VectorImage::ReportUseCounters()
+{
+  nsIDocument* doc = mSVGDocumentWrapper->GetDocument();
+  if (doc) {
+    static_cast<nsDocument*>(doc)->ReportUseCounters();
+  }
+}
+
 nsIntSize
 VectorImage::OptimalImageSizeForDest(const gfxSize& aDest,
                                      uint32_t aWhichFrame,
-                                     GraphicsFilter aFilter,
+                                     Filter aFilter,
                                      uint32_t aFlags)
 {
   MOZ_ASSERT(aDest.width >= 0 || ceil(aDest.width) <= INT32_MAX ||

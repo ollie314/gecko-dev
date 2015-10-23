@@ -111,7 +111,7 @@ nsPrincipal::GetOriginForURI(nsIURI* aURI, nsACString& aOrigin)
     return NS_ERROR_FAILURE;
   }
 
-  nsAutoCString host;
+  nsAutoCString hostPort;
 
   // chrome: URLs don't have a meaningful origin, so make
   // sure we just get the full spec for them.
@@ -120,10 +120,10 @@ nsPrincipal::GetOriginForURI(nsIURI* aURI, nsACString& aOrigin)
   bool isChrome;
   nsresult rv = origin->SchemeIs("chrome", &isChrome);
   if (NS_SUCCEEDED(rv) && !isChrome) {
-    rv = origin->GetAsciiHost(host);
+    rv = origin->GetAsciiHostPort(hostPort);
     // Some implementations return an empty string, treat it as no support
     // for asciiHost by that implementation.
-    if (host.IsEmpty()) {
+    if (hostPort.IsEmpty()) {
       rv = NS_ERROR_FAILURE;
     }
   }
@@ -153,26 +153,7 @@ nsPrincipal::GetOriginForURI(nsIURI* aURI, nsACString& aOrigin)
     return NS_OK;
   }
 
-  int32_t port;
   if (NS_SUCCEEDED(rv) && !isChrome) {
-    rv = origin->GetPort(&port);
-  }
-
-  if (NS_SUCCEEDED(rv) && !isChrome) {
-    nsAutoCString hostPort;
-    if (host.FindChar(':') != -1) {
-      hostPort.Assign("[");
-      hostPort.Append(host);
-      hostPort.Append("]");
-    } else {
-      hostPort.Assign(host);
-    }
-
-    if (port != -1) {
-      hostPort.Append(':');
-      hostPort.AppendInt(port, 10);
-    }
-
     rv = origin->GetScheme(aOrigin);
     NS_ENSURE_SUCCESS(rv, rv);
     aOrigin.AppendLiteral("://");
@@ -257,17 +238,9 @@ nsPrincipal::GetURI(nsIURI** aURI)
   return NS_EnsureSafeToReturn(mCodebase, aURI);
 }
 
-NS_IMETHODIMP
-nsPrincipal::CheckMayLoad(nsIURI* aURI, bool aReport, bool aAllowIfInheritsPrincipal)
+bool
+nsPrincipal::MayLoadInternal(nsIURI* aURI)
 {
-   if (aAllowIfInheritsPrincipal) {
-    // If the caller specified to allow loads of URIs that inherit
-    // our principal, allow the load if this URI inherits its principal
-    if (nsPrincipal::IsPrincipalInherited(aURI)) {
-      return NS_OK;
-    }
-  }
-
   // See if aURI is something like a Blob URI that is actually associated with
   // a principal.
   nsCOMPtr<nsIURIWithPrincipal> uriWithPrin = do_QueryInterface(aURI);
@@ -276,17 +249,17 @@ nsPrincipal::CheckMayLoad(nsIURI* aURI, bool aReport, bool aAllowIfInheritsPrinc
     uriWithPrin->GetPrincipal(getter_AddRefs(uriPrin));
   }
   if (uriPrin && nsIPrincipal::Subsumes(uriPrin)) {
-      return NS_OK;
+    return true;
   }
 
   // If this principal is associated with an addon, check whether that addon
   // has been given permission to load from this domain.
   if (AddonAllowsLoad(aURI)) {
-    return NS_OK;
+    return true;
   }
 
   if (nsScriptSecurityManager::SecurityCompareURIs(mCodebase, aURI)) {
-    return NS_OK;
+    return true;
   }
 
   // If strict file origin policy is in effect, local files will always fail
@@ -295,13 +268,10 @@ nsPrincipal::CheckMayLoad(nsIURI* aURI, bool aReport, bool aAllowIfInheritsPrinc
   if (nsScriptSecurityManager::GetStrictFileOriginPolicy() &&
       NS_URIIsLocalFile(aURI) &&
       NS_RelaxStrictFileOriginPolicy(aURI, mCodebase)) {
-    return NS_OK;
+    return true;
   }
 
-  if (aReport) {
-    nsScriptSecurityManager::ReportError(nullptr, NS_LITERAL_STRING("CheckSameOriginError"), mCodebase, aURI);
-  }
-  return NS_ERROR_DOM_BAD_URI;
+  return false;
 }
 
 void
@@ -446,7 +416,6 @@ NS_IMETHODIMP
 nsPrincipal::Write(nsIObjectOutputStream* aStream)
 {
   NS_ENSURE_STATE(mCodebase);
-
   nsresult rv = NS_WriteOptionalCompoundObject(aStream, mCodebase, NS_GET_IID(nsIURI),
                                                true);
   if (NS_FAILED(rv)) {
@@ -778,17 +747,16 @@ nsExpandedPrincipal::SubsumesInternal(nsIPrincipal* aOther,
   return false;
 }
 
-NS_IMETHODIMP
-nsExpandedPrincipal::CheckMayLoad(nsIURI* uri, bool aReport, bool aAllowIfInheritsPrincipal)
+bool
+nsExpandedPrincipal::MayLoadInternal(nsIURI* uri)
 {
-  nsresult rv;
   for (uint32_t i = 0; i < mPrincipals.Length(); ++i){
-    rv = mPrincipals[i]->CheckMayLoad(uri, aReport, aAllowIfInheritsPrincipal);
-    if (NS_SUCCEEDED(rv))
-      return rv;
+    if (BasePrincipal::Cast(mPrincipals[i])->MayLoadInternal(uri)) {
+      return true;
+    }
   }
 
-  return NS_ERROR_DOM_BAD_URI;
+  return false;
 }
 
 NS_IMETHODIMP

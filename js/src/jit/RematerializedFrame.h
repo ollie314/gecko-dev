@@ -124,7 +124,7 @@ class RematerializedFrame
     bool initFunctionScopeObjects(JSContext* cx);
 
     bool hasCallObj() const {
-        MOZ_ASSERT(fun()->isHeavyweight());
+        MOZ_ASSERT(fun()->needsCallObject());
         return hasCallObj_;
     }
     CallObject& callObj() const;
@@ -141,8 +141,11 @@ class RematerializedFrame
     bool isFunctionFrame() const {
         return !!script_->functionNonDelazifying();
     }
+    bool isModuleFrame() const {
+        return !!script_->module();
+    }
     bool isGlobalFrame() const {
-        return !isFunctionFrame();
+        return !isFunctionFrame() && !isModuleFrame();
     }
     bool isNonEvalFunctionFrame() const {
         // Ion doesn't support eval frames.

@@ -1640,7 +1640,7 @@ public:
 private:
   const char* mShutdownTimeFilename;
   nsCOMPtr<nsIFile> mFailedProfileLockFile;
-  nsRefPtr<TelemetryImpl> mTelemetry;
+  RefPtr<TelemetryImpl> mTelemetry;
   nsCOMPtr<nsIFile> mProfileDir;
 
 public:
@@ -2188,7 +2188,7 @@ TelemetryImpl::UnregisterAddonHistograms(const nsACString &id)
     // will be deleted if and when the addon registers histograms with
     // the same names.
     delete addonEntry->mData;
-    mAddonMap.RemoveEntry(id);
+    mAddonMap.RemoveEntry(addonEntry);
   }
 
   return NS_OK;
@@ -3725,6 +3725,19 @@ Accumulate(const char* name, uint32_t sample)
 }
 
 void
+Accumulate(const char *name, const nsCString& key, uint32_t sample)
+{
+    if (!TelemetryImpl::CanRecordBase()) {
+      return;
+    }
+    ID id;
+    nsresult rv = TelemetryImpl::GetHistogramEnumId(name, &id);
+    if (NS_SUCCEEDED(rv)) {
+      Accumulate(id, key, sample);
+    }
+}
+
+void
 AccumulateTimeDelta(ID aHistogram, TimeStamp start, TimeStamp end)
 {
   Accumulate(aHistogram,
@@ -3749,6 +3762,13 @@ GetHistogramById(ID id)
   Histogram *h = nullptr;
   GetHistogramByEnumId(id, &h);
   return h;
+}
+
+const char*
+GetHistogramName(Telemetry::ID id)
+{
+  const TelemetryHistogram& h = gHistograms[id];
+  return h.id();
 }
 
 void

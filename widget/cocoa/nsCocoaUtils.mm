@@ -35,6 +35,7 @@ using mozilla::gfx::BackendType;
 using mozilla::gfx::DataSourceSurface;
 using mozilla::gfx::DrawTarget;
 using mozilla::gfx::Factory;
+using mozilla::gfx::Filter;
 using mozilla::gfx::IntPoint;
 using mozilla::gfx::IntRect;
 using mozilla::gfx::IntSize;
@@ -232,6 +233,15 @@ void nsCocoaUtils::GetScrollingDeltas(NSEvent* aEvent, CGFloat* aOutDeltaX, CGFl
   CGFloat lineDeltaPixels = 12;
   *aOutDeltaX = [aEvent deltaX] * lineDeltaPixels;
   *aOutDeltaY = [aEvent deltaY] * lineDeltaPixels;
+}
+
+BOOL nsCocoaUtils::EventHasPhaseInformation(NSEvent* aEvent)
+{
+  if (![aEvent respondsToSelector:@selector(phase)]) {
+    return NO;
+  }
+  return EventPhase(aEvent) != NSEventPhaseNone ||
+         EventMomentumPhase(aEvent) != NSEventPhaseNone;
 }
 
 void nsCocoaUtils::HideOSChromeOnScreen(bool aShouldHide)
@@ -466,8 +476,7 @@ nsresult nsCocoaUtils::CreateNSImageFromImageContainer(imgIContainer *aImage, ui
 
   // Render a vector image at the correct resolution on a retina display
   if (aImage->GetType() == imgIContainer::TYPE_VECTOR && scaleFactor != 1.0f) {
-    gfxIntSize scaledSize(ceil(width * scaleFactor),
-                          ceil(height * scaleFactor));
+    IntSize scaledSize(ceil(width * scaleFactor), ceil(height * scaleFactor));
 
     RefPtr<DrawTarget> drawTarget = gfxPlatform::GetPlatform()->
       CreateOffscreenContentDrawTarget(scaledSize, SurfaceFormat::B8G8R8A8);
@@ -476,14 +485,14 @@ nsresult nsCocoaUtils::CreateNSImageFromImageContainer(imgIContainer *aImage, ui
       return NS_ERROR_FAILURE;
     }
 
-    nsRefPtr<gfxContext> context = new gfxContext(drawTarget);
+    RefPtr<gfxContext> context = new gfxContext(drawTarget);
     if (!context) {
       NS_ERROR("Failed to create gfxContext");
       return NS_ERROR_FAILURE;
     }
 
     aImage->Draw(context, scaledSize, ImageRegion::Create(scaledSize),
-                 aWhichFrame, GraphicsFilter::FILTER_NEAREST, Nothing(),
+                 aWhichFrame, Filter::POINT, Nothing(),
                  imgIContainer::FLAG_SYNC_DECODE);
 
     surface = drawTarget->Snapshot();
@@ -598,40 +607,38 @@ nsCocoaUtils::InitInputEvent(WidgetInputEvent& aInputEvent,
 {
   NS_OBJC_BEGIN_TRY_ABORT_BLOCK;
 
-  NSUInteger modifiers =
-    aNativeEvent ? [aNativeEvent modifierFlags] : [NSEvent modifierFlags];
-  InitInputEvent(aInputEvent, modifiers);
-
+  aInputEvent.modifiers = ModifiersForEvent(aNativeEvent);
   aInputEvent.time = PR_IntervalNow();
 
   NS_OBJC_END_TRY_ABORT_BLOCK;
 }
 
 // static
-void
-nsCocoaUtils::InitInputEvent(WidgetInputEvent& aInputEvent,
-                             NSUInteger aModifiers)
+Modifiers
+nsCocoaUtils::ModifiersForEvent(NSEvent* aNativeEvent)
 {
-  aInputEvent.modifiers = 0;
-  if (aModifiers & NSShiftKeyMask) {
-    aInputEvent.modifiers |= MODIFIER_SHIFT;
+  NSUInteger modifiers =
+    aNativeEvent ? [aNativeEvent modifierFlags] : [NSEvent modifierFlags];
+  Modifiers result = 0;
+  if (modifiers & NSShiftKeyMask) {
+    result |= MODIFIER_SHIFT;
   }
-  if (aModifiers & NSControlKeyMask) {
-    aInputEvent.modifiers |= MODIFIER_CONTROL;
+  if (modifiers & NSControlKeyMask) {
+    result |= MODIFIER_CONTROL;
   }
-  if (aModifiers & NSAlternateKeyMask) {
-    aInputEvent.modifiers |= MODIFIER_ALT;
+  if (modifiers & NSAlternateKeyMask) {
+    result |= MODIFIER_ALT;
     // Mac's option key is similar to other platforms' AltGr key.
     // Let's set AltGr flag when option key is pressed for consistency with
     // other platforms.
-    aInputEvent.modifiers |= MODIFIER_ALTGRAPH;
+    result |= MODIFIER_ALTGRAPH;
   }
-  if (aModifiers & NSCommandKeyMask) {
-    aInputEvent.modifiers |= MODIFIER_META;
+  if (modifiers & NSCommandKeyMask) {
+    result |= MODIFIER_META;
   }
 
-  if (aModifiers & NSAlphaShiftKeyMask) {
-    aInputEvent.modifiers |= MODIFIER_CAPSLOCK;
+  if (modifiers & NSAlphaShiftKeyMask) {
+    result |= MODIFIER_CAPSLOCK;
   }
   // Mac doesn't have NumLock key.  We can assume that NumLock is always locked
   // if user is using a keyboard which has numpad.  Otherwise, if user is using
@@ -641,14 +648,15 @@ nsCocoaUtils::InitInputEvent(WidgetInputEvent& aInputEvent,
   // We should notify locked state only when keys in numpad are pressed.
   // By this, web applications may not be confused by unexpected numpad key's
   // key event with unlocked state.
-  if (aModifiers & NSNumericPadKeyMask) {
-    aInputEvent.modifiers |= MODIFIER_NUMLOCK;
+  if (modifiers & NSNumericPadKeyMask) {
+    result |= MODIFIER_NUMLOCK;
   }
 
   // Be aware, NSFunctionKeyMask is included when arrow keys, home key or some
   // other keys are pressed. We cannot check whether 'fn' key is pressed or
   // not by the flag.
 
+  return result;
 }
 
 // static

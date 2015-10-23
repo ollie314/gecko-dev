@@ -438,7 +438,8 @@ class RobocopTestRunner(Mochitest):
         try:
             self.dm.recordLogcat()
             result = self.auto.runApp(
-                None, browserEnv, "am", self.localProfile, browserArgs, timeout=self.NO_OUTPUT_TIMEOUT)
+                None, browserEnv, "am", self.localProfile, browserArgs,
+                timeout=self.NO_OUTPUT_TIMEOUT, symbolsPath=self.options.symbolsPath)
             self.log.debug("runApp completes with status %d" % result)
             if result != 0:
                 self.log.error("runApp() exited with code %s" % result)
@@ -521,6 +522,14 @@ def run_test_harness(options):
     auto.setDeviceManager(options.dm)
     runResult = -1
     robocop = RobocopTestRunner(auto, options.dm, options)
+
+    # Check that Firefox is installed
+    expected = options.app.split('/')[-1]
+    installed = options.dm.shellCheckOutput(['pm', 'list', 'packages', expected])
+    if expected not in installed:
+        robocop.log.error("%s is not installed on this device" % expected)
+        return 1
+
     try:
         message_logger.logger = robocop.log
         message_logger.buffering = False

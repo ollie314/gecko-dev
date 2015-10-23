@@ -9,6 +9,7 @@
 
 #include "MediaStreamGraph.h"
 #include "SpeechSynthesisUtterance.h"
+#include "nsIAudioChannelAgent.h"
 #include "nsISpeechService.h"
 
 namespace mozilla {
@@ -19,6 +20,7 @@ class SpeechSynthesis;
 class SynthStreamListener;
 
 class nsSpeechTask : public nsISpeechTask
+                   , public nsIAudioChannelAgentCallback
 {
   friend class SynthStreamListener;
 
@@ -27,6 +29,7 @@ public:
   NS_DECL_CYCLE_COLLECTION_CLASS_AMBIGUOUS(nsSpeechTask, nsISpeechTask)
 
   NS_DECL_NSISPEECHTASK
+  NS_DECL_NSIAUDIOCHANNELAGENTCALLBACK
 
   explicit nsSpeechTask(SpeechSynthesisUtterance* aUtterance);
   nsSpeechTask(float aVolume, const nsAString& aText);
@@ -45,9 +48,12 @@ public:
 
   void SetSpeechSynthesis(SpeechSynthesis* aSpeechSynthesis);
 
-  void Init(ProcessedMediaStream* aStream);
+  void InitDirectAudio();
+  void InitIndirectAudio();
 
   void SetChosenVoiceURI(const nsAString& aUri);
+
+  virtual void SetAudioOutputVolume(float aVolume);
 
   bool IsPreCanceled()
   {
@@ -81,7 +87,7 @@ protected:
   virtual nsresult DispatchMarkImpl(const nsAString& aName,
                                     float aElapsedTime, uint32_t aCharIndex);
 
-  nsRefPtr<SpeechSynthesisUtterance> mUtterance;
+  RefPtr<SpeechSynthesisUtterance> mUtterance;
 
   float mVolume;
 
@@ -96,21 +102,27 @@ protected:
 private:
   void End();
 
-  void SendAudioImpl(nsRefPtr<mozilla::SharedBuffer>& aSamples, uint32_t aDataLen);
+  void SendAudioImpl(RefPtr<mozilla::SharedBuffer>& aSamples, uint32_t aDataLen);
 
   nsresult DispatchStartInner();
 
   nsresult DispatchEndInner(float aElapsedTime, uint32_t aCharIndex);
 
-  nsRefPtr<SourceMediaStream> mStream;
+  void CreateAudioChannelAgent();
 
-  nsRefPtr<MediaInputPort> mPort;
+  void DestroyAudioChannelAgent();
+
+  RefPtr<SourceMediaStream> mStream;
+
+  RefPtr<MediaInputPort> mPort;
 
   nsCOMPtr<nsISpeechTaskCallback> mCallback;
 
+  nsCOMPtr<nsIAudioChannelAgent> mAudioChannelAgent;
+
   uint32_t mChannels;
 
-  nsRefPtr<SpeechSynthesis> mSpeechSynthesis;
+  RefPtr<SpeechSynthesis> mSpeechSynthesis;
 
   bool mIndirectAudio;
 

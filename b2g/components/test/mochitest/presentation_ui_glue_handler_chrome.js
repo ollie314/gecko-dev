@@ -4,7 +4,7 @@
 
 'use strict';
 
-const { classes: Cc, interfaces: Ci, utils: Cu } = Components;
+var { classes: Cc, interfaces: Ci, utils: Cu } = Components;
 const { XPCOMUtils } = Cu.import('resource://gre/modules/XPCOMUtils.jsm');
 const { SystemAppProxy } = Cu.import('resource://gre/modules/SystemAppProxy.jsm');
 
@@ -28,7 +28,7 @@ addMessageListener('trigger-ui-glue', function(aData) {
 addMessageListener('trigger-presentation-content-event', function(aData) {
   var detail = {
     type: 'presentation-receiver-launched',
-    sessionId: aData.sessionId,
+    id: aData.sessionId,
     frame: aData.frame
   };
   SystemAppProxy._sendCustomEvent('mozPresentationContentEvent', detail);

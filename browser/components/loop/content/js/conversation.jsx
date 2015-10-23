@@ -8,11 +8,11 @@ loop.conversation = (function(mozL10n) {
 
   var sharedMixins = loop.shared.mixins;
   var sharedActions = loop.shared.actions;
+  var FAILURE_DETAILS = loop.shared.utils.FAILURE_DETAILS;
 
-  var CallControllerView = loop.conversationViews.CallControllerView;
   var DesktopRoomConversationView = loop.roomViews.DesktopRoomConversationView;
   var FeedbackView = loop.feedbackViews.FeedbackView;
-  var GenericFailureView = loop.conversationViews.GenericFailureView;
+  var RoomFailureView = loop.roomViews.RoomFailureView;
 
   /**
    * Master controller view for handling if incoming or outgoing calls are
@@ -67,24 +67,20 @@ loop.conversation = (function(mozL10n) {
         return this._renderFeedbackForm();
       }
 
-      switch(this.state.windowType) {
-        // CallControllerView is used for both.
-        case "incoming":
-        case "outgoing": {
-          return (<CallControllerView
-            dispatcher={this.props.dispatcher}
-            mozLoop={this.props.mozLoop}
-            onCallTerminated={this.handleCallTerminated} />);
-        }
+      switch (this.state.windowType) {
         case "room": {
           return (<DesktopRoomConversationView
+            chatWindowDetached={this.state.chatWindowDetached}
             dispatcher={this.props.dispatcher}
             mozLoop={this.props.mozLoop}
             onCallTerminated={this.handleCallTerminated}
             roomStore={this.props.roomStore} />);
         }
         case "failed": {
-          return <GenericFailureView cancelCall={this.closeWindow} />;
+          return (<RoomFailureView
+            dispatcher={this.props.dispatcher}
+            failureReason={FAILURE_DETAILS.UNKNOWN}
+            mozLoop={this.props.mozLoop} />);
         }
         default: {
           // If we don't have a windowType, we don't know what we are yet,
@@ -121,7 +117,6 @@ loop.conversation = (function(mozL10n) {
     var useDataChannels = loop.shared.utils.getBoolPreference("textChat.enabled");
 
     var dispatcher = new loop.Dispatcher();
-    var client = new loop.Client();
     var sdkDriver = new loop.OTSdkDriver({
       isDesktop: true,
       useDataChannels: useDataChannels,
@@ -134,20 +129,15 @@ loop.conversation = (function(mozL10n) {
     loop.conversation._sdkDriver = sdkDriver;
 
     // Create the stores.
-    var conversationAppStore = new loop.store.ConversationAppStore({
-      dispatcher: dispatcher,
-      mozLoop: navigator.mozLoop
-    });
-    var conversationStore = new loop.store.ConversationStore(dispatcher, {
-      client: client,
-      isDesktop: true,
-      mozLoop: navigator.mozLoop,
-      sdkDriver: sdkDriver
-    });
     var activeRoomStore = new loop.store.ActiveRoomStore(dispatcher, {
       isDesktop: true,
       mozLoop: navigator.mozLoop,
       sdkDriver: sdkDriver
+    });
+    var conversationAppStore = new loop.store.ConversationAppStore({
+      activeRoomStore: activeRoomStore,
+      dispatcher: dispatcher,
+      mozLoop: navigator.mozLoop
     });
     var roomStore = new loop.store.RoomStore(dispatcher, {
       mozLoop: navigator.mozLoop,
@@ -159,7 +149,6 @@ loop.conversation = (function(mozL10n) {
 
     loop.store.StoreMixin.register({
       conversationAppStore: conversationAppStore,
-      conversationStore: conversationStore,
       textChatStore: textChatStore
     });
 
@@ -171,10 +160,6 @@ loop.conversation = (function(mozL10n) {
     if (hash) {
       windowId = hash[1];
     }
-
-    window.addEventListener("unload", function(event) {
-      dispatcher.dispatch(new sharedActions.WindowUnload());
-    });
 
     React.render(
       <AppControllerView

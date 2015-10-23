@@ -4,15 +4,15 @@
  * See also Bugs 1175327, 1043801, 1178985.
  */
 
-const {classes: Cc, interfaces: Ci, utils: Cu, results: Cr} = Components;
+var {classes: Cc, interfaces: Ci, utils: Cu, results: Cr} = Components;
 const PREF = "privacy.trackingprotection.enabled";
 const PB_PREF = "privacy.trackingprotection.pbmode.enabled";
 const BENIGN_PAGE = "http://tracking.example.org/browser/browser/base/content/test/general/benignPage.html";
 const TRACKING_PAGE = "http://tracking.example.org/browser/browser/base/content/test/general/trackingPage.html";
-let TrackingProtection = null;
-let tabbrowser = null;
+var TrackingProtection = null;
+var tabbrowser = null;
 
-let {UrlClassifierTestUtils} = Cu.import("resource://testing-common/UrlClassifierTestUtils.jsm", {});
+var {UrlClassifierTestUtils} = Cu.import("resource://testing-common/UrlClassifierTestUtils.jsm", {});
 
 registerCleanupFunction(function() {
   TrackingProtection = tabbrowser = null;
@@ -24,10 +24,19 @@ registerCleanupFunction(function() {
   }
 });
 
+function hidden(el) {
+  let win = el.ownerDocument.defaultView;
+  let display = win.getComputedStyle(el).getPropertyValue("display", null);
+  let opacity = win.getComputedStyle(el).getPropertyValue("opacity", null);
+
+  return display === "none" || opacity === "0";
+}
+
 add_task(function* testNormalBrowsing() {
   yield UrlClassifierTestUtils.addTestTrackers();
 
   tabbrowser = gBrowser;
+  let {gIdentityHandler} = tabbrowser.ownerGlobal;
   let tab = tabbrowser.selectedTab = tabbrowser.addTab();
 
   TrackingProtection = tabbrowser.ownerGlobal.TrackingProtection;
@@ -43,16 +52,21 @@ add_task(function* testNormalBrowsing() {
 
   info("Load a test page containing tracking elements");
   yield promiseTabLoadEvent(tab, TRACKING_PAGE);
-  ok(TrackingProtection.container.hidden, "The container is hidden");
+  gIdentityHandler._identityBox.click();
+  ok(hidden(TrackingProtection.container), "The container is hidden");
+  gIdentityHandler._identityPopup.hidden = true;
 
   info("Load a test page not containing tracking elements");
   yield promiseTabLoadEvent(tab, BENIGN_PAGE);
-  ok(TrackingProtection.container.hidden, "The container is hidden");
+  gIdentityHandler._identityBox.click();
+  ok(hidden(TrackingProtection.container), "The container is hidden");
+  gIdentityHandler._identityPopup.hidden = true;
 });
 
 add_task(function* testPrivateBrowsing() {
   let privateWin = yield promiseOpenAndLoadWindow({private: true}, true);
   tabbrowser = privateWin.gBrowser;
+  let {gIdentityHandler} = tabbrowser.ownerGlobal;
   let tab = tabbrowser.selectedTab = tabbrowser.addTab();
 
   TrackingProtection = tabbrowser.ownerGlobal.TrackingProtection;
@@ -68,11 +82,15 @@ add_task(function* testPrivateBrowsing() {
 
   info("Load a test page containing tracking elements");
   yield promiseTabLoadEvent(tab, TRACKING_PAGE);
-  ok(TrackingProtection.container.hidden, "The container is hidden");
+  gIdentityHandler._identityBox.click();
+  ok(hidden(TrackingProtection.container), "The container is hidden");
+  gIdentityHandler._identityPopup.hidden = true;
 
   info("Load a test page not containing tracking elements");
+  gIdentityHandler._identityBox.click();
   yield promiseTabLoadEvent(tab, BENIGN_PAGE);
-  ok(TrackingProtection.container.hidden, "The container is hidden");
+  ok(hidden(TrackingProtection.container), "The container is hidden");
+  gIdentityHandler._identityPopup.hidden = true;
 
   privateWin.close();
 });

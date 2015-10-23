@@ -90,7 +90,7 @@ nsHTMLEditorEventListener::MouseDown(nsIDOMMouseEvent* aMouseEvent)
 
   // Detect only "context menu" click
   // XXX This should be easier to do!
-  // But eDOMEvents_contextmenu and NS_CONTEXTMENU is not exposed in any event
+  // But eDOMEvents_contextmenu and eContextMenu is not exposed in any event
   // interface :-(
   int16_t buttonNumber;
   nsresult rv = aMouseEvent->GetButton(&buttonNumber);
@@ -109,7 +109,7 @@ nsHTMLEditorEventListener::MouseDown(nsIDOMMouseEvent* aMouseEvent)
   nsCOMPtr<nsIDOMElement> element = do_QueryInterface(target);
 
   if (isContextClick || (buttonNumber == 0 && clickCount == 2)) {
-    nsRefPtr<Selection> selection = mEditor->GetSelection();
+    RefPtr<Selection> selection = mEditor->GetSelection();
     NS_ENSURE_TRUE(selection, NS_OK);
 
     // Get location of mouse within target node
@@ -130,7 +130,7 @@ nsHTMLEditorEventListener::MouseDown(nsIDOMMouseEvent* aMouseEvent)
       NS_ENSURE_SUCCESS(rv, rv);
 
       for (int32_t i = 0; i < rangeCount; i++) {
-        nsRefPtr<nsRange> range = selection->GetRangeAt(i);
+        RefPtr<nsRange> range = selection->GetRangeAt(i);
         if (!range) {
           // Don't bail yet, iterate through them all
           continue;

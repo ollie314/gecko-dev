@@ -8,11 +8,13 @@
 
 #include "mozilla/DebugOnly.h"
 
+#include "jit/BaselineIC.h"
 #include "jit/JitcodeMap.h"
 #include "jit/Linker.h"
 #include "jit/PerfSpewer.h"
 
 #include "jit/JitFrames-inl.h"
+#include "jit/MacroAssembler-inl.h"
 #include "vm/Stack-inl.h"
 
 using namespace js;
@@ -694,6 +696,7 @@ RecompileBaselineScriptForDebugMode(JSContext* cx, JSScript* script,
     _(GetElem_NativePrototypeCallScriptedSymbol) \
     _(GetProp_CallScripted)                     \
     _(GetProp_CallNative)                       \
+    _(GetProp_CallNativeGlobal)                 \
     _(GetProp_CallDOMProxyNative)               \
     _(GetProp_CallDOMProxyWithGenerationNative) \
     _(GetProp_DOMProxyShadowed)                 \
@@ -706,7 +709,8 @@ RecompileBaselineScriptForDebugMode(JSContext* cx, JSScript* script,
     _(GetElem_Dense)                            \
     _(GetElem_Arguments)                        \
     _(GetProp_NativePrototype)                  \
-    _(GetProp_Native)
+    _(GetProp_Native)                           \
+    _(GetName_Global)
 #endif
 
 static bool
@@ -1079,7 +1083,7 @@ EmitBaselineDebugModeOSRHandlerTail(MacroAssembler& masm, Register temp, bool re
     masm.push(Address(temp, offsetof(BaselineDebugModeOSRInfo, resumeAddr)));
 
     // Call a stub to free the allocated info.
-    masm.setupUnalignedABICall(1, temp);
+    masm.setupUnalignedABICall(temp);
     masm.loadBaselineFramePtr(BaselineFrameReg, temp);
     masm.passABIArg(temp);
     masm.callWithABI(JS_FUNC_TO_DATA_PTR(void*, FinishBaselineDebugModeOSR));
@@ -1131,7 +1135,7 @@ JitRuntime::generateBaselineDebugModeOSRHandler(JSContext* cx, uint32_t* noFrame
     masm.push(BaselineFrameReg);
 
     // Call a stub to fully initialize the info.
-    masm.setupUnalignedABICall(3, temp);
+    masm.setupUnalignedABICall(temp);
     masm.loadBaselineFramePtr(BaselineFrameReg, temp);
     masm.passABIArg(temp);
     masm.passABIArg(syncedStackStart);

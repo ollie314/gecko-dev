@@ -12,9 +12,15 @@
   },
   "dependencies": {},
   "devDependencies": {
-    "eslint": "1.0.x",
-    "eslint-plugin-react": "3.2.x",
-    "express": "4.x"
+    "compression": "1.5.x",
+    "eslint": "1.6.x",
+    "eslint-plugin-mozilla": "../../../../testing/eslint-plugin-mozilla",
+    "eslint-plugin-react": "3.5.x",
+    "exports-loader": "0.6.x",
+    "express": "4.x",
+    "imports-loader": "0.6.x",
+    "script-loader": "0.6.x",
+    "webpack": "1.12.x"
   },
   "scripts": {
     "test": "make test",

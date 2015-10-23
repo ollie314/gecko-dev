@@ -70,8 +70,6 @@ public:
   MediaOmxReader(AbstractMediaDecoder* aDecoder);
   ~MediaOmxReader();
 
-  virtual nsresult Init(MediaDecoderReader* aCloneDonor);
-
 protected:
   virtual void NotifyDataArrivedInternal(uint32_t aLength, int64_t aOffset) override;
 public:
@@ -97,18 +95,18 @@ public:
     return mHasVideo;
   }
 
-  virtual void ReleaseMediaResources();
+  virtual void ReleaseMediaResources() override;
 
-  virtual nsRefPtr<MediaDecoderReader::MetadataPromise> AsyncReadMetadata() override;
+  virtual RefPtr<MediaDecoderReader::MetadataPromise> AsyncReadMetadata() override;
 
-  virtual nsRefPtr<SeekPromise>
+  virtual RefPtr<SeekPromise>
   Seek(int64_t aTime, int64_t aEndTime) override;
 
   virtual bool IsMediaSeekable() override;
 
   virtual void SetIdle() override;
 
-  virtual nsRefPtr<ShutdownPromise> Shutdown() override;
+  virtual RefPtr<ShutdownPromise> Shutdown() override;
 
   android::sp<android::MediaSource> GetAudioOffloadTrack();
 
@@ -128,6 +126,8 @@ private:
   int64_t ProcessCachedData(int64_t aOffset);
 
   already_AddRefed<AbstractMediaDecoder> SafeGetDecoder();
+
+  NotifyDataArrivedFilter mFilter;
 };
 
 } // namespace mozilla

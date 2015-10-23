@@ -55,6 +55,7 @@ CodeGeneratorShared::CodeGeneratorShared(MIRGenerator* gen, LIRGraph* graph, Mac
     lastOsiPointOffset_(0),
     safepoints_(graph->totalSlotCount(), (gen->info().nargs() + 1) * sizeof(Value)),
     returnLabel_(),
+    stubSpace_(),
     nativeToBytecodeMap_(nullptr),
     nativeToBytecodeMapSize_(0),
     nativeToBytecodeTableOffset_(0),
@@ -207,6 +208,11 @@ CodeGeneratorShared::addNativeToBytecodeEntry(const BytecodeSite* site)
     if (!isProfilerInstrumentationEnabled())
         return true;
 
+    // Fails early if the last added instruction caused the macro assembler to
+    // run out of memory as continuity assumption below do not hold.
+    if (masm.oom())
+        return false;
+
     MOZ_ASSERT(site);
     MOZ_ASSERT(site->tree());
     MOZ_ASSERT(site->pc());
@@ -326,7 +332,7 @@ CodeGeneratorShared::addTrackedOptimizationsEntry(const TrackedOptimizations* op
 
     if (!trackedOptimizations_.empty()) {
         NativeToTrackedOptimizations& lastEntry = trackedOptimizations_.back();
-        MOZ_ASSERT(nativeOffset >= lastEntry.endOffset.offset());
+        MOZ_ASSERT_IF(!masm.oom(), nativeOffset >= lastEntry.endOffset.offset());
 
         // If we're still generating code for the same set of optimizations,
         // we are done.
@@ -352,7 +358,7 @@ CodeGeneratorShared::extendTrackedOptimizationsEntry(const TrackedOptimizations*
     uint32_t nativeOffset = masm.currentOffset();
     NativeToTrackedOptimizations& entry = trackedOptimizations_.back();
     MOZ_ASSERT(entry.optimizations == optimizations);
-    MOZ_ASSERT(nativeOffset >= entry.endOffset.offset());
+    MOZ_ASSERT_IF(!masm.oom(), nativeOffset >= entry.endOffset.offset());
 
     entry.endOffset = CodeOffsetLabel(nativeOffset);
 
@@ -587,7 +593,7 @@ CodeGeneratorShared::encode(LSnapshot* snapshot)
     for (LRecoverInfo::OperandIter it(recoverInfo); !it; ++it) {
         DebugOnly<uint32_t> allocWritten = snapshots_.allocWritten();
         encodeAllocation(snapshot, *it, &allocIndex);
-        MOZ_ASSERT(allocWritten + 1 == snapshots_.allocWritten());
+        MOZ_ASSERT_IF(!snapshots_.oom(), allocWritten + 1 == snapshots_.allocWritten());
     }
 
     MOZ_ASSERT(allocIndex == snapshot->numSlots());
@@ -620,7 +626,7 @@ CodeGeneratorShared::assignBailoutId(LSnapshot* snapshot)
     return bailouts_.append(snapshot->snapshotOffset());
 }
 
-void
+bool
 CodeGeneratorShared::encodeSafepoints()
 {
     for (SafepointIndex& index : safepointIndices_) {
@@ -633,6 +639,8 @@ CodeGeneratorShared::encodeSafepoints()
 
         index.resolve();
     }
+
+    return !safepoints_.oom();
 }
 
 bool
@@ -917,20 +925,23 @@ CodeGeneratorShared::generateCompactTrackedOptimizationsMap(JSContext* cx, JitCo
 }
 
 #ifdef DEBUG
-// Since this is a DEBUG-only verification, crash on OOM in the forEach ops
-// below.
-
 class ReadTempAttemptsVectorOp : public JS::ForEachTrackedOptimizationAttemptOp
 {
     TempOptimizationAttemptsVector* attempts_;
+    bool oom_;
 
   public:
     explicit ReadTempAttemptsVectorOp(TempOptimizationAttemptsVector* attempts)
-      : attempts_(attempts)
+      : attempts_(attempts), oom_(false)
     { }
 
+    bool oom() {
+        return oom_;
+    }
+
     void operator()(JS::TrackedStrategy strategy, JS::TrackedOutcome outcome) override {
-        MOZ_ALWAYS_TRUE(attempts_->append(OptimizationAttempt(strategy, outcome)));
+        if (!attempts_->append(OptimizationAttempt(strategy, outcome)))
+            oom_ = true;
     }
 };
 
@@ -939,23 +950,33 @@ struct ReadTempTypeInfoVectorOp : public IonTrackedOptimizationsTypeInfo::ForEac
     TempAllocator& alloc_;
     TempOptimizationTypeInfoVector* types_;
     TempTypeList accTypes_;
+    bool oom_;
 
   public:
     ReadTempTypeInfoVectorOp(TempAllocator& alloc, TempOptimizationTypeInfoVector* types)
       : alloc_(alloc),
         types_(types),
-        accTypes_(alloc)
+        accTypes_(alloc),
+        oom_(false)
     { }
 
+    bool oom() {
+        return oom_;
+    }
+
     void readType(const IonTrackedTypeWithAddendum& tracked) override {
-        MOZ_ALWAYS_TRUE(accTypes_.append(tracked.type));
+        if (!accTypes_.append(tracked.type))
+            oom_ = true;
     }
 
     void operator()(JS::TrackedTypeSite site, MIRType mirType) override {
         OptimizationTypeInfo ty(alloc_, site, mirType);
-        for (uint32_t i = 0; i < accTypes_.length(); i++)
-            MOZ_ALWAYS_TRUE(ty.trackType(accTypes_[i]));
-        MOZ_ALWAYS_TRUE(types_->append(mozilla::Move(ty)));
+        for (uint32_t i = 0; i < accTypes_.length(); i++) {
+            if (!ty.trackType(accTypes_[i]))
+                oom_ = true;
+        }
+        if (!types_->append(mozilla::Move(ty)))
+            oom_ = true;
         accTypes_.clear();
     }
 };
@@ -1029,14 +1050,14 @@ CodeGeneratorShared::verifyCompactTrackedOptimizationsMap(JitCode* code, uint32_
                 TempOptimizationTypeInfoVector tvec(alloc());
                 ReadTempTypeInfoVectorOp top(alloc(), &tvec);
                 typeInfo.forEach(top, allTypes);
-                MOZ_ASSERT(entry.optimizations->matchTypes(tvec));
+                MOZ_ASSERT_IF(!top.oom(), entry.optimizations->matchTypes(tvec));
             }
 
             IonTrackedOptimizationsAttempts attempts = attemptsTable->entry(index);
             TempOptimizationAttemptsVector avec(alloc());
             ReadTempAttemptsVectorOp aop(&avec);
             attempts.forEach(aop);
-            MOZ_ASSERT(entry.optimizations->matchAttempts(avec));
+            MOZ_ASSERT_IF(!aop.oom(), entry.optimizations->matchAttempts(avec));
         }
     }
 #endif
@@ -1349,16 +1370,22 @@ CodeGeneratorShared::callVM(const VMFunction& fun, LInstruction* ins, const Regi
         StoreAllLiveRegs(masm, ins->safepoint()->liveRegs());
 #endif
 
+    // Push an exit frame descriptor. If |dynStack| is a valid pointer to a
+    // register, then its value is added to the value of the |framePushed()| to
+    // fill the frame descriptor.
+    if (dynStack) {
+        masm.addPtr(Imm32(masm.framePushed()), *dynStack);
+        masm.makeFrameDescriptor(*dynStack, JitFrame_IonJS);
+        masm.Push(*dynStack); // descriptor
+    } else {
+        masm.pushStaticFrameDescriptor(JitFrame_IonJS);
+    }
+
     // Call the wrapper function.  The wrapper is in charge to unwind the stack
     // when returning from the call.  Failures are handled with exceptions based
     // on the return value of the C functions.  To guard the outcome of the
     // returned value, use another LIR instruction.
-    uint32_t callOffset;
-    if (dynStack)
-        callOffset = masm.callWithExitFrame(wrapper, *dynStack);
-    else
-        callOffset = masm.callWithExitFrame(wrapper);
-
+    uint32_t callOffset = masm.callJit(wrapper);
     markSafepointAt(callOffset, ins);
 
     // Remove rest of the frame left on the stack. We remove the return address
@@ -1451,7 +1478,7 @@ CodeGeneratorShared::visitOutOfLineTruncateSlow(OutOfLineTruncateSlow* ool)
     }
 #endif
 
-    masm.setupUnalignedABICall(1, dest);
+    masm.setupUnalignedABICall(dest);
     masm.passABIArg(src, MoveOp::DOUBLE);
     if (gen->compilingAsmJS())
         masm.callWithABI(AsmJSImm_ToInt32);
@@ -1574,7 +1601,7 @@ CodeGeneratorShared::jumpToBlock(MBasicBlock* mir)
         // Note: the backedge is initially a jump to the next instruction.
         // It will be patched to the target block's label during link().
         RepatchLabel rejoin;
-        CodeOffsetJump backedge = masm.backedgeJump(&rejoin);
+        CodeOffsetJump backedge = masm.backedgeJump(&rejoin, mir->lir()->label());
         masm.bind(&rejoin);
 
         masm.propagateOOM(patchableBackedges_.append(PatchableBackedgeInfo(backedge, mir->lir()->label(), oolEntry)));
@@ -1595,7 +1622,7 @@ CodeGeneratorShared::jumpToBlock(MBasicBlock* mir, Assembler::Condition cond)
         // Note: the backedge is initially a jump to the next instruction.
         // It will be patched to the target block's label during link().
         RepatchLabel rejoin;
-        CodeOffsetJump backedge = masm.jumpWithPatch(&rejoin, cond);
+        CodeOffsetJump backedge = masm.jumpWithPatch(&rejoin, cond, mir->lir()->label());
         masm.bind(&rejoin);
 
         masm.propagateOOM(patchableBackedges_.append(PatchableBackedgeInfo(backedge, mir->lir()->label(), oolEntry)));

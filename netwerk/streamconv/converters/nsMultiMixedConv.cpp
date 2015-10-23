@@ -472,6 +472,19 @@ nsPartChannel::SetPreamble(const nsACString& aPreamble)
     mPreamble = aPreamble;
 }
 
+NS_IMETHODIMP
+nsPartChannel::GetOriginalResponseHeader(nsACString & aOriginalResponseHeader)
+{
+    aOriginalResponseHeader = mOriginalResponseHeader;
+    return NS_OK;
+}
+
+void
+nsPartChannel::SetOriginalResponseHeader(const nsACString& aOriginalResponseHeader)
+{
+    mOriginalResponseHeader = aOriginalResponseHeader;
+}
+
 // nsISupports implementation
 NS_IMPL_ISUPPORTS(nsMultiMixedConv,
                   nsIStreamConverter,
@@ -651,6 +664,10 @@ nsMultiMixedConv::OnDataAvailable(nsIRequest *request, nsISupports *context,
                     // Push the cursor to the token so that the while loop below will
                     // find token from the right position.
                     cursor = tokenPos;
+
+                    // Update bufLen to exlude the preamble. Otherwise, the first
+                    // |SendData| would claim longer buffer length.
+                    bufLen -= mPreamble.Length();
                 }
             } else {
                 // If the boundary was set in the header,
@@ -696,8 +713,14 @@ nsMultiMixedConv::OnDataAvailable(nsIRequest *request, nsISupports *context,
         // for this "part" given the previous buffer given to 
         // us in the previous OnDataAvailable callback.
         bool done = false;
+        const char* originalCursor = cursor;
         rv = ParseHeaders(channel, cursor, bufLen, &done);
         if (NS_FAILED(rv)) return rv;
+
+        // Append the content to the original header.
+        if (cursor > originalCursor) {
+            mOriginalResponseHeader.Append(originalCursor, cursor - originalCursor);
+        }
 
         if (done) {
             mProcessingHeaders = false;
@@ -736,9 +759,16 @@ nsMultiMixedConv::OnDataAvailable(nsIRequest *request, nsISupports *context,
             // parse headers
             mNewPart = false;
             cursor = token;
-            bool done = false; 
+            bool done = false;
+            const char* originalCursor = cursor;
             rv = ParseHeaders(channel, cursor, bufLen, &done);
             if (NS_FAILED(rv)) return rv;
+
+            // Append the content to the original header.
+            if (cursor > originalCursor) {
+                mOriginalResponseHeader.Append(originalCursor, cursor - originalCursor);
+            }
+
             if (done) {
                 rv = SendStart(channel);
                 if (NS_FAILED(rv)) return rv;
@@ -1034,6 +1064,10 @@ nsMultiMixedConv::SendStart(nsIChannel *aChannel) {
 
     // Pass preamble to the channel.
     mPartChannel->SetPreamble(mPreamble);
+
+    // Pass original http header.
+    mPartChannel->SetOriginalResponseHeader(mOriginalResponseHeader);
+    mOriginalResponseHeader = EmptyCString();
 
     // We pass the headers to the nsPartChannel
     mPartChannel->SetResponseHead(mResponseHead.forget());

@@ -1,8 +1,16 @@
-XPCOMUtils.defineLazyModuleGetter(this, "NewTabURL",
-                                  "resource:///modules/NewTabURL.jsm");
+XPCOMUtils.defineLazyServiceGetter(this, "aboutNewTabService",
+                                   "@mozilla.org/browser/aboutnewtab-service;1",
+                                   "nsIAboutNewTabService");
+
+XPCOMUtils.defineLazyModuleGetter(this, "MatchPattern",
+                                  "resource://gre/modules/MatchPattern.jsm");
+
+XPCOMUtils.defineLazyModuleGetter(this, "Services",
+                                  "resource://gre/modules/Services.jsm");
 
 Cu.import("resource://gre/modules/ExtensionUtils.jsm");
-let {
+
+var {
   EventManager,
   ignoreEvent,
   runSafe,
@@ -35,18 +43,25 @@ function getSender(context, target, sender)
 }
 
 // WeakMap[ExtensionPage -> {tab, parentWindow}]
-let pageDataMap = new WeakMap();
+var pageDataMap = new WeakMap();
 
 // This listener fires whenever an extension page opens in a tab
 // (either initiated by the extension or the user). Its job is to fill
 // in some tab-specific details and keep data around about the
 // ExtensionPage.
 extensions.on("page-load", (type, page, params, sender, delegate) => {
-  if (params.type == "tab") {
+  if (params.type == "tab" || params.type == "popup") {
     let browser = params.docShell.chromeEventHandler;
+
     let parentWindow = browser.ownerDocument.defaultView;
-    let tab = parentWindow.gBrowser.getTabForBrowser(browser);
-    sender.tabId = TabManager.getId(tab);
+    page.windowId = WindowManager.getId(parentWindow);
+
+    let tab = null;
+    if (params.type == "tab") {
+      tab = parentWindow.gBrowser.getTabForBrowser(browser);
+      sender.tabId = TabManager.getId(tab);
+      page.tabId = TabManager.getId(tab);
+    }
 
     pageDataMap.set(page, {tab, parentWindow});
   }
@@ -63,7 +78,9 @@ extensions.on("page-shutdown", (type, page) => {
     let {tab, parentWindow} = pageDataMap.get(page);
     pageDataMap.delete(page);
 
-    parentWindow.gBrowser.removeTab(tab);
+    if (tab) {
+      parentWindow.gBrowser.removeTab(tab);
+    }
   }
 });
 
@@ -76,6 +93,15 @@ extensions.on("fill-browser-data", (type, browser, data, result) => {
 
   data.tabId = tabId;
 });
+
+global.currentWindow = function(context)
+{
+  let pageData = pageDataMap.get(context);
+  if (pageData) {
+    return pageData.parentWindow;
+  }
+  return WindowManager.topWindow;
+}
 
 // TODO: activeTab permission
 
@@ -228,7 +254,7 @@ extensions.registerAPI((extension, context) => {
           createProperties = {};
         }
 
-        let url = createProperties.url || NewTabURL.get();
+        let url = createProperties.url || aboutNewTabService.newTabURL;
         url = extension.baseURI.resolve(url);
 
         function createInWindow(window) {
@@ -257,7 +283,7 @@ extensions.registerAPI((extension, context) => {
           }
         }
 
-        let window = createProperties.windowId ?
+        let window = "windowId" in createProperties ?
           WindowManager.getWindow(createProperties.windowId) :
           WindowManager.topWindow;
         if (!window.gBrowser) {
@@ -298,7 +324,7 @@ extensions.registerAPI((extension, context) => {
         }
 
         let tab = tabId ? TabManager.getTab(tabId) : TabManager.activeTab;
-        let tabbrowser = tab.ownerDocument.gBrowser;
+        let tabbrowser = tab.ownerDocument.defaultView.gBrowser;
         if ("url" in updateProperties) {
           tab.linkedBrowser.loadURI(updateProperties.url);
         }
@@ -362,8 +388,13 @@ extensions.registerAPI((extension, context) => {
           queryInfo = {};
         }
 
+        let pattern = null;
+        if (queryInfo.url) {
+          pattern = new MatchPattern(queryInfo.url);
+        }
+
         function matches(window, tab) {
-          let props = ["active", "pinned", "highlighted", "status", "title", "url", "index"];
+          let props = ["active", "pinned", "highlighted", "status", "title", "index"];
           for (let prop of props) {
             if (prop in queryInfo && queryInfo[prop] != tab[prop]) {
               return false;
@@ -382,7 +413,7 @@ extensions.registerAPI((extension, context) => {
 
           if ("windowId" in queryInfo) {
             if (queryInfo.windowId == WindowManager.WINDOW_ID_CURRENT) {
-              if (context.contentWindow != window) {
+              if (currentWindow(context) != window) {
                 return false;
               }
             } else {
@@ -393,10 +424,14 @@ extensions.registerAPI((extension, context) => {
           }
 
           if ("currentWindow" in queryInfo) {
-            let eq = window == context.contentWindow;
+            let eq = window == currentWindow(context);
             if (queryInfo.currentWindow != eq) {
               return false;
             }
+          }
+
+          if (pattern && !pattern.matches(Services.io.newURI(tab.url, null, null))) {
+            return false;
           }
 
           return true;
@@ -406,6 +441,9 @@ extensions.registerAPI((extension, context) => {
         let e = Services.wm.getEnumerator("navigator:browser");
         while (e.hasMoreElements()) {
           let window = e.getNext();
+          if (window.document.readyState != "complete") {
+            continue;
+          }
           let tabs = TabManager.getTabs(extension, window);
           for (let tab of tabs) {
             if (matches(window, tab)) {
@@ -472,6 +510,10 @@ extensions.registerAPI((extension, context) => {
 
       sendMessage: function(tabId, message, options, responseCallback) {
         let tab = TabManager.getTab(tabId);
+        if (!tab) {
+          // ignore sendMessage to non existent tab id
+          return;
+        }
         let mm = tab.linkedBrowser.messageManager;
 
         let recipient = {extensionId: extension.id};

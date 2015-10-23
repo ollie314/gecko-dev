@@ -31,11 +31,11 @@ add_task(function* test_expiration_history_observer() {
     quota: 16,
   });
 
-  // ...And an expired registration that we'll revive later.
+  // ...And a registration that we'll evict on startup.
   yield db.put({
-    channelID: 'eb33fc90-c883-4267-b5cb-613969e8e349',
-    pushEndpoint: 'https://example.org/push/2',
-    scope: 'https://example.com/auctions',
+    channelID: '4cb6e454-37cf-41c4-a013-4e3a7fdd0bf1',
+    pushEndpoint: 'https://example.org/push/3',
+    scope: 'https://example.com/stuff',
     pushCount: 0,
     lastPush: 0,
     version: null,
@@ -52,7 +52,10 @@ add_task(function* test_expiration_history_observer() {
     }],
   });
 
-  let unregisterDefer = Promise.defer();
+  let unregisterDone;
+  let unregisterPromise = new Promise(resolve => unregisterDone = resolve);
+  let subChangePromise = promiseObserverNotification('push-subscription-change', (subject, data) =>
+    data == 'https://example.com/stuff');
 
   PushService.init({
     serverURI: 'wss://push.example.org/',
@@ -79,23 +82,37 @@ add_task(function* test_expiration_history_observer() {
         },
         onUnregister(request) {
           equal(request.channelID, '379c0668-8323-44d2-a315-4ee83f1a9ee9', 'Dropped wrong channel ID');
-          unregisterDefer.resolve();
+          unregisterDone();
         },
         onACK(request) {},
       });
     }
   });
 
-  yield waitForPromise(unregisterDefer.promise, DEFAULT_TIMEOUT,
+  yield waitForPromise(subChangePromise, DEFAULT_TIMEOUT,
+    'Timed out waiting for subscription change event on startup');
+  yield waitForPromise(unregisterPromise, DEFAULT_TIMEOUT,
     'Timed out waiting for unregister request');
 
   let expiredRecord = yield db.getByKeyID('379c0668-8323-44d2-a315-4ee83f1a9ee9');
   strictEqual(expiredRecord.quota, 0, 'Expired record not updated');
 
   let notifiedScopes = [];
-  let subChangePromise = promiseObserverNotification('push-subscription-change', (subject, data) => {
+  subChangePromise = promiseObserverNotification('push-subscription-change', (subject, data) => {
     notifiedScopes.push(data);
     return notifiedScopes.length == 2;
+  });
+
+  // Add an expired registration that we'll revive later.
+  yield db.put({
+    channelID: 'eb33fc90-c883-4267-b5cb-613969e8e349',
+    pushEndpoint: 'https://example.org/push/2',
+    scope: 'https://example.com/auctions',
+    pushCount: 0,
+    lastPush: 0,
+    version: null,
+    originAttributes: '',
+    quota: 0,
   });
 
   // Now visit the site...

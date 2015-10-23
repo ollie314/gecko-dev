@@ -55,10 +55,10 @@ ClientTiledPaintedLayer::FillSpecificAttributes(SpecificLayerAttributes& aAttrs)
   aAttrs = PaintedLayerAttributes(GetValidRegion());
 }
 
-static LayerRect
-ApplyParentLayerToLayerTransform(const gfx::Matrix4x4& aTransform, const ParentLayerRect& aParentLayerRect)
+static Maybe<LayerRect>
+ApplyParentLayerToLayerTransform(const gfx::Matrix4x4& aTransform, const ParentLayerRect& aParentLayerRect, const LayerRect& aClip)
 {
-  return TransformTo<LayerPixel>(aTransform, aParentLayerRect);
+  return UntransformTo<LayerPixel>(aTransform, aParentLayerRect, aClip);
 }
 
 static gfx::Matrix4x4
@@ -124,10 +124,7 @@ ClientTiledPaintedLayer::GetAncestorLayers(LayerMetricsWrapper* aOutScrollAncest
 void
 ClientTiledPaintedLayer::BeginPaint()
 {
-  mPaintData.mLowPrecisionPaintCount = 0;
-  mPaintData.mPaintFinished = false;
-  mPaintData.mCompositionBounds.SetEmpty();
-  mPaintData.mCriticalDisplayPort.SetEmpty();
+  mPaintData.ResetPaintData();
 
   if (!GetBaseTransform().Is2D()) {
     // Give up if there is a complex CSS transform on the layer. We might
@@ -165,6 +162,8 @@ ClientTiledPaintedLayer::BeginPaint()
     GetTransformToAncestorsParentLayer(this, displayPortAncestor);
   transformDisplayPortToLayer.Invert();
 
+  LayerRect layerBounds = ViewAs<LayerPixel>(Rect(GetLayerBounds()));
+
   // Compute the critical display port that applies to this layer in the
   // LayoutDevice space of this layer, but only if there is no OMT animation
   // on this layer. If there is an OMT animation then we need to draw the whole
@@ -175,8 +174,13 @@ ClientTiledPaintedLayer::BeginPaint()
     ParentLayerRect criticalDisplayPort =
       (displayportMetrics.GetCriticalDisplayPort() * displayportMetrics.GetZoom())
       + displayportMetrics.GetCompositionBounds().TopLeft();
-    mPaintData.mCriticalDisplayPort = RoundedToInt(
-      ApplyParentLayerToLayerTransform(transformDisplayPortToLayer, criticalDisplayPort));
+    Maybe<LayerRect> criticalDisplayPortTransformed =
+      ApplyParentLayerToLayerTransform(transformDisplayPortToLayer, criticalDisplayPort, layerBounds);
+    if (!criticalDisplayPortTransformed) {
+      mPaintData.ResetPaintData();
+      return;
+    }
+    mPaintData.mCriticalDisplayPort = RoundedToInt(*criticalDisplayPortTransformed);
   }
   TILING_LOG("TILING %p: Critical displayport %s\n", this, Stringify(mPaintData.mCriticalDisplayPort).c_str());
 
@@ -190,8 +194,13 @@ ClientTiledPaintedLayer::BeginPaint()
     GetTransformToAncestorsParentLayer(this, scrollAncestor);
   gfx::Matrix4x4 transformToBounds = mPaintData.mTransformToCompBounds;
   transformToBounds.Invert();
-  mPaintData.mCompositionBounds = ApplyParentLayerToLayerTransform(
-    transformToBounds, scrollMetrics.GetCompositionBounds());
+  Maybe<LayerRect> compositionBoundsTransformed = ApplyParentLayerToLayerTransform(
+    transformToBounds, scrollMetrics.GetCompositionBounds(), layerBounds);
+  if (!compositionBoundsTransformed) {
+    mPaintData.ResetPaintData();
+    return;
+  }
+  mPaintData.mCompositionBounds = *compositionBoundsTransformed;
   TILING_LOG("TILING %p: Composition bounds %s\n", this, Stringify(mPaintData.mCompositionBounds).c_str());
 
   // Calculate the scroll offset since the last transaction
@@ -401,13 +410,18 @@ ClientTiledPaintedLayer::RenderLayer()
     ClientManager()->GetPaintedLayerCallback();
   void *data = ClientManager()->GetPaintedLayerCallbackData();
 
+  IntSize layerSize = mVisibleRegion.GetBounds().Size();
+  if (mContentClient && !mContentClient->SupportsLayerSize(layerSize, ClientManager())) {
+    ClearCachedResources();
+    MOZ_ASSERT(!mContentClient);
+  }
+
   if (!mContentClient) {
-#if defined(MOZ_B2G) || defined(XP_MACOSX)
-    if (mCreationHint == LayerManager::NONE) {
+    if (mCreationHint == LayerManager::NONE &&
+        SingleTiledContentClient::ClientSupportsLayerSize(layerSize, ClientManager()) &&
+        gfxPrefs::LayersSingleTileEnabled()) {
       mContentClient = new SingleTiledContentClient(this, ClientManager());
-    } else
-#endif
-    {
+    } else {
       mContentClient = new MultiTiledContentClient(this, ClientManager());
     }
 
@@ -551,7 +565,6 @@ ClientTiledPaintedLayer::RenderLayer()
 bool
 ClientTiledPaintedLayer::IsOptimizedFor(LayerManager::PaintedLayerCreationHint aHint)
 {
-#if defined(MOZ_B2G) || defined(XP_MACOSX)
   // The only creation hint is whether the layer is scrollable or not, and this
   // is only respected on B2G and OSX, where it's used to determine whether to
   // use a tiled content client or not.
@@ -559,9 +572,6 @@ ClientTiledPaintedLayer::IsOptimizedFor(LayerManager::PaintedLayerCreationHint a
   // large, scrollable layers, so we want the layer to be recreated in this
   // situation.
   return aHint == GetCreationHint();
-#else
-  return true;
-#endif
 }
 
 void

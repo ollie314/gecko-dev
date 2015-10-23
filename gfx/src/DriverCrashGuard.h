@@ -5,7 +5,6 @@
 #ifndef gfx_src_DriverCrashGuard_h__
 #define gfx_src_DriverCrashGuard_h__
 
-#include "gfxCore.h"
 #include "nsCOMPtr.h"
 #include "nsIGfxInfo.h"
 #include "nsIFile.h"
@@ -39,6 +38,7 @@ enum class CrashGuardType : uint32_t
 {
   D3D11Layers,
   D3D9Video,
+  GLContext,
   NUM_TYPES
 };
 
@@ -84,7 +84,7 @@ protected:
   virtual void LogFeatureDisabled() = 0;
 
   // Helper functions.
-  bool FeatureEnabled(int aFeature);
+  bool FeatureEnabled(int aFeature, bool aDefault=true);
   bool CheckAndUpdatePref(const char* aPrefName, const nsAString& aCurrentValue);
   bool CheckAndUpdateBoolPref(const char* aPrefName, bool aCurrentValue);
   std::string GetFullPrefName(const char* aPref);
@@ -135,6 +135,18 @@ class D3D9VideoCrashGuard final : public DriverCrashGuard
 {
  public:
   explicit D3D9VideoCrashGuard(dom::ContentParent* aContentParent = nullptr);
+
+ protected:
+  bool UpdateEnvironment() override;
+  void LogCrashRecovery() override;
+  void LogFeatureDisabled() override;
+};
+
+class GLContextCrashGuard final : public DriverCrashGuard
+{
+ public:
+  explicit GLContextCrashGuard(dom::ContentParent* aContentParent = nullptr);
+  void Initialize() override;
 
  protected:
   bool UpdateEnvironment() override;

@@ -18,6 +18,7 @@
 #include "RestyleManager.h"
 #include "RestyleTrackerInlines.h"
 #include "nsTransitionManager.h"
+#include "mozilla/RestyleTimelineMarker.h"
 
 namespace mozilla {
 
@@ -57,7 +58,7 @@ RestyleTracker::Document() const {
 
 struct LaterSiblingCollector {
   RestyleTracker* tracker;
-  nsTArray< nsRefPtr<dom::Element> >* elements;
+  nsTArray< RefPtr<dom::Element> >* elements;
 };
 
 static PLDHashOperator
@@ -83,7 +84,7 @@ CollectLaterSiblings(nsISupports* aElement,
 }
 
 struct RestyleEnumerateData : RestyleTracker::Hints {
-  nsRefPtr<dom::Element> mElement;
+  RefPtr<dom::Element> mElement;
 #if defined(MOZ_ENABLE_PROFILER_SPS) && !defined(MOZILLA_XPCOMRT_API)
   UniquePtr<ProfilerBacktrace> mBacktrace;
 #endif
@@ -95,31 +96,6 @@ struct RestyleCollector {
 #ifdef RESTYLE_LOGGING
   uint32_t count;
 #endif
-};
-
-class RestyleTimelineMarker : public TimelineMarker
-{
-public:
-  RestyleTimelineMarker(nsDocShell* aDocShell,
-                        TracingMetadata aMetaData,
-                        nsRestyleHint aRestyleHint)
-    : TimelineMarker(aDocShell, "Styles", aMetaData)
-  {
-    if (aRestyleHint) {
-      mRestyleHint.AssignWithConversion(RestyleManager::RestyleHintToString(aRestyleHint));
-    }
-  }
-
-  virtual void AddDetails(JSContext* aCx,
-                          mozilla::dom::ProfileTimelineMarker& aMarker) override
-  {
-    if (GetMetaData() == TRACING_INTERVAL_START) {
-      aMarker.mRestyleHint.Construct(mRestyleHint);
-    }
-  }
-
-private:
-  nsAutoString mRestyleHint;
 };
 
 static PLDHashOperator
@@ -162,7 +138,8 @@ CollectRestyles(nsISupports* aElement,
   // Unset the restyle bits now, so if they get readded later as we
   // process we won't clobber that adding of the bit.
   element->UnsetFlags(collector->tracker->RestyleBit() |
-                      collector->tracker->RootBit());
+                      collector->tracker->RootBit() |
+                      collector->tracker->ConditionalDescendantsBit());
 
   RestyleEnumerateData** restyleArrayPtr = collector->restyleArrayPtr;
   RestyleEnumerateData* currentRestyle = *restyleArrayPtr;
@@ -248,6 +225,12 @@ RestyleTracker::DoProcessRestyles()
     docShell->GetRecordProfileTimelineMarkers(&isTimelineRecording);
   }
 
+  // Create a AnimationsWithDestroyedFrame during restyling process to
+  // stop animations on elements that have no frame at the end of the
+  // restyling process.
+  RestyleManager::AnimationsWithDestroyedFrame
+    animationsWithDestroyedFrame(mRestyleManager);
+
   // Create a ReframingStyleContexts struct on the stack and put it in our
   // mReframingStyleContexts for almost all of the remaining scope of
   // this function.
@@ -285,7 +268,7 @@ RestyleTracker::DoProcessRestyles()
     while (mPendingRestyles.Count()) {
       if (mHaveLaterSiblingRestyles) {
         // Convert them to individual restyles on all the later siblings
-        nsAutoTArray<nsRefPtr<Element>, RESTYLE_ARRAY_STACKSIZE> laterSiblingArr;
+        nsAutoTArray<RefPtr<Element>, RESTYLE_ARRAY_STACKSIZE> laterSiblingArr;
         LaterSiblingCollector siblingCollector = { this, &laterSiblingArr };
         mPendingRestyles.Enumerate(CollectLaterSiblings, &siblingCollector);
         for (uint32_t i = 0; i < laterSiblingArr.Length(); ++i) {
@@ -333,7 +316,7 @@ RestyleTracker::DoProcessRestyles()
         // Make sure to pop the element off our restyle root array, so
         // that we can freely append to the array as we process this
         // element.
-        nsRefPtr<Element> element;
+        RefPtr<Element> element;
         element.swap(mRestyleRoots[rootCount - 1]);
         mRestyleRoots.RemoveElementAt(rootCount - 1);
 
@@ -358,10 +341,8 @@ RestyleTracker::DoProcessRestyles()
         }
 
         if (isTimelineRecording) {
-          mozilla::UniquePtr<TimelineMarker> marker =
-            MakeUnique<RestyleTimelineMarker>(docShell,
-                                              TRACING_INTERVAL_START,
-                                              data->mRestyleHint);
+          UniquePtr<TimelineMarker> marker = MakeUnique<RestyleTimelineMarker>(
+            data->mRestyleHint, MarkerTracingType::START);
           TimelineConsumers::AddMarkerForDocShell(docShell, Move(marker));
         }
 
@@ -376,10 +357,8 @@ RestyleTracker::DoProcessRestyles()
         AddRestyleRootsIfAwaitingRestyle(data->mDescendants);
 
         if (isTimelineRecording) {
-          mozilla::UniquePtr<TimelineMarker> marker =
-            MakeUnique<RestyleTimelineMarker>(docShell,
-                                              TRACING_INTERVAL_END,
-                                              data->mRestyleHint);
+          UniquePtr<TimelineMarker> marker = MakeUnique<RestyleTimelineMarker>(
+            data->mRestyleHint, MarkerTracingType::END);
           TimelineConsumers::AddMarkerForDocShell(docShell, Move(marker));
         }
       }
@@ -423,10 +402,8 @@ RestyleTracker::DoProcessRestyles()
           }
 #endif
           if (isTimelineRecording) {
-            mozilla::UniquePtr<TimelineMarker> marker =
-              MakeUnique<RestyleTimelineMarker>(docShell,
-                                                TRACING_INTERVAL_START,
-                                                currentRestyle->mRestyleHint);
+            UniquePtr<TimelineMarker> marker = MakeUnique<RestyleTimelineMarker>(
+              currentRestyle->mRestyleHint, MarkerTracingType::START);
             TimelineConsumers::AddMarkerForDocShell(docShell, Move(marker));
           }
 
@@ -436,10 +413,8 @@ RestyleTracker::DoProcessRestyles()
                             currentRestyle->mRestyleHintData);
 
           if (isTimelineRecording) {
-            mozilla::UniquePtr<TimelineMarker> marker =
-              MakeUnique<RestyleTimelineMarker>(docShell,
-                                                TRACING_INTERVAL_END,
-                                                currentRestyle->mRestyleHint);
+            UniquePtr<TimelineMarker> marker = MakeUnique<RestyleTimelineMarker>(
+              currentRestyle->mRestyleHint, MarkerTracingType::END);
             TimelineConsumers::AddMarkerForDocShell(docShell, Move(marker));
           }
         }
@@ -490,7 +465,7 @@ RestyleTracker::GetRestyleData(Element* aElement, nsAutoPtr<RestyleData>& aData)
 
 void
 RestyleTracker::AddRestyleRootsIfAwaitingRestyle(
-                                   const nsTArray<nsRefPtr<Element>>& aElements)
+                                   const nsTArray<RefPtr<Element>>& aElements)
 {
   // The RestyleData for a given element has stored in mDescendants
   // the list of descendants we need to end up restyling.  Since we

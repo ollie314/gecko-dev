@@ -15,7 +15,8 @@ CompositionEvent::CompositionEvent(EventTarget* aOwner,
                                    nsPresContext* aPresContext,
                                    WidgetCompositionEvent* aEvent)
   : UIEvent(aOwner, aPresContext,
-            aEvent ? aEvent : new WidgetCompositionEvent(false, 0, nullptr))
+            aEvent ? aEvent :
+                     new WidgetCompositionEvent(false, eVoidEvent, nullptr))
 {
   NS_ASSERTION(mEvent->mClass == eCompositionEventClass,
                "event type mismatch");
@@ -85,7 +86,7 @@ NS_NewDOMCompositionEvent(EventTarget* aOwner,
                           nsPresContext* aPresContext,
                           WidgetCompositionEvent* aEvent)
 {
-  nsRefPtr<CompositionEvent> event =
+  RefPtr<CompositionEvent> event =
     new CompositionEvent(aOwner, aPresContext, aEvent);
   return event.forget();
 }

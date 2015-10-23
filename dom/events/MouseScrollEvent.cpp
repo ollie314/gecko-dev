@@ -15,7 +15,8 @@ MouseScrollEvent::MouseScrollEvent(EventTarget* aOwner,
                                    nsPresContext* aPresContext,
                                    WidgetMouseScrollEvent* aEvent)
   : MouseEvent(aOwner, aPresContext,
-               aEvent ? aEvent : new WidgetMouseScrollEvent(false, 0, nullptr))
+               aEvent ? aEvent :
+                        new WidgetMouseScrollEvent(false, eVoidEvent, nullptr))
 {
   if (aEvent) {
     mEventIsInternal = false;
@@ -93,7 +94,7 @@ NS_NewDOMMouseScrollEvent(EventTarget* aOwner,
                           nsPresContext* aPresContext,
                           WidgetMouseScrollEvent* aEvent)
 {
-  nsRefPtr<MouseScrollEvent> it =
+  RefPtr<MouseScrollEvent> it =
     new MouseScrollEvent(aOwner, aPresContext, aEvent);
   return it.forget();
 }

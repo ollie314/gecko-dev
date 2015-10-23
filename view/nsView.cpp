@@ -18,6 +18,7 @@
 #include "nsXULPopupManager.h"
 #include "nsIWidgetListener.h"
 #include "nsContentUtils.h" // for nsAutoScriptBlocker
+#include "mozilla/TimelineConsumers.h"
 
 using namespace mozilla;
 
@@ -135,7 +136,12 @@ void nsView::DestroyWidget()
       nsCOMPtr<nsIRunnable> widgetDestroyer =
         new DestroyWidgetRunnable(mWindow);
 
-      NS_DispatchToMainThread(widgetDestroyer);
+      // Don't leak if we happen to arrive here after the main thread
+      // has disappeared.
+      nsCOMPtr<nsIThread> mainThread = do_GetMainThread();
+      if (mainThread) {
+        mainThread->Dispatch(widgetDestroyer.forget(), NS_DISPATCH_NORMAL);
+      }
     }
 
     mWindow = nullptr;
@@ -292,7 +298,7 @@ void nsView::DoResetWidgetBounds(bool aMoveOnly,
   // Stash a copy of these and use them so we can handle this being deleted (say
   // from sync painting/flushing from Show/Move/Resize on the widget).
   nsIntRect newBounds;
-  nsRefPtr<nsDeviceContext> dx = mViewManager->GetDeviceContext();
+  RefPtr<nsDeviceContext> dx = mViewManager->GetDeviceContext();
 
   nsWindowType type = widget->WindowType();
 
@@ -1002,7 +1008,7 @@ nsView::WindowResized(nsIWidget* aWidget, int32_t aWidth, int32_t aHeight)
   // window creation
   SetForcedRepaint(true);
   if (this == mViewManager->GetRootView()) {
-    nsRefPtr<nsDeviceContext> devContext = mViewManager->GetDeviceContext();
+    RefPtr<nsDeviceContext> devContext = mViewManager->GetDeviceContext();
     // ensure DPI is up-to-date, in case of window being opened and sized
     // on a non-default-dpi display (bug 829963)
     devContext->CheckDPIChange();
@@ -1049,7 +1055,7 @@ nsView::RequestWindowClose(nsIWidget* aWidget)
 void
 nsView::WillPaintWindow(nsIWidget* aWidget)
 {
-  nsRefPtr<nsViewManager> vm = mViewManager;
+  RefPtr<nsViewManager> vm = mViewManager;
   vm->WillPaintWindow(aWidget);
 }
 
@@ -1058,7 +1064,7 @@ nsView::PaintWindow(nsIWidget* aWidget, nsIntRegion aRegion)
 {
   NS_ASSERTION(this == nsView::GetViewFor(aWidget), "wrong view for widget?");
 
-  nsRefPtr<nsViewManager> vm = mViewManager;
+  RefPtr<nsViewManager> vm = mViewManager;
   bool result = vm->PaintWindow(aWidget, aRegion);
   return result;
 }
@@ -1066,17 +1072,33 @@ nsView::PaintWindow(nsIWidget* aWidget, nsIntRegion aRegion)
 void
 nsView::DidPaintWindow()
 {
-  nsRefPtr<nsViewManager> vm = mViewManager;
+  RefPtr<nsViewManager> vm = mViewManager;
   vm->DidPaintWindow();
 }
 
 void
-nsView::DidCompositeWindow()
+nsView::DidCompositeWindow(const TimeStamp& aCompositeStart,
+                           const TimeStamp& aCompositeEnd)
 {
   nsIPresShell* presShell = mViewManager->GetPresShell();
   if (presShell) {
     nsAutoScriptBlocker scriptBlocker;
-    presShell->GetPresContext()->GetDisplayRootPresContext()->GetRootPresContext()->NotifyDidPaintForSubtree(nsIPresShell::PAINT_COMPOSITE);
+
+    nsPresContext* context = presShell->GetPresContext();
+    context->GetDisplayRootPresContext()->GetRootPresContext()->NotifyDidPaintForSubtree(nsIPresShell::PAINT_COMPOSITE);
+
+    // If the two timestamps are identical, this was likely a fake composite
+    // event which wouldn't be terribly useful to display.
+    if (aCompositeStart == aCompositeEnd) {
+      return;
+    }
+
+    nsIDocShell* docShell = context->GetDocShell();
+
+    TimelineConsumers::AddMarkerForDocShell(docShell,
+      "Composite", aCompositeStart, MarkerTracingType::START);
+    TimelineConsumers::AddMarkerForDocShell(docShell,
+      "Composite", aCompositeEnd, MarkerTracingType::END);
   }
 }
 
@@ -1106,7 +1128,7 @@ nsView::HandleEvent(WidgetGUIEvent* aEvent,
   }
 
   if (view) {
-    nsRefPtr<nsViewManager> vm = view->GetViewManager();
+    RefPtr<nsViewManager> vm = view->GetViewManager();
     vm->DispatchEvent(aEvent, view, &result);
   }
 

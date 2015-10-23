@@ -88,10 +88,10 @@ class WebMPacketQueue {
     mQueue.push_front(Move(aItem));
   }
 
-  nsRefPtr<NesteggPacketHolder> PopFront() {
-    nsRefPtr<NesteggPacketHolder> result = mQueue.front();
+  already_AddRefed<NesteggPacketHolder> PopFront() {
+    RefPtr<NesteggPacketHolder> result = mQueue.front().forget();
     mQueue.pop_front();
-    return result;
+    return result.forget();
   }
 
   void Reset() {
@@ -101,7 +101,7 @@ class WebMPacketQueue {
   }
 
 private:
-  std::deque<nsRefPtr<NesteggPacketHolder>> mQueue;
+  std::deque<RefPtr<NesteggPacketHolder>> mQueue;
 };
 
 

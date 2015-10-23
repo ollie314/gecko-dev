@@ -13,14 +13,15 @@ import org.mozilla.gecko.Tabs;
 import org.mozilla.gecko.tabs.TabHistoryController;
 import org.mozilla.gecko.menu.MenuItemActionBar;
 import org.mozilla.gecko.util.ColorUtils;
-import org.mozilla.gecko.widget.ThemedTextView;
+import org.mozilla.gecko.util.HardwareUtils;
+import org.mozilla.gecko.widget.themed.ThemedTextView;
 
 import android.content.Context;
 import android.graphics.PorterDuff;
 import android.graphics.PorterDuffColorFilter;
-import android.graphics.drawable.Drawable;
 import android.util.AttributeSet;
 import android.view.View;
+import android.view.ViewGroup.LayoutParams;
 import android.widget.Button;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
@@ -41,6 +42,8 @@ abstract class BrowserToolbarTabletBase extends BrowserToolbar {
     protected final BackButton backButton;
     protected final ForwardButton forwardButton;
 
+    protected final View menuButtonMarginView;
+
     private final PorterDuffColorFilter privateBrowsingTabletMenuItemColorFilter;
 
     protected abstract void animateForwardButton(ForwardButtonAnimation animation);
@@ -51,9 +54,9 @@ abstract class BrowserToolbarTabletBase extends BrowserToolbar {
         actionItemBar = (LinearLayout) findViewById(R.id.menu_items);
 
         backButton = (BackButton) findViewById(R.id.back);
-        setButtonEnabled(backButton, false);
+        backButton.setEnabled(false);
         forwardButton = (ForwardButton) findViewById(R.id.forward);
-        setButtonEnabled(forwardButton, false);
+        forwardButton.setEnabled(false);
         initButtonListeners();
 
         focusOrder.addAll(Arrays.asList(tabsButton, (View) backButton, (View) forwardButton, this));
@@ -64,6 +67,11 @@ abstract class BrowserToolbarTabletBase extends BrowserToolbar {
 
         privateBrowsingTabletMenuItemColorFilter = new PorterDuffColorFilter(
                 ColorUtils.getColor(context, R.color.tabs_tray_icon_grey), PorterDuff.Mode.SRC_IN);
+
+        menuButtonMarginView = findViewById(R.id.menu_margin);
+        if (menuButtonMarginView != null && !HardwareUtils.hasMenuButton()) {
+            menuButtonMarginView.setVisibility(View.VISIBLE);
+        }
     }
 
     private void initButtonListeners() {
@@ -103,7 +111,7 @@ abstract class BrowserToolbarTabletBase extends BrowserToolbar {
 
     @Override
     public boolean addActionItem(final View actionItem) {
-        actionItemBar.addView(actionItem);
+        actionItemBar.addView(actionItem, LayoutParams.WRAP_CONTENT, LayoutParams.MATCH_PARENT);
         return true;
     }
 
@@ -114,7 +122,7 @@ abstract class BrowserToolbarTabletBase extends BrowserToolbar {
 
     @Override
     protected void updateNavigationButtons(final Tab tab) {
-        setButtonEnabled(backButton, canDoBack(tab));
+        backButton.setEnabled(canDoBack(tab));
         animateForwardButton(
                 canDoForward(tab) ? ForwardButtonAnimation.SHOW : ForwardButtonAnimation.HIDE);
     }
@@ -130,19 +138,15 @@ abstract class BrowserToolbarTabletBase extends BrowserToolbar {
     public void setPrivateMode(final boolean isPrivate) {
         super.setPrivateMode(isPrivate);
 
-        // Better done with android:tint but it doesn't take a ColorStateList:
-        //   https://code.google.com/p/android/issues/detail?can=2&start=0&num=100&q=&colspec=ID%20Type%20Status%20Owner%20Summary%20Stars&groupby=&sort=&id=18220
-        // Nor can we use DrawableCompat because the drawables (as opposed
-        // to the Views) don't receive gecko:state_private.
+        // If we had backgroundTintList, we could remove the colorFilter
+        // code in favor of setPrivateMode (bug 1197432).
         final PorterDuffColorFilter colorFilter =
                 isPrivate ? privateBrowsingTabletMenuItemColorFilter : null;
-        backButton.setColorFilter(colorFilter);
-        forwardButton.setColorFilter(colorFilter);
         setTabsCounterPrivateMode(isPrivate, colorFilter);
-        menuIcon.setColorFilter(colorFilter);
 
         backButton.setPrivateMode(isPrivate);
         forwardButton.setPrivateMode(isPrivate);
+        menuIcon.setPrivateMode(isPrivate);
         for (int i = 0; i < actionItemBar.getChildCount(); ++i) {
             final MenuItemActionBar child = (MenuItemActionBar) actionItemBar.getChildAt(i);
             child.setPrivateMode(isPrivate);
@@ -174,14 +178,5 @@ abstract class BrowserToolbarTabletBase extends BrowserToolbar {
 
     protected boolean canDoForward(final Tab tab) {
         return (tab.canDoForward() && !isEditing());
-    }
-
-    protected static void setButtonEnabled(final ImageButton button, final boolean enabled) {
-        final Drawable drawable = button.getDrawable();
-        if (drawable != null) {
-            drawable.setAlpha(enabled ? 255 : 61);
-        }
-
-        button.setEnabled(enabled);
     }
 }

@@ -104,6 +104,12 @@ var CustomStyle = (function CustomStyleClosure() {
   return CustomStyle;
 })();
 
+var NullCharactersRegExp = /\x00/g;
+
+function removeNullCharacters(str) {
+  return str.replace(NullCharactersRegExp, '');
+}
+
 function getFileName(url) {
   var anchor = url.indexOf('#');
   var query = url.indexOf('?');
@@ -136,22 +142,26 @@ function getOutputScale(ctx) {
 
 /**
  * Scrolls specified element into view of its parent.
- * element {Object} The element to be visible.
- * spot {Object} An object with optional top and left properties,
- *               specifying the offset from the top left edge.
+ * @param {Object} element - The element to be visible.
+ * @param {Object} spot - An object with optional top and left properties,
+ *   specifying the offset from the top left edge.
+ * @param {boolean} skipOverflowHiddenElements - Ignore elements that have
+ *   the CSS rule `overflow: hidden;` set. The default is false.
  */
-function scrollIntoView(element, spot) {
+function scrollIntoView(element, spot, skipOverflowHiddenElements) {
   // Assuming offsetParent is available (it's not available when viewer is in
   // hidden iframe or object). We have to scroll: if the offsetParent is not set
   // producing the error. See also animationStartedClosure.
   var parent = element.offsetParent;
-  var offsetY = element.offsetTop + element.clientTop;
-  var offsetX = element.offsetLeft + element.clientLeft;
   if (!parent) {
     console.error('offsetParent is not set -- cannot scroll');
     return;
   }
-  while (parent.clientHeight === parent.scrollHeight) {
+  var checkOverflow = skipOverflowHiddenElements || false;
+  var offsetY = element.offsetTop + element.clientTop;
+  var offsetX = element.offsetLeft + element.clientLeft;
+  while (parent.clientHeight === parent.scrollHeight ||
+         (checkOverflow && getComputedStyle(parent).overflow === 'hidden')) {
     if (parent.dataset._scaleY) {
       offsetY /= parent.dataset._scaleY;
       offsetX /= parent.dataset._scaleX;
@@ -452,7 +462,8 @@ var DEFAULT_PREFERENCES = {
   disableAutoFetch: false,
   disableFontFace: false,
   disableTextLayer: false,
-  useOnlyCssZoom: false
+  useOnlyCssZoom: false,
+  externalLinkTarget: 0,
 };
 
 
@@ -1266,10 +1277,12 @@ var PDFFindController = (function PDFFindControllerClosure() {
         pageIndex, index, elements, beginIdx, endIdx) {
       if (this.selected.matchIdx === index &&
           this.selected.pageIdx === pageIndex) {
-        scrollIntoView(elements[beginIdx], {
+        var spot = {
           top: FIND_SCROLL_OFFSET_TOP,
           left: FIND_SCROLL_OFFSET_LEFT
-        });
+        };
+        scrollIntoView(elements[beginIdx], spot,
+                       /* skipOverflowHiddenElements = */ true);
       }
     },
 
@@ -1552,13 +1565,11 @@ var PDFLinkService = (function () {
           this.page = pageNumber; // simple page
         }
         if ('pagemode' in params) {
-          if (params.pagemode === 'thumbs' || params.pagemode === 'bookmarks' ||
-              params.pagemode === 'attachments') {
-            this.switchSidebarView((params.pagemode === 'bookmarks' ?
-                                   'outline' : params.pagemode), true);
-          } else if (params.pagemode === 'none' && this.sidebarOpen) {
-            document.getElementById('sidebarToggle').click();
-          }
+          var event = document.createEvent('CustomEvent');
+          event.initCustomEvent('pagemode', true, true, {
+            mode: params.pagemode,
+          });
+          this.pdfViewer.container.dispatchEvent(event);
         }
       } else if (/^\d+$/.test(hash)) { // page number
         this.page = hash;
@@ -1687,37 +1698,73 @@ var PDFHistory = (function () {
 
       var self = this;
       window.addEventListener('popstate', function pdfHistoryPopstate(evt) {
-        evt.preventDefault();
-        evt.stopPropagation();
-
         if (!self.historyUnlocked) {
           return;
         }
         if (evt.state) {
           // Move back/forward in the history.
           self._goTo(evt.state);
-        } else {
-          // Handle the user modifying the hash of a loaded document.
-          self.previousHash = window.location.hash.substring(1);
+          return;
+        }
 
-          // If the history is empty when the hash changes,
-          // update the previous entry in the browser history.
-          if (self.uid === 0) {
-            var previousParams = (self.previousHash && self.currentBookmark &&
+        // If the state is not set, then the user tried to navigate to a
+        // different hash by manually editing the URL and pressing Enter, or by
+        // clicking on an in-page link (e.g. the "current view" link).
+        // Save the current view state to the browser history.
+
+        // Note: In Firefox, history.null could also be null after an in-page
+        // navigation to the same URL, and without dispatching the popstate
+        // event: https://bugzilla.mozilla.org/show_bug.cgi?id=1183881
+
+        if (self.uid === 0) {
+          // Replace the previous state if it was not explicitly set.
+          var previousParams = (self.previousHash && self.currentBookmark &&
             self.previousHash !== self.currentBookmark) ?
             {hash: self.currentBookmark, page: self.currentPage} :
             {page: 1};
-            self.historyUnlocked = false;
-            self.allowHashChange = false;
-            window.history.back();
-            self._pushToHistory(previousParams, false, true);
-            window.history.forward();
-            self.historyUnlocked = true;
-          }
-          self._pushToHistory({hash: self.previousHash}, false, true);
-          self._updatePreviousBookmark();
+          replacePreviousHistoryState(previousParams, function() {
+            updateHistoryWithCurrentHash();
+          });
+        } else {
+          updateHistoryWithCurrentHash();
         }
       }, false);
+
+
+      function updateHistoryWithCurrentHash() {
+        self.previousHash = window.location.hash.slice(1);
+        self._pushToHistory({hash: self.previousHash}, false, true);
+        self._updatePreviousBookmark();
+      }
+
+      function replacePreviousHistoryState(params, callback) {
+        // To modify the previous history entry, the following happens:
+        // 1. history.back()
+        // 2. _pushToHistory, which calls history.replaceState( ... )
+        // 3. history.forward()
+        // Because a navigation via the history API does not immediately update
+        // the history state, the popstate event is used for synchronization.
+        self.historyUnlocked = false;
+
+        // Suppress the hashchange event to avoid side effects caused by
+        // navigating back and forward.
+        self.allowHashChange = false;
+        window.addEventListener('popstate', rewriteHistoryAfterBack);
+        history.back();
+
+        function rewriteHistoryAfterBack() {
+          window.removeEventListener('popstate', rewriteHistoryAfterBack);
+          window.addEventListener('popstate', rewriteHistoryAfterForward);
+          self._pushToHistory(params, false, true);
+          history.forward();
+        }
+        function rewriteHistoryAfterForward() {
+          window.removeEventListener('popstate', rewriteHistoryAfterForward);
+          self.allowHashChange = true;
+          self.historyUnlocked = true;
+          callback();
+        }
+      }
 
       function pdfHistoryBeforeUnload() {
         var previousParams = self._getPreviousParams(null, true);
@@ -1770,19 +1817,7 @@ var PDFHistory = (function () {
       if (!this.initialized) {
         return true;
       }
-      // If the current hash changes when moving back/forward in the history,
-      // this will trigger a 'popstate' event *as well* as a 'hashchange' event.
-      // Since the hash generally won't correspond to the exact the position
-      // stored in the history's state object, triggering the 'hashchange' event
-      // can thus corrupt the browser history.
-      //
-      // When the hash changes during a 'popstate' event, we *only* prevent the
-      // first 'hashchange' event and immediately reset allowHashChange.
-      // If it is not reset, the user would not be able to change the hash.
-
-      var temp = this.allowHashChange;
-      this.allowHashChange = true;
-      return temp;
+      return this.allowHashChange;
     },
 
     _updatePreviousBookmark: function pdfHistory_updatePreviousBookmark() {
@@ -3460,7 +3495,7 @@ var PDFPageView = (function PDFPageViewClosure() {
       }
     },
 
-    reset: function PDFPageView_reset(keepAnnotations) {
+    reset: function PDFPageView_reset(keepZoomLayer, keepAnnotations) {
       if (this.renderTask) {
         this.renderTask.cancel();
       }
@@ -3472,29 +3507,27 @@ var PDFPageView = (function PDFPageViewClosure() {
       div.style.height = Math.floor(this.viewport.height) + 'px';
 
       var childNodes = div.childNodes;
-      var currentZoomLayer = this.zoomLayer || null;
+      var currentZoomLayerNode = (keepZoomLayer && this.zoomLayer) || null;
       var currentAnnotationNode = (keepAnnotations && this.annotationLayer &&
                                    this.annotationLayer.div) || null;
       for (var i = childNodes.length - 1; i >= 0; i--) {
         var node = childNodes[i];
-        if (currentZoomLayer === node || currentAnnotationNode === node) {
+        if (currentZoomLayerNode === node || currentAnnotationNode === node) {
           continue;
         }
         div.removeChild(node);
       }
       div.removeAttribute('data-loaded');
 
-      if (keepAnnotations) {
-        if (this.annotationLayer) {
-          // Hide annotationLayer until all elements are resized
-          // so they are not displayed on the already-resized page
-          this.annotationLayer.hide();
-        }
+      if (currentAnnotationNode) {
+        // Hide annotationLayer until all elements are resized
+        // so they are not displayed on the already-resized page
+        this.annotationLayer.hide();
       } else {
         this.annotationLayer = null;
       }
 
-      if (this.canvas) {
+      if (this.canvas && !currentZoomLayerNode) {
         // Zeroing the width and height causes Firefox to release graphics
         // resources immediately, which can greatly reduce memory consumption.
         this.canvas.width = 0;
@@ -3533,19 +3566,21 @@ var PDFPageView = (function PDFPageViewClosure() {
         }
       }
 
-      if (this.canvas &&
-          (PDFJS.useOnlyCssZoom ||
-            (this.hasRestrictedScaling && isScalingRestricted))) {
-        this.cssTransform(this.canvas, true);
-        return;
-      } else if (this.canvas && !this.zoomLayer) {
-        this.zoomLayer = this.canvas.parentNode;
-        this.zoomLayer.style.position = 'absolute';
+      if (this.canvas) {
+        if (PDFJS.useOnlyCssZoom ||
+            (this.hasRestrictedScaling && isScalingRestricted)) {
+          this.cssTransform(this.canvas, true);
+          return;
+        }
+        if (!this.zoomLayer) {
+          this.zoomLayer = this.canvas.parentNode;
+          this.zoomLayer.style.position = 'absolute';
+        }
       }
       if (this.zoomLayer) {
         this.cssTransform(this.zoomLayer.firstChild);
       }
-      this.reset(true);
+      this.reset(/* keepZoomLayer = */ true, /* keepAnnotations = */ true);
     },
 
     /**
@@ -3658,7 +3693,7 @@ var PDFPageView = (function PDFPageViewClosure() {
       var canvas = document.createElement('canvas');
       canvas.id = 'page' + this.id;
       canvasWrapper.appendChild(canvas);
-      if (this.annotationLayer) {
+      if (this.annotationLayer && this.annotationLayer.div) {
         // annotationLayer needs to stay on top
         div.insertBefore(canvasWrapper, this.annotationLayer.div);
       } else {
@@ -3705,7 +3740,7 @@ var PDFPageView = (function PDFPageViewClosure() {
         textLayerDiv.className = 'textLayer';
         textLayerDiv.style.width = canvas.style.width;
         textLayerDiv.style.height = canvas.style.height;
-        if (this.annotationLayer) {
+        if (this.annotationLayer && this.annotationLayer.div) {
           // annotationLayer needs to stay on top
           div.insertBefore(textLayerDiv, this.annotationLayer.div);
         } else {
@@ -3752,6 +3787,12 @@ var PDFPageView = (function PDFPageViewClosure() {
         }
 
         if (self.zoomLayer) {
+          // Zeroing the width and height causes Firefox to release graphics
+          // resources immediately, which can greatly reduce memory consumption.
+          var zoomLayerCanvas = self.zoomLayer.firstChild;
+          zoomLayerCanvas.width = 0;
+          zoomLayerCanvas.height = 0;
+
           div.removeChild(self.zoomLayer);
           self.zoomLayer = null;
         }
@@ -5375,6 +5416,10 @@ var PDFThumbnailView = (function PDFThumbnailViewClosure() {
         this.canvas.height = 0;
         delete this.canvas;
       }
+      if (this.image) {
+        this.image.removeAttribute('src');
+        delete this.image;
+      }
     },
 
     update: function PDFThumbnailView_update(rotation) {
@@ -5395,26 +5440,51 @@ var PDFThumbnailView = (function PDFThumbnailViewClosure() {
     _getPageDrawContext:
         function PDFThumbnailView_getPageDrawContext(noCtxScale) {
       var canvas = document.createElement('canvas');
-      canvas.id = this.renderingId;
-
-      canvas.className = 'thumbnailImage';
-      canvas.setAttribute('aria-label', mozL10n.get('thumb_page_canvas',
-        {page: this.id}, 'Thumbnail of Page {{page}}'));
-
       this.canvas = canvas;
-      this.div.setAttribute('data-loaded', true);
-      this.ring.appendChild(canvas);
 
       var ctx = canvas.getContext('2d');
       var outputScale = getOutputScale(ctx);
+
       canvas.width = (this.canvasWidth * outputScale.sx) | 0;
       canvas.height = (this.canvasHeight * outputScale.sy) | 0;
       canvas.style.width = this.canvasWidth + 'px';
       canvas.style.height = this.canvasHeight + 'px';
+
       if (!noCtxScale && outputScale.scaled) {
         ctx.scale(outputScale.sx, outputScale.sy);
       }
+
+      var image = document.createElement('img');
+      this.image = image;
+
+      image.id = this.renderingId;
+      image.className = 'thumbnailImage';
+      image.setAttribute('aria-label', mozL10n.get('thumb_page_canvas',
+        { page: this.id }, 'Thumbnail of Page {{page}}'));
+
+      image.style.width = canvas.style.width;
+      image.style.height = canvas.style.height;
+
       return ctx;
+    },
+
+    /**
+     * @private
+     */
+    _convertCanvasToImage: function PDFThumbnailView_convertCanvasToImage() {
+      if (!this.canvas) {
+        return;
+      }
+      this.image.src = this.canvas.toDataURL();
+
+      this.div.setAttribute('data-loaded', true);
+      this.ring.appendChild(this.image);
+
+      // Zeroing the width and height causes Firefox to release graphics
+      // resources immediately, which can greatly reduce memory consumption.
+      this.canvas.width = 0;
+      this.canvas.height = 0;
+      delete this.canvas;
     },
 
     draw: function PDFThumbnailView_draw() {
@@ -5446,6 +5516,7 @@ var PDFThumbnailView = (function PDFThumbnailViewClosure() {
           return;
         }
         self.renderingState = RenderingStates.FINISHED;
+        self._convertCanvasToImage();
 
         if (!error) {
           resolveRenderPromise(undefined);
@@ -5503,6 +5574,7 @@ var PDFThumbnailView = (function PDFThumbnailViewClosure() {
       if (img.width <= 2 * canvas.width) {
         ctx.drawImage(img, 0, 0, img.width, img.height,
                       0, 0, canvas.width, canvas.height);
+        this._convertCanvasToImage();
         return;
       }
       // drawImage does an awful job of rescaling the image, doing it gradually.
@@ -5527,6 +5599,7 @@ var PDFThumbnailView = (function PDFThumbnailViewClosure() {
       }
       ctx.drawImage(reducedImage, 0, 0, reducedWidth, reducedHeight,
                     0, 0, canvas.width, canvas.height);
+      this._convertCanvasToImage();
     }
   };
 
@@ -5738,6 +5811,7 @@ var PDFOutlineView = (function PDFOutlineViewClosure() {
     this.container = options.container;
     this.outline = options.outline;
     this.linkService = options.linkService;
+    this.lastToggleIsShow = true;
   }
 
   PDFOutlineView.prototype = {
@@ -5746,6 +5820,7 @@ var PDFOutlineView = (function PDFOutlineViewClosure() {
       while (container.firstChild) {
         container.removeChild(container.firstChild);
       }
+      this.lastToggleIsShow = true;
     },
 
     /**
@@ -5771,6 +5846,51 @@ var PDFOutlineView = (function PDFOutlineViewClosure() {
       };
     },
 
+    /**
+     * Prepend a button before an outline item which allows the user to toggle
+     * the visibility of all outline items at that level.
+     *
+     * @private
+     */
+    _addToggleButton: function PDFOutlineView_addToggleButton(div) {
+      var toggler = document.createElement('div');
+      toggler.className = 'outlineItemToggler';
+      toggler.onclick = function(event) {
+        event.stopPropagation();
+        toggler.classList.toggle('outlineItemsHidden');
+
+        if (event.shiftKey) {
+          var shouldShowAll = !toggler.classList.contains('outlineItemsHidden');
+          this._toggleOutlineItem(div, shouldShowAll);
+        }
+      }.bind(this);
+      div.insertBefore(toggler, div.firstChild);
+    },
+
+    /**
+     * Toggle the visibility of the subtree of an outline item.
+     *
+     * @param {Element} root - the root of the outline (sub)tree.
+     * @param {boolean} state - whether to show the outline (sub)tree. If false,
+     *   the outline subtree rooted at |root| will be collapsed.
+     *
+     * @private
+     */
+    _toggleOutlineItem: function PDFOutlineView_toggleOutlineItem(root, show) {
+      this.lastToggleIsShow = show;
+      var togglers = root.querySelectorAll('.outlineItemToggler');
+      for (var i = 0, ii = togglers.length; i < ii; ++i) {
+        togglers[i].classList[show ? 'remove' : 'add']('outlineItemsHidden');
+      }
+    },
+
+    /**
+     * Collapse or expand all subtrees of the outline.
+     */
+    toggleOutlineTree: function PDFOutlineView_toggleOutlineTree() {
+      this._toggleOutlineItem(this.container, !this.lastToggleIsShow);
+    },
+
     render: function PDFOutlineView_render() {
       var outline = this.outline;
       var outlineCount = 0;
@@ -5782,7 +5902,9 @@ var PDFOutlineView = (function PDFOutlineViewClosure() {
         return;
       }
 
-      var queue = [{ parent: this.container, items: this.outline }];
+      var fragment = document.createDocumentFragment();
+      var queue = [{ parent: fragment, items: this.outline }];
+      var hasAnyNesting = false;
       while (queue.length > 0) {
         var levelData = queue.shift();
         for (var i = 0, len = levelData.items.length; i < len; i++) {
@@ -5791,10 +5913,13 @@ var PDFOutlineView = (function PDFOutlineViewClosure() {
           div.className = 'outlineItem';
           var element = document.createElement('a');
           this._bindLink(element, item);
-          element.textContent = item.title;
+          element.textContent = removeNullCharacters(item.title);
           div.appendChild(element);
 
           if (item.items.length > 0) {
+            hasAnyNesting = true;
+            this._addToggleButton(div);
+
             var itemsDiv = document.createElement('div');
             itemsDiv.className = 'outlineItems';
             div.appendChild(itemsDiv);
@@ -5805,6 +5930,11 @@ var PDFOutlineView = (function PDFOutlineViewClosure() {
           outlineCount++;
         }
       }
+      if (hasAnyNesting) {
+        this.container.classList.add('outlineWithDeepNesting');
+      }
+
+      this.container.appendChild(fragment);
 
       this._dispatchEvent(outlineCount);
     }
@@ -5887,7 +6017,7 @@ var PDFAttachmentView = (function PDFAttachmentViewClosure() {
         div.className = 'attachmentsItem';
         var button = document.createElement('button');
         this._bindLink(button, item.content, filename);
-        button.textContent = filename;
+        button.textContent = removeNullCharacters(filename);
         div.appendChild(button);
         this.container.appendChild(div);
       }
@@ -6085,6 +6215,12 @@ var PDFViewerApplication = {
         }
         PDFJS.disableRange = value;
       }),
+      Preferences.get('disableStream').then(function resolved(value) {
+        if (PDFJS.disableStream === true) {
+          return;
+        }
+        PDFJS.disableStream = value;
+      }),
       Preferences.get('disableAutoFetch').then(function resolved(value) {
         PDFJS.disableAutoFetch = value;
       }),
@@ -6096,12 +6232,24 @@ var PDFViewerApplication = {
       }),
       Preferences.get('useOnlyCssZoom').then(function resolved(value) {
         PDFJS.useOnlyCssZoom = value;
-      })
+      }),
+      Preferences.get('externalLinkTarget').then(function resolved(value) {
+        if (PDFJS.isExternalLinkTargetSet()) {
+          return;
+        }
+        PDFJS.externalLinkTarget = value;
+      }),
       // TODO move more preferences and other async stuff here
     ]).catch(function (reason) { });
 
     return initializedPromise.then(function () {
-      PDFViewerApplication.initialized = true;
+      if (self.isViewerEmbedded && !PDFJS.isExternalLinkTargetSet()) {
+        // Prevent external links from "replacing" the viewer,
+        // when it's embedded in e.g. an iframe or an object.
+        PDFJS.externalLinkTarget = PDFJS.LinkTarget.TOP;
+      }
+
+      self.initialized = true;
     });
   },
 
@@ -6790,29 +6938,27 @@ var PDFViewerApplication = {
         break;
 
       case 'outline':
+        if (outlineButton.disabled) {
+          return;
+        }
         thumbsButton.classList.remove('toggled');
         outlineButton.classList.add('toggled');
         attachmentsButton.classList.remove('toggled');
         thumbsView.classList.add('hidden');
         outlineView.classList.remove('hidden');
         attachmentsView.classList.add('hidden');
-
-        if (outlineButton.getAttribute('disabled')) {
-          return;
-        }
         break;
 
       case 'attachments':
+        if (attachmentsButton.disabled) {
+          return;
+        }
         thumbsButton.classList.remove('toggled');
         outlineButton.classList.remove('toggled');
         attachmentsButton.classList.add('toggled');
         thumbsView.classList.add('hidden');
         outlineView.classList.add('hidden');
         attachmentsView.classList.remove('hidden');
-
-        if (attachmentsButton.getAttribute('disabled')) {
-          return;
-        }
         break;
     }
   },
@@ -7076,6 +7222,11 @@ function webViewerInitialized() {
       PDFViewerApplication.switchSidebarView('outline');
     });
 
+  document.getElementById('viewOutline').addEventListener('dblclick',
+    function() {
+      PDFViewerApplication.outline.toggleOutlineTree();
+    });
+
   document.getElementById('viewAttachments').addEventListener('click',
     function() {
       PDFViewerApplication.switchSidebarView('attachments');
@@ -7195,18 +7346,45 @@ document.addEventListener('textlayerrendered', function (e) {
   }
 }, true);
 
+document.addEventListener('pagemode', function (evt) {
+  if (!PDFViewerApplication.initialized) {
+    return;
+  }
+  // Handle the 'pagemode' hash parameter, see also `PDFLinkService_setHash`.
+  var mode = evt.detail.mode;
+  switch (mode) {
+    case 'bookmarks':
+      // Note: Our code calls this property 'outline', even though the
+      //       Open Parameter specification calls it 'bookmarks'.
+      mode = 'outline';
+      /* falls through */
+    case 'thumbs':
+    case 'attachments':
+      PDFViewerApplication.switchSidebarView(mode, true);
+      break;
+    case 'none':
+      if (PDFViewerApplication.sidebarOpen) {
+        document.getElementById('sidebarToggle').click();
+      }
+      break;
+  }
+}, true);
+
 document.addEventListener('namedaction', function (e) {
+  if (!PDFViewerApplication.initialized) {
+    return;
+  }
   // Processing couple of named actions that might be useful.
   // See also PDFLinkService.executeNamedAction
-  var action = e.action;
+  var action = e.detail.action;
   switch (action) {
     case 'GoToPage':
       document.getElementById('pageNumber').focus();
       break;
 
     case 'Find':
-      if (!this.supportsIntegratedFind) {
-        this.findBar.toggle();
+      if (!PDFViewerApplication.supportsIntegratedFind) {
+        PDFViewerApplication.findBar.toggle();
       }
       break;
   }

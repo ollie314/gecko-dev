@@ -5,7 +5,7 @@
 
 /* This content script contains code that requires a tab browser. */
 
-let {classes: Cc, interfaces: Ci, utils: Cu, results: Cr} = Components;
+var {classes: Cc, interfaces: Ci, utils: Cu, results: Cr} = Components;
 
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
@@ -97,7 +97,7 @@ addMessageListener("SecondScreen:tab-mirror", function(message) {
   }
 });
 
-let AboutHomeListener = {
+var AboutHomeListener = {
   init: function(chromeGlobal) {
     chromeGlobal.addEventListener('AboutHomeLoad', this, false, true);
   },
@@ -158,10 +158,6 @@ let AboutHomeListener = {
     addMessageListener("AboutHome:Update", this);
     addEventListener("click", this, true);
     addEventListener("pagehide", this, true);
-
-    if (!Services.prefs.getBoolPref("browser.search.showOneOffButtons")) {
-      doc.documentElement.setAttribute("searchUIConfiguration", "oldsearchui");
-    }
 
     sendAsyncMessage("AboutHome:RequestUpdate");
   },
@@ -231,7 +227,7 @@ let AboutHomeListener = {
 };
 AboutHomeListener.init(this);
 
-let AboutPrivateBrowsingListener = {
+var AboutPrivateBrowsingListener = {
   init(chromeGlobal) {
     chromeGlobal.addEventListener("AboutPrivateBrowsingOpenWindow", this,
                                   false, true);
@@ -259,7 +255,7 @@ let AboutPrivateBrowsingListener = {
 };
 AboutPrivateBrowsingListener.init(this);
 
-let AboutReaderListener = {
+var AboutReaderListener = {
 
   _articlePromise: null,
 
@@ -332,7 +328,7 @@ let AboutReaderListener = {
 
   /**
    * NB: this function will update the state of the reader button asynchronously
-   * after the next mozAfterPaint call (assuming reader mode is enabled and 
+   * after the next mozAfterPaint call (assuming reader mode is enabled and
    * this is a suitable document). Calling it on things which won't be
    * painted is not going to work.
    */
@@ -377,7 +373,7 @@ let AboutReaderListener = {
 AboutReaderListener.init();
 
 
-let ContentSearchMediator = {
+var ContentSearchMediator = {
 
   whitelist: new Set([
     "about:home",
@@ -432,31 +428,27 @@ let ContentSearchMediator = {
 };
 ContentSearchMediator.init(this);
 
-let PageStyleHandler = {
+var PageStyleHandler = {
   init: function() {
     addMessageListener("PageStyle:Switch", this);
     addMessageListener("PageStyle:Disable", this);
-
-    // Send a CPOW to the parent so that it can synchronously request
-    // the list of style sheets.
-    sendSyncMessage("PageStyle:SetSyncHandler", {}, {syncHandler: this});
+    addEventListener("pageshow", () => this.sendStyleSheetInfo());
   },
 
   get markupDocumentViewer() {
     return docShell.contentViewer;
   },
 
-  // Called synchronously via CPOW from the parent.
-  getStyleSheetInfo: function() {
-    let styleSheets = this._filterStyleSheets(this.getAllStyleSheets());
-    return {
-      styleSheets: styleSheets,
+  sendStyleSheetInfo: function() {
+    let filteredStyleSheets = this._filterStyleSheets(this.getAllStyleSheets());
+
+    sendAsyncMessage("PageStyle:StyleSheets", {
+      filteredStyleSheets: filteredStyleSheets,
       authorStyleDisabled: this.markupDocumentViewer.authorStyleDisabled,
       preferredStyleSheetSet: content.document.preferredStyleSheetSet
-    };
+    });
   },
 
-  // Called synchronously via CPOW from the parent.
   getAllStyleSheets: function(frameset = content) {
     let selfSheets = Array.slice(frameset.document.styleSheets);
     let subSheets = Array.map(frameset.frames, frame => this.getAllStyleSheets(frame));
@@ -474,6 +466,8 @@ let PageStyleHandler = {
         this.markupDocumentViewer.authorStyleDisabled = true;
         break;
     }
+
+    this.sendStyleSheetInfo();
   },
 
   _stylesheetSwitchAll: function (frameset, title) {
@@ -519,8 +513,16 @@ let PageStyleHandler = {
         }
       }
 
-      result.push({title: currentStyleSheet.title,
-                   disabled: currentStyleSheet.disabled});
+      // We won't send data URIs all of the way up to the parent, as these
+      // can be arbitrarily large.
+      let URI = Services.io.newURI(currentStyleSheet.href, null, null);
+      let sentURI = URI.scheme == "data" ? null : URI.spec;
+
+      result.push({
+        title: currentStyleSheet.title,
+        disabled: currentStyleSheet.disabled,
+        href: sentURI,
+      });
     }
 
     return result;
@@ -529,7 +531,7 @@ let PageStyleHandler = {
 PageStyleHandler.init();
 
 // Keep a reference to the translation content handler to avoid it it being GC'ed.
-let trHandler = null;
+var trHandler = null;
 if (Services.prefs.getBoolPref("browser.translation.detectLanguage")) {
   Cu.import("resource:///modules/translation/TranslationContentHandler.jsm");
   trHandler = new TranslationContentHandler(global, docShell);
@@ -568,7 +570,7 @@ addMessageListener("Browser:AppTab", function(message) {
   }
 });
 
-let WebBrowserChrome = {
+var WebBrowserChrome = {
   onBeforeLinkTraversal: function(originalTarget, linkURI, linkNode, isAppTab) {
     return BrowserUtils.onBeforeLinkTraversal(originalTarget, linkURI, linkNode, isAppTab);
   },
@@ -591,7 +593,7 @@ if (Services.appinfo.processType == Services.appinfo.PROCESS_TYPE_CONTENT) {
 }
 
 
-let DOMFullscreenHandler = {
+var DOMFullscreenHandler = {
   _fullscreenDoc: null,
 
   init: function() {

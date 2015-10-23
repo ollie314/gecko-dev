@@ -19,6 +19,8 @@
 #include <pthread.h>
 #include <hardware/gps.h>
 
+#include "GeolocationUtil.h"
+#include "mozstumbler/MozStumbler.h"
 #include "mozilla/Constants.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/Services.h"
@@ -37,6 +39,7 @@
 #include "mozilla/dom/SettingChangeNotificationBinding.h"
 
 #ifdef MOZ_B2G_RIL
+#include "mozstumbler/MozStumbler.h"
 #include "nsIIccInfo.h"
 #include "nsIMobileConnectionInfo.h"
 #include "nsIMobileConnectionService.h"
@@ -87,6 +90,7 @@ AGpsCallbacks GonkGPSGeolocationProvider::mAGPSCallbacks;
 AGpsRilCallbacks GonkGPSGeolocationProvider::mAGPSRILCallbacks;
 #endif // MOZ_B2G_RIL
 
+
 void
 GonkGPSGeolocationProvider::LocationCallback(GpsLocation* location)
 {
@@ -100,7 +104,7 @@ GonkGPSGeolocationProvider::LocationCallback(GpsLocation* location)
       : mPosition(aPosition)
     {}
     NS_IMETHOD Run() {
-      nsRefPtr<GonkGPSGeolocationProvider> provider =
+      RefPtr<GonkGPSGeolocationProvider> provider =
         GonkGPSGeolocationProvider::GetSingleton();
       nsCOMPtr<nsIGeolocationUpdate> callback = provider->mLocationCallback;
       provider->mLastGPSPosition = mPosition;
@@ -110,7 +114,7 @@ GonkGPSGeolocationProvider::LocationCallback(GpsLocation* location)
       return NS_OK;
     }
   private:
-    nsRefPtr<nsGeoPosition> mPosition;
+    RefPtr<nsGeoPosition> mPosition;
   };
 
   MOZ_ASSERT(location);
@@ -120,7 +124,7 @@ GonkGPSGeolocationProvider::LocationCallback(GpsLocation* location)
     return;
   }
 
-  nsRefPtr<nsGeoPosition> somewhere = new nsGeoPosition(location->latitude,
+  RefPtr<nsGeoPosition> somewhere = new nsGeoPosition(location->latitude,
                                                         location->longitude,
                                                         location->altitude,
                                                         location->accuracy,
@@ -141,7 +145,12 @@ GonkGPSGeolocationProvider::LocationCallback(GpsLocation* location)
                                         location->accuracy);
   }
 
-  NS_DispatchToMainThread(new UpdateLocationEvent(somewhere));
+  RefPtr<UpdateLocationEvent> event = new UpdateLocationEvent(somewhere);
+  NS_DispatchToMainThread(event);
+
+#ifdef MOZ_B2G_RIL
+  MozStumble(somewhere);
+#endif
 }
 
 void
@@ -239,7 +248,7 @@ GonkGPSGeolocationProvider::SetCapabilitiesCallback(uint32_t capabilities)
       : mCapabilities(aCapabilities)
     {}
     NS_IMETHOD Run() {
-      nsRefPtr<GonkGPSGeolocationProvider> provider =
+      RefPtr<GonkGPSGeolocationProvider> provider =
         GonkGPSGeolocationProvider::GetSingleton();
 
       provider->mSupportsScheduling = mCapabilities & GPS_CAPABILITY_SCHEDULING;
@@ -307,7 +316,7 @@ GonkGPSGeolocationProvider::AGPSStatusCallback(AGpsStatus* status)
       : mStatus(aStatus)
     {}
     NS_IMETHOD Run() {
-      nsRefPtr<GonkGPSGeolocationProvider> provider =
+      RefPtr<GonkGPSGeolocationProvider> provider =
         GonkGPSGeolocationProvider::GetSingleton();
 
       switch (mStatus) {
@@ -336,7 +345,7 @@ GonkGPSGeolocationProvider::AGPSRILSetIDCallback(uint32_t flags)
       : mFlags(flags)
     {}
     NS_IMETHOD Run() {
-      nsRefPtr<GonkGPSGeolocationProvider> provider =
+      RefPtr<GonkGPSGeolocationProvider> provider =
         GonkGPSGeolocationProvider::GetSingleton();
       provider->RequestSetID(mFlags);
       return NS_OK;
@@ -356,7 +365,7 @@ GonkGPSGeolocationProvider::AGPSRILRefLocCallback(uint32_t flags)
     RequestRefLocEvent()
     {}
     NS_IMETHOD Run() {
-      nsRefPtr<GonkGPSGeolocationProvider> provider =
+      RefPtr<GonkGPSGeolocationProvider> provider =
         GonkGPSGeolocationProvider::GetSingleton();
       provider->SetReferenceLocation();
       return NS_OK;
@@ -402,7 +411,7 @@ GonkGPSGeolocationProvider::GetSingleton()
   if (!sSingleton)
     sSingleton = new GonkGPSGeolocationProvider();
 
-  nsRefPtr<GonkGPSGeolocationProvider> provider = sSingleton;
+  RefPtr<GonkGPSGeolocationProvider> provider = sSingleton;
   return provider.forget();
 }
 
@@ -866,7 +875,7 @@ NS_IMPL_ISUPPORTS(GonkGPSGeolocationProvider::NetworkLocationUpdate,
 NS_IMETHODIMP
 GonkGPSGeolocationProvider::NetworkLocationUpdate::Update(nsIDOMGeoPosition *position)
 {
-  nsRefPtr<GonkGPSGeolocationProvider> provider =
+  RefPtr<GonkGPSGeolocationProvider> provider =
     GonkGPSGeolocationProvider::GetSingleton();
 
   nsCOMPtr<nsIDOMGeoPositionCoords> coords;
@@ -886,23 +895,7 @@ GonkGPSGeolocationProvider::NetworkLocationUpdate::Update(nsIDOMGeoPosition *pos
   static double sLastMLSPosLon = 0;
 
   if (0 != sLastMLSPosLon || 0 != sLastMLSPosLat) {
-    // Use spherical law of cosines to calculate difference
-    // Not quite as correct as the Haversine but simpler and cheaper
-    // Should the following be a utility function? Others might need this calc.
-    const double radsInDeg = M_PI / 180.0;
-    const double rNewLat = lat * radsInDeg;
-    const double rNewLon = lon * radsInDeg;
-    const double rOldLat = sLastMLSPosLat * radsInDeg;
-    const double rOldLon = sLastMLSPosLon * radsInDeg;
-    // WGS84 equatorial radius of earth = 6378137m
-    double cosDelta = (sin(rNewLat) * sin(rOldLat)) +
-                      (cos(rNewLat) * cos(rOldLat) * cos(rOldLon - rNewLon));
-    if (cosDelta > 1.0) {
-      cosDelta = 1.0;
-    } else if (cosDelta < -1.0) {
-      cosDelta = -1.0;
-    }
-    delta = acos(cosDelta) * 6378137;
+    delta = CalculateDeltaInMeter(lat, lon, sLastMLSPosLat, sLastMLSPosLon);
   }
 
   sLastMLSPosLat = lat;
@@ -1000,7 +993,7 @@ GonkGPSGeolocationProvider::Startup()
   if (mNetworkLocationProvider) {
     nsresult rv = mNetworkLocationProvider->Startup();
     if (NS_SUCCEEDED(rv)) {
-      nsRefPtr<NetworkLocationUpdate> update = new NetworkLocationUpdate();
+      RefPtr<NetworkLocationUpdate> update = new NetworkLocationUpdate();
       mNetworkLocationProvider->Watch(update);
     }
   }

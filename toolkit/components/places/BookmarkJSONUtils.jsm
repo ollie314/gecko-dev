@@ -209,7 +209,7 @@ BookmarkImporter.prototype = {
       let uri = NetUtil.newURI(spec);
       let channel = NetUtil.newChannel({
         uri,
-        loadingPrincipal: Services.scriptSecurityManager.getNoAppCodebasePrincipal(uri),
+        loadingPrincipal: Services.scriptSecurityManager.createCodebasePrincipal(uri, {}),
         contentPolicyType: Ci.nsIContentPolicy.TYPE_INTERNAL_XMLHTTPREQUEST
       });
       let streamLoader = Cc["@mozilla.org/network/stream-loader;1"]
@@ -276,7 +276,7 @@ BookmarkImporter.prototype = {
             let childIds = [];
             for (let i = 0; i < root.childCount; i++) {
               let childId = root.getChild(i).itemId;
-              if (excludeItems.indexOf(childId) == -1 &&
+              if (!excludeItems.includes(childId) &&
                   childId != PlacesUtils.tagsFolderId) {
                 childIds.push(childId);
               }

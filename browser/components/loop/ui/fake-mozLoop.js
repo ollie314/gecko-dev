@@ -15,7 +15,6 @@ var fakeRooms = [
       }]
     },
     "roomUrl": "http://localhost:3000/rooms/_nxD4V4FflQ",
-    "roomOwner": "Alexis",
     "maxSize": 2,
     "creationTime": 1405517546,
     "ctime": 1405517546,
@@ -28,7 +27,6 @@ var fakeRooms = [
       "roomName": "Second Room Name"
     },
     "roomUrl": "http://localhost:3000/rooms/QzBbvGmIZWU",
-    "roomOwner": "Alexis",
     "maxSize": 2,
     "creationTime": 1405517546,
     "ctime": 1405517546,
@@ -41,7 +39,6 @@ var fakeRooms = [
       "roomName": "UX Discussion"
     },
     "roomUrl": "http://localhost:3000/rooms/3jKS_Els9IU",
-    "roomOwner": "Alexis",
     "maxSize": 2,
     "clientMaxSize": 2,
     "creationTime": 1405517546,
@@ -51,68 +48,60 @@ var fakeRooms = [
        { "displayName": "Alexis", "account": "alexis@example.com", "roomConnectionId": "2a1787a6-4a73-43b5-ae3e-906ec1e763cb" },
        { "displayName": "Adam", "roomConnectionId": "781f012b-f1ea-4ce1-9105-7cfc36fb4ec7" }
      ]
+  },
+  {
+    "roomToken": "REJRFfkdfkf",
+    "decryptedContext": {
+      "roomName": "Third Room Name"
+    },
+    "roomUrl": "http://localhost:3000/rooms/REJRFfkdfkf",
+    "roomOwner": "Alexis",
+    "maxSize": 2,
+    "creationTime": 1405537485,
+    "ctime": 1405537485,
+    "expiresAt": 1405554180,
+    "participants": []
+  },
+  {
+    "roomToken": "fjdkreFJDer",
+    "decryptedContext": {
+      "roomName": "Forth Room Name"
+    },
+    "roomUrl": "http://localhost:3000/rooms/fjdkreFJDer",
+    "roomOwner": "Alexis",
+    "maxSize": 2,
+    "creationTime": 1405546564,
+    "ctime": 1405546564,
+    "expiresAt": 1405564180,
+    "participants": []
+  },
+  {
+    "roomToken": "preFDREJhdf",
+    "decryptedContext": {
+      "roomName": "Fifth Room Name"
+    },
+    "roomUrl": "http://localhost:3000/rooms/preFDREJhdf",
+    "roomOwner": "Alexis",
+    "maxSize": 2,
+    "creationTime": 1405566934,
+    "ctime": 1405566934,
+    "expiresAt": 1405584180,
+    "participants": []
+  },
+  {
+    "roomToken": "preFLighdf",
+    "decryptedContext": {
+      "roomName": "Sixth Room Name"
+    },
+    "roomUrl": "http://localhost:3000/rooms/preFLighdf",
+    "roomOwner": "Alexis",
+    "maxSize": 2,
+    "creationTime": 1405576934,
+    "ctime": 1405576934,
+    "expiresAt": 1405614180,
+    "participants": []
   }
 ];
-
-var fakeContacts = [{
-  id: 1,
-  _guid: 1,
-  name: ["Ally Avocado"],
-  email: [{
-    "pref": true,
-    "type": ["work"],
-    "value": "ally@mail.com"
-  }],
-  tel: [{
-    "pref": true,
-    "type": ["mobile"],
-    "value": "+31-6-12345678"
-  }],
-  category: ["google"],
-  published: 1406798311748,
-  updated: 1406798311748
-}, {
-  id: 2,
-  _guid: 2,
-  name: ["Bob Banana"],
-  email: [{
-    "pref": true,
-    "type": ["work"],
-    "value": "bob@gmail.com"
-  }],
-  tel: [{
-    "pref": true,
-    "type": ["mobile"],
-    "value": "+1-214-5551234"
-  }],
-  category: ["local"],
-  published: 1406798311748,
-  updated: 1406798311748
-}, {
-  id: 3,
-  _guid: 3,
-  name: ["Caitlin Cantaloupe"],
-  email: [{
-    "pref": true,
-    "type": ["work"],
-    "value": "caitlin.cant@hotmail.com"
-  }],
-  category: ["local"],
-  published: 1406798311748,
-  updated: 1406798311748
-}, {
-  id: 4,
-  _guid: 4,
-  name: ["Dave Dragonfruit"],
-  email: [{
-    "pref": true,
-    "type": ["work"],
-    "value": "dd@dragons.net"
-  }],
-  category: ["google"],
-  published: 1406798311748,
-  updated: 1406798311748
-}];
 
 (function() {
   "use strict";
@@ -123,20 +112,17 @@ var fakeContacts = [{
    */
   navigator.mozLoop = {
     ensureRegistered: function() {},
-    getAudioBlob: function(){},
+    getAudioBlob: function() {},
     getLoopPref: function(pref) {
-      switch(pref) {
+      switch (pref) {
         // Ensure we skip FTE completely.
         case "gettingStarted.seen":
-        case "contacts.gravatars.promo":
-        case "contextInConversations.enabled":
           return true;
-        case "contacts.gravatars.show":
-          return false;
       }
+      return null;
     },
     hasEncryptionKey: true,
-    setLoopPref: function(){},
+    setLoopPref: function() {},
     releaseCallData: function() {},
     copyString: function() {},
     getUserAvatar: function(emailAddress) {
@@ -149,12 +135,6 @@ var fakeContacts = [{
         description: "sample webpage description",
         url: "https://www.example.com"
       });
-    },
-    contacts: {
-      getAll: function(callback) {
-        callback(null, [].concat(fakeContacts));
-      },
-      on: function() {}
     },
     rooms: {
       getAll: function(version, callback) {

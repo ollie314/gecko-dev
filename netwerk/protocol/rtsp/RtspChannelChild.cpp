@@ -99,14 +99,18 @@ public:
     return NS_OK;
   }
 private:
-  nsRefPtr<nsIStreamListener> mListener;
-  nsRefPtr<nsIRequest> mRequest;
-  nsRefPtr<nsISupports> mContext;
+  RefPtr<nsIStreamListener> mListener;
+  RefPtr<nsIRequest> mRequest;
+  RefPtr<nsISupports> mContext;
 };
 
 NS_IMETHODIMP
 RtspChannelChild::AsyncOpen(nsIStreamListener *aListener, nsISupports *aContext)
 {
+  MOZ_ASSERT(!mLoadInfo || mLoadInfo->GetSecurityMode() == 0 ||
+             mLoadInfo->GetInitialSecurityCheckDone(),
+             "security flags in loadInfo but asyncOpen2() not called");
+
   // Precondition checks.
   MOZ_ASSERT(aListener);
   nsCOMPtr<nsIURI> uri = nsBaseChannel::URI();
@@ -197,9 +201,9 @@ public:
     return NS_OK;
   }
 private:
-  nsRefPtr<nsIStreamListener> mListener;
-  nsRefPtr<nsIRequest> mRequest;
-  nsRefPtr<nsISupports> mContext;
+  RefPtr<nsIStreamListener> mListener;
+  RefPtr<nsIRequest> mRequest;
+  RefPtr<nsISupports> mContext;
   nsresult mStatus;
 };
 
@@ -276,6 +280,10 @@ NS_IMETHODIMP
 RtspChannelChild::CompleteRedirectSetup(nsIStreamListener *aListener,
                                         nsISupports *aContext)
 {
+  if (mLoadInfo && mLoadInfo->GetEnforceSecurity()) {
+    MOZ_ASSERT(!aContext, "aContext should be null!");
+    return AsyncOpen2(aListener);
+  }
   return AsyncOpen(aListener, aContext);
 }
 

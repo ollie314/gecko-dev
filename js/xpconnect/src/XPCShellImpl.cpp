@@ -8,6 +8,7 @@
 #include "jsapi.h"
 #include "jsfriendapi.h"
 #include "jsprf.h"
+#include "mozilla/ChaosMode.h"
 #include "mozilla/dom/ScriptSettings.h"
 #include "nsServiceManagerUtils.h"
 #include "nsComponentManagerUtils.h"
@@ -1253,10 +1254,26 @@ XRE_XPCShellMain(int argc, char** argv, char** envp)
 
     NS_LogInit();
 
+    mozilla::LogModule::Init();
+
     // A initializer to initialize histogram collection
     // used by telemetry.
     UniquePtr<base::StatisticsRecorder> telStats =
        MakeUnique<base::StatisticsRecorder>();
+
+    if (PR_GetEnv("MOZ_CHAOSMODE")) {
+        ChaosFeature feature = ChaosFeature::Any;
+        long featureInt = strtol(PR_GetEnv("MOZ_CHAOSMODE"), nullptr, 16);
+        if (featureInt) {
+            // NOTE: MOZ_CHAOSMODE=0 or a non-hex value maps to Any feature.
+            feature = static_cast<ChaosFeature>(featureInt);
+        }
+        ChaosMode::SetChaosFeature(feature);
+    }
+
+    if (ChaosMode::isActive(ChaosFeature::Any)) {
+        printf_stderr("*** You are running in chaos test mode. See ChaosMode.h. ***\n");
+    }
 
     nsCOMPtr<nsIFile> appFile;
     rv = XRE_GetBinaryPath(argv[0], getter_AddRefs(appFile));
@@ -1450,7 +1467,7 @@ XRE_XPCShellMain(int argc, char** argv, char** envp)
         xpc->SetFunctionThisTranslator(NS_GET_IID(nsITestXPCFunctionCallback), translator);
 #endif
 
-        nsRefPtr<BackstagePass> backstagePass;
+        RefPtr<BackstagePass> backstagePass;
         rv = NS_NewBackstagePass(getter_AddRefs(backstagePass));
         if (NS_FAILED(rv)) {
             fprintf(gErrFile, "+++ Failed to create BackstagePass: %8x\n",
@@ -1541,6 +1558,7 @@ XRE_XPCShellMain(int argc, char** argv, char** envp)
 
             JS_DropPrincipals(rt, gJSPrincipals);
             JS_SetAllNonReservedSlotsToUndefined(cx, glob);
+            JS_SetAllNonReservedSlotsToUndefined(cx, JS_GlobalLexicalScope(glob));
             JS_GC(rt);
         }
         JS_GC(rt);

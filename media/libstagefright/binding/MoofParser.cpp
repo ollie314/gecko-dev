@@ -13,11 +13,6 @@
 #if defined(MOZ_FMP4)
 extern PRLogModuleInfo* GetDemuxerLog();
 
-/* Polyfill __func__ on MSVC to pass to the log. */
-#ifdef _MSC_VER
-#define __func__ __FUNCTION__
-#endif
-
 #define STRINGIFY(x) #x
 #define TOSTRING(x) STRINGIFY(x)
 #define LOG(name, arg, ...) MOZ_LOG(GetDemuxerLog(), mozilla::LogLevel::Debug, (TOSTRING(name) "(%p)::%s: " arg, this, __func__, ##__VA_ARGS__))
@@ -125,7 +120,7 @@ public:
   }
 
 private:
-  nsRefPtr<Stream> mStream;
+  RefPtr<Stream> mStream;
 };
 
 bool
@@ -135,7 +130,7 @@ MoofParser::BlockingReadNextMoof()
   mSource->Length(&length);
   nsTArray<MediaByteRange> byteRanges;
   byteRanges.AppendElement(MediaByteRange(0, length));
-  nsRefPtr<mp4_demuxer::BlockingStream> stream = new BlockingStream(mSource);
+  RefPtr<mp4_demuxer::BlockingStream> stream = new BlockingStream(mSource);
 
   BoxContext context(stream, byteRanges);
   for (Box box(&context, mOffset); box.IsAvailable(); box = box.Next()) {
@@ -148,33 +143,67 @@ MoofParser::BlockingReadNextMoof()
   return false;
 }
 
-bool
-MoofParser::HasMetadata()
+void
+MoofParser::ScanForMetadata(mozilla::MediaByteRange& aFtyp,
+                            mozilla::MediaByteRange& aMoov)
 {
   int64_t length = std::numeric_limits<int64_t>::max();
   mSource->Length(&length);
   nsTArray<MediaByteRange> byteRanges;
   byteRanges.AppendElement(MediaByteRange(0, length));
-  nsRefPtr<mp4_demuxer::BlockingStream> stream = new BlockingStream(mSource);
+  RefPtr<mp4_demuxer::BlockingStream> stream = new BlockingStream(mSource);
 
-  MediaByteRange ftyp;
-  MediaByteRange moov;
   BoxContext context(stream, byteRanges);
   for (Box box(&context, mOffset); box.IsAvailable(); box = box.Next()) {
     if (box.IsType("ftyp")) {
-      ftyp = box.Range();
+      aFtyp = box.Range();
       continue;
     }
     if (box.IsType("moov")) {
-      moov = box.Range();
+      aMoov = box.Range();
       break;
     }
   }
+  mInitRange = aFtyp.Extents(aMoov);
+}
+
+bool
+MoofParser::HasMetadata()
+{
+  MediaByteRange ftyp;
+  MediaByteRange moov;
+  ScanForMetadata(ftyp, moov);
+  return !!ftyp.Length() && !!moov.Length();
+}
+
+already_AddRefed<mozilla::MediaByteBuffer>
+MoofParser::Metadata()
+{
+  MediaByteRange ftyp;
+  MediaByteRange moov;
+  ScanForMetadata(ftyp, moov);
   if (!ftyp.Length() || !moov.Length()) {
-    return false;
+    return nullptr;
   }
-  mInitRange = ftyp.Extents(moov);
-  return true;
+  RefPtr<MediaByteBuffer> metadata = new MediaByteBuffer();
+  if (!metadata->SetLength(ftyp.Length() + moov.Length(), fallible)) {
+    // OOM
+    return nullptr;
+  }
+
+  RefPtr<mp4_demuxer::BlockingStream> stream = new BlockingStream(mSource);
+  size_t read;
+  bool rv =
+    stream->ReadAt(ftyp.mStart, metadata->Elements(), ftyp.Length(), &read);
+  if (!rv || read != ftyp.Length()) {
+    return nullptr;
+  }
+  rv =
+    stream->ReadAt(moov.mStart, metadata->Elements() + ftyp.Length(), moov.Length(), &read);
+  if (!rv || read != moov.Length()) {
+    return nullptr;
+  }
+  return metadata.forget();
 }
 
 Interval<Microseconds>
@@ -620,7 +649,9 @@ Mvhd::Mvhd(Box& aBox)
   }
   // More stuff that we don't care about
   reader->DiscardRemaining();
-  mValid = true;
+  if (mTimescale) {
+    mValid = true;
+  }
 }
 
 Mdhd::Mdhd(Box& aBox)

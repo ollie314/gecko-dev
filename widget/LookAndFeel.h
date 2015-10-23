@@ -174,6 +174,9 @@ public:
     eColorID__moz_comboboxtext,
     eColorID__moz_combobox,
 
+    // GtkInfoBar
+    eColorID__moz_gtk_info_bar_text,
+
     // keep this one last, please
     eColorID_LAST_COLOR
   };
@@ -522,6 +525,15 @@ public:
    *   color value.
    */
   static nsresult GetColor(ColorID aID, nscolor* aResult);
+
+   /**
+   * This variant of GetColor() takes an extra Boolean parameter that allows
+   * the caller to ask that hard-coded color values be substituted for
+   * native colors (used when it is desireable to hide system colors to
+   * avoid system fingerprinting).
+   */
+  static nsresult GetColor(ColorID aID, bool aUseStandinsForNativeColors,
+                           nscolor* aResult);
 
   /**
    * GetInt() and GetFloat() return a int or float value for aID.  The result

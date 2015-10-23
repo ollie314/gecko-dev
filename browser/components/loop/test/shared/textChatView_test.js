@@ -1,7 +1,7 @@
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
-describe("loop.shared.views.TextChatView", function () {
+describe("loop.shared.views.TextChatView", function() {
   "use strict";
 
   var expect = chai.expect;
@@ -9,7 +9,7 @@ describe("loop.shared.views.TextChatView", function () {
   var sharedViews = loop.shared.views;
   var TestUtils = React.addons.TestUtils;
   var CHAT_MESSAGE_TYPES = loop.store.CHAT_MESSAGE_TYPES;
-  var CHAT_CONTENT_TYPES = loop.store.CHAT_CONTENT_TYPES;
+  var CHAT_CONTENT_TYPES = loop.shared.utils.CHAT_CONTENT_TYPES;
   var fixtures = document.querySelector("#fixtures");
 
   var dispatcher, fakeSdkDriver, sandbox, store, fakeClock;
@@ -376,7 +376,7 @@ describe("loop.shared.views.TextChatView", function () {
 
     // note that this is really an integration test to be sure that we don't
     // inadvertently regress using LinkifiedTextView.
-    it("should linkify a URL starting with http", function (){
+    it("should linkify a URL starting with http", function() {
       view = mountTestComponent({
         showTimestamp: true,
         timestamp: "2015-06-23T22:48:39.738Z",
@@ -451,6 +451,40 @@ describe("loop.shared.views.TextChatView", function () {
       });
 
       expect(view.getDOMNode().classList.contains("text-chat-entries-empty")).eql(false);
+    });
+
+    it("should add a showing room name class when the view shows room names and it has a room name", function() {
+      view = mountTestComponent({
+        showRoomName: true
+      });
+
+      store.updateRoomInfo(new sharedActions.UpdateRoomInfo({
+        roomName: "Study",
+        roomUrl: "Fake"
+      }));
+
+      expect(view.getDOMNode().classList.contains("showing-room-name")).eql(true);
+    });
+
+    it("shouldn't add a showing room name class when the view doesn't show room names", function() {
+      view = mountTestComponent({
+        showRoomName: false
+      });
+
+      store.updateRoomInfo(new sharedActions.UpdateRoomInfo({
+        roomName: "Study",
+        roomUrl: "Fake"
+      }));
+
+      expect(view.getDOMNode().classList.contains("showing-room-name")).eql(false);
+    });
+
+    it("shouldn't add a showing room name class when the view doesn't have a name", function() {
+      view = mountTestComponent({
+        showRoomName: true
+      });
+
+      expect(view.getDOMNode().classList.contains("showing-room-name")).eql(false);
     });
 
     it("should show timestamps from msgs sent more than 1 min apart", function() {
@@ -540,14 +574,13 @@ describe("loop.shared.views.TextChatView", function () {
 
       store.updateRoomInfo(new sharedActions.UpdateRoomInfo({
         roomName: "A wonderful surprise!",
-        roomOwner: "Chris",
         roomUrl: "Fake"
       }));
 
       var node = view.getDOMNode();
       expect(node.querySelector(".text-chat-entries")).to.not.eql(null);
 
-      var entries = node.querySelectorAll(".text-chat-entry");
+      var entries = node.querySelectorAll(".text-chat-header");
       expect(entries.length).eql(1);
       expect(entries[0].classList.contains("special")).eql(true);
       expect(entries[0].classList.contains("room-name")).eql(true);
@@ -558,9 +591,8 @@ describe("loop.shared.views.TextChatView", function () {
 
       store.updateRoomInfo(new sharedActions.UpdateRoomInfo({
         roomName: "A Very Long Conversation Name",
-        roomOwner: "fake",
         roomUrl: "http://showcase",
-        urls: [{
+        roomContextUrls: [{
           description: "A wonderful page!",
           location: "http://wonderful.invalid"
           // use the fallback thumbnail

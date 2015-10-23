@@ -75,6 +75,7 @@ class AtomStateEntry
     }
 
     JSAtom* asPtr() const;
+    JSAtom* asPtrUnbarriered() const;
 };
 
 struct AtomHasher
@@ -176,7 +177,6 @@ extern const char js_import_str[];
 extern const char js_in_str[];
 extern const char js_instanceof_str[];
 extern const char js_interface_str[];
-extern const char js_new_str[];
 extern const char js_package_str[];
 extern const char js_private_str[];
 extern const char js_protected_str[];

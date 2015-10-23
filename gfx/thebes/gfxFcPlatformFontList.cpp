@@ -21,6 +21,8 @@
 #include "nsDirectoryServiceDefs.h"
 #include "nsAppDirectoryServiceDefs.h"
 
+#include "mozilla/gfx/HelpersCairo.h"
+
 #include <fontconfig/fcfreetype.h>
 
 #ifdef MOZ_WIDGET_GTK
@@ -254,8 +256,10 @@ gfxFontconfigFontEntry::gfxFontconfigFontEntry(const nsAString& aFaceName,
     if (FcPatternGetInteger(aFontPattern, FC_SLANT, 0, &slant) != FcResultMatch) {
         slant = FC_SLANT_ROMAN;
     }
-    if (slant > 0) {
-        mItalic = true;
+    if (slant == FC_SLANT_OBLIQUE) {
+        mStyle = NS_FONT_STYLE_OBLIQUE;
+    } else if (slant > 0) {
+        mStyle = NS_FONT_STYLE_ITALIC;
     }
 
     // weight
@@ -276,7 +280,7 @@ gfxFontconfigFontEntry::gfxFontconfigFontEntry(const nsAString& aFaceName,
 gfxFontconfigFontEntry::gfxFontconfigFontEntry(const nsAString& aFaceName,
                                                uint16_t aWeight,
                                                int16_t aStretch,
-                                               bool aItalic,
+                                               uint8_t aStyle,
                                                const uint8_t *aData,
                                                FT_Face aFace)
     : gfxFontEntry(aFaceName),
@@ -284,7 +288,7 @@ gfxFontconfigFontEntry::gfxFontconfigFontEntry(const nsAString& aFaceName,
       mAspect(0.0), mFontData(aData)
 {
     mWeight = aWeight;
-    mItalic = aItalic;
+    mStyle = aStyle;
     mStretch = aStretch;
     mIsDataUserFont = true;
 
@@ -317,13 +321,13 @@ gfxFontconfigFontEntry::gfxFontconfigFontEntry(const nsAString& aFaceName,
                                                FcPattern* aFontPattern,
                                                uint16_t aWeight,
                                                int16_t aStretch,
-                                               bool aItalic)
+                                               uint8_t aStyle)
         : gfxFontEntry(aFaceName), mFontPattern(aFontPattern),
           mFTFace(nullptr), mFTFaceInitialized(false),
           mAspect(0.0), mFontData(nullptr)
 {
     mWeight = aWeight;
-    mItalic = aItalic;
+    mStyle = aStyle;
     mStretch = aStretch;
     mIsLocalUserFont = true;
 }
@@ -366,9 +370,9 @@ gfxFontconfigFontEntry::ReadCMAP(FontInfoData *aFontInfoData)
         return NS_OK;
     }
 
-    nsRefPtr<gfxCharacterMap> charmap;
+    RefPtr<gfxCharacterMap> charmap;
     nsresult rv;
-    bool symbolFont;
+    bool symbolFont = false; // currently ignored
 
     if (aFontInfoData && (charmap = GetCMAPFromFontInfo(aFontInfoData,
                                                         mUVSOffset,
@@ -380,7 +384,7 @@ gfxFontconfigFontEntry::ReadCMAP(FontInfoData *aFontInfoData)
         AutoTable cmapTable(this, kCMAP);
 
         if (cmapTable) {
-            bool unicodeFont = false, symbolFont = false; // currently ignored
+            bool unicodeFont = false; // currently ignored
             uint32_t cmapLen;
             const uint8_t* cmapData =
                 reinterpret_cast<const uint8_t*>(hb_blob_get_data(cmapTable,
@@ -486,7 +490,7 @@ gfxFontconfigFontEntry::GetAspect()
         // create a font to calculate x-height / em-height
         gfxFontStyle s;
         s.size = 100.0; // pick large size to avoid possible hinting artifacts
-        nsRefPtr<gfxFont> font = FindOrMakeFont(&s, false);
+        RefPtr<gfxFont> font = FindOrMakeFont(&s, false);
         if (font) {
             const gfxFont::Metrics& metrics =
                 font->GetMetrics(gfxFont::eHorizontal);
@@ -668,9 +672,9 @@ gfxFontconfigFontEntry::CreateScaledFont(FcPattern* aRenderPattern,
     }
 
     // synthetic oblique by skewing via the font matrix
-    bool needsOblique = !IsItalic() &&
-            (aStyle->style & (NS_FONT_STYLE_ITALIC | NS_FONT_STYLE_OBLIQUE)) &&
-            aStyle->allowSyntheticStyle;
+    bool needsOblique = IsUpright() &&
+                        aStyle->style != NS_FONT_STYLE_NORMAL &&
+                        aStyle->allowSyntheticStyle;
 
     if (needsOblique) {
         // disable embedded bitmaps (mimics behavior in 90-synthetic.conf)
@@ -861,7 +865,8 @@ gfxFontconfigFontFamily::FindStyleVariations(FontInfoData *aFontInfoData)
                  " psname: %s fullname: %s",
                  NS_ConvertUTF16toUTF8(fontEntry->Name()).get(),
                  NS_ConvertUTF16toUTF8(Name()).get(),
-                 fontEntry->IsItalic() ? "italic" : "normal",
+                 (fontEntry->IsItalic()) ?
+                  "italic" : (fontEntry->IsOblique() ? "oblique" : "normal"),
                  fontEntry->Weight(), fontEntry->Stretch(),
                  NS_ConvertUTF16toUTF8(psname).get(),
                  NS_ConvertUTF16toUTF8(fullname).get()));
@@ -902,27 +907,18 @@ gfxFontconfigFont::GetGlyphRenderingOptions(const TextRunDrawParams* aRunParams)
   cairo_font_options_t *options = cairo_font_options_create();
   cairo_scaled_font_get_font_options(scaled_font, options);
   cairo_hint_style_t hint_style = cairo_font_options_get_hint_style(options);
+  cairo_antialias_t antialias = cairo_font_options_get_antialias(options);
   cairo_font_options_destroy(options);
 
-  mozilla::gfx::FontHinting hinting;
+  mozilla::gfx::FontHinting hinting =
+    mozilla::gfx::CairoHintingToGfxHinting(hint_style);
 
-  switch (hint_style) {
-    case CAIRO_HINT_STYLE_NONE:
-      hinting = mozilla::gfx::FontHinting::NONE;
-      break;
-    case CAIRO_HINT_STYLE_SLIGHT:
-      hinting = mozilla::gfx::FontHinting::LIGHT;
-      break;
-    case CAIRO_HINT_STYLE_FULL:
-      hinting = mozilla::gfx::FontHinting::FULL;
-      break;
-    default:
-      hinting = mozilla::gfx::FontHinting::NORMAL;
-      break;
-  }
+  mozilla::gfx::AntialiasMode aaMode =
+    mozilla::gfx::CairoAntialiasToGfxAntialias(antialias);
 
   // We don't want to force the use of the autohinter over the font's built in hints
-  return mozilla::gfx::Factory::CreateCairoGlyphRenderingOptions(hinting, false);
+  // The fontconfig AA mode must be passed along because it may override the hinting style.
+  return mozilla::gfx::Factory::CreateCairoGlyphRenderingOptions(hinting, false, aaMode);
 }
 #endif
 
@@ -1179,7 +1175,7 @@ gfxFontEntry*
 gfxFcPlatformFontList::LookupLocalFont(const nsAString& aFontName,
                                        uint16_t aWeight,
                                        int16_t aStretch,
-                                       bool aItalic)
+                                       uint8_t aStyle)
 {
     nsAutoString keyName(aFontName);
     ToLowerCase(keyName);
@@ -1192,14 +1188,14 @@ gfxFcPlatformFontList::LookupLocalFont(const nsAString& aFontName,
 
     return new gfxFontconfigFontEntry(aFontName,
                                       fontPattern,
-                                      aWeight, aStretch, aItalic);
+                                      aWeight, aStretch, aStyle);
 }
 
 gfxFontEntry*
 gfxFcPlatformFontList::MakePlatformFont(const nsAString& aFontName,
                                         uint16_t aWeight,
                                         int16_t aStretch,
-                                        bool aItalic,
+                                        uint8_t aStyle,
                                         const uint8_t* aFontData,
                                         uint32_t aLength)
 {
@@ -1217,17 +1213,16 @@ gfxFcPlatformFontList::MakePlatformFont(const nsAString& aFontName,
         return nullptr;
     }
 
-    return new gfxFontconfigFontEntry(aFontName, aWeight, aStretch, aItalic,
-                                      aFontData, face);
+    return new gfxFontconfigFontEntry(aFontName, aWeight, aStretch,
+                                      aStyle, aFontData, face);
 }
 
 gfxFontFamily*
-gfxFcPlatformFontList::FindFamily(const nsAString& aFamily,
-                                  nsIAtom* aLanguage,
-                                  bool aUseSystemFonts)
+gfxFcPlatformFontList::FindFamily(const nsAString& aFamily, gfxFontStyle* aStyle)
 {
     nsAutoString familyName(aFamily);
     ToLowerCase(familyName);
+    nsIAtom* language = (aStyle ? aStyle->language.get() : nullptr);
 
     // deprecated generic names are explicitly converted to standard generics
     bool isDeprecatedGeneric = false;
@@ -1243,7 +1238,7 @@ gfxFcPlatformFontList::FindFamily(const nsAString& aFamily,
     // fontconfig generics? use fontconfig to determine the family for lang
     if (isDeprecatedGeneric ||
         mozilla::FontFamilyName::Convert(familyName).IsGeneric()) {
-        return FindGenericFamily(familyName, aLanguage);
+        return FindGenericFamily(familyName, language);
     }
 
     // fontconfig allows conditional substitutions in such a way that it's
@@ -1351,7 +1346,7 @@ gfxFcPlatformFontList::GetFTLibrary()
         if (!fe) {
             return nullptr;
         }
-        nsRefPtr<gfxFont> font = fe->FindOrMakeFont(&style, false);
+        RefPtr<gfxFont> font = fe->FindOrMakeFont(&style, false);
         if (!font) {
             return nullptr;
         }
@@ -1516,5 +1511,3 @@ ApplyGdkScreenFontOptions(FcPattern *aPattern)
 }
 
 #endif // MOZ_WIDGET_GTK2
-
-

@@ -316,9 +316,8 @@ nsComboboxControlFrame::ShowPopup(bool aShowPopup)
 
   // fire a popup dom event
   nsEventStatus status = nsEventStatus_eIgnore;
-  WidgetMouseEvent event(true, aShowPopup ?
-                         NS_XUL_POPUP_SHOWING : NS_XUL_POPUP_HIDING, nullptr,
-                         WidgetMouseEvent::eReal);
+  WidgetMouseEvent event(true, aShowPopup ? eXULPopupShowing : eXULPopupHiding,
+                         nullptr, WidgetMouseEvent::eReal);
 
   nsCOMPtr<nsIPresShell> shell = PresContext()->GetPresShell();
   if (shell)
@@ -695,7 +694,7 @@ nsComboboxControlFrame::NotifyGeometryChange()
       !mDelayedShowDropDown) {
     // Async because we're likely in a middle of a scroll here so
     // frame/view positions are in flux.
-    nsRefPtr<nsResizeDropdownAtFinalPosition> resize =
+    RefPtr<nsResizeDropdownAtFinalPosition> resize =
       new nsResizeDropdownAtFinalPosition(this);
     NS_DispatchToCurrentThread(resize);
   }
@@ -838,7 +837,7 @@ nsComboboxControlFrame::Reflow(nsPresContext*          aPresContext,
 
   // First reflow our dropdown so that we know how tall we should be.
   ReflowDropdown(aPresContext, aReflowState);
-  nsRefPtr<nsResizeDropdownAtFinalPosition> resize =
+  RefPtr<nsResizeDropdownAtFinalPosition> resize =
     new nsResizeDropdownAtFinalPosition(this);
   if (NS_SUCCEEDED(aPresContext->PresShell()->PostReflowCallback(resize))) {
     // The reflow callback queue doesn't AddRef so we keep it alive until
@@ -993,7 +992,7 @@ nsComboboxControlFrame::RedisplayText(int32_t aIndex)
                  "If we happen to run our redisplay event now, we might kill "
                  "ourselves!");
 
-    nsRefPtr<RedisplayTextEvent> event = new RedisplayTextEvent(this);
+    RefPtr<RedisplayTextEvent> event = new RedisplayTextEvent(this);
     mRedisplayTextEvent = event;
     if (!nsContentUtils::AddScriptRunner(event))
       mRedisplayTextEvent.Forget();
@@ -1133,7 +1132,7 @@ nsComboboxControlFrame::HandleEvent(nsPresContext* aPresContext,
   }
 
 #if COMBOBOX_ROLLUP_CONSUME_EVENT == 0
-  if (aEvent->message == NS_MOUSE_BUTTON_DOWN) {
+  if (aEvent->mMessage == eMouseDown) {
     nsIWidget* widget = GetNearestWidget();
     if (widget && GetContent() == widget->GetLastRollup()) {
       // This event did a Rollup on this control - prevent it from opening
@@ -1348,13 +1347,13 @@ nsComboboxControlFrame::CreateFrameFor(nsIContent*      aContent)
   nsStyleSet *styleSet = shell->StyleSet();
 
   // create the style contexts for the anonymous block frame and text frame
-  nsRefPtr<nsStyleContext> styleContext;
+  RefPtr<nsStyleContext> styleContext;
   styleContext = styleSet->
     ResolveAnonymousBoxStyle(nsCSSAnonBoxes::mozDisplayComboboxControlFrame,
                              mStyleContext,
                              nsStyleSet::eSkipParentDisplayBasedStyleFixup);
 
-  nsRefPtr<nsStyleContext> textStyleContext;
+  RefPtr<nsStyleContext> textStyleContext;
   textStyleContext = styleSet->ResolveStyleForNonElement(mStyleContext);
 
   // Start by creating our anonymous block frame

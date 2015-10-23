@@ -26,7 +26,14 @@ FontInfoData::Load()
     uint32_t i, n = mFontFamiliesToLoad.Length();
     mLoadStats.families = n;
     for (i = 0; i < n; i++) {
-        LoadFontFamilyData(mFontFamiliesToLoad[i]);
+        // font file memory mapping sometimes causes exceptions - bug 1100949
+        MOZ_SEH_TRY {
+            LoadFontFamilyData(mFontFamiliesToLoad[i]);
+        } MOZ_SEH_EXCEPT(EXCEPTION_EXECUTE_HANDLER) {
+            gfxCriticalError() <<
+                "Exception occurred reading font data for " <<
+                NS_ConvertUTF16toUTF8(mFontFamiliesToLoad[i]).get();
+        }
     }
 
     mLoadTime = TimeStamp::Now() - start;
@@ -43,7 +50,7 @@ class FontInfoLoadCompleteEvent : public nsRunnable {
 
     NS_IMETHOD Run() override;
 
-    nsRefPtr<FontInfoData> mFontInfo;
+    RefPtr<FontInfoData> mFontInfo;
 };
 
 class AsyncFontInfoLoader : public nsRunnable {
@@ -59,8 +66,8 @@ class AsyncFontInfoLoader : public nsRunnable {
 
     NS_IMETHOD Run() override;
 
-    nsRefPtr<FontInfoData> mFontInfo;
-    nsRefPtr<FontInfoLoadCompleteEvent> mCompleteEvent;
+    RefPtr<FontInfoData> mFontInfo;
+    RefPtr<FontInfoLoadCompleteEvent> mCompleteEvent;
 };
 
 class ShutdownThreadEvent : public nsRunnable {

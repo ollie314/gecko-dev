@@ -20,8 +20,11 @@
 #include "nsCOMArray.h"
 #include "nsDataHashtable.h"
 
+namespace mozilla {
+class OriginAttributesPattern;
+}
+
 class nsIPermission;
-class nsIIDNService;
 class mozIStorageConnection;
 class mozIStorageAsyncStatement;
 
@@ -195,12 +198,15 @@ public:
                        const bool aIgnoreSessionPermissions = false);
 
   /**
-   * Initialize the "webapp-uninstall" observing.
+   * Initialize the "clear-origin-data" observing.
    * Will create a nsPermissionManager instance if needed.
    * That way, we can prevent have nsPermissionManager created at startup just
    * to be able to clear data when an application is uninstalled.
    */
-  static void AppClearDataObserverInit();
+  static void ClearOriginDataObserverInit();
+
+  nsresult
+  RemovePermissionsWithAttributes(mozilla::OriginAttributesPattern& aAttrs);
 
 private:
   virtual ~nsPermissionManager();
@@ -239,7 +245,6 @@ private:
 
   nsresult RemoveAllInternal(bool aNotifyObservers);
   nsresult RemoveAllFromMemory();
-  nsresult NormalizeToACE(nsCString &aHost);
   static void UpdateDB(OperationType aOp,
                        mozIStorageAsyncStatement* aStmt,
                        int64_t aID,
@@ -263,8 +268,6 @@ private:
    */
   nsresult
   FetchPermissions();
-
-  nsCOMPtr<nsIIDNService>      mIDNService;
 
   nsCOMPtr<mozIStorageConnection> mDBConn;
   nsCOMPtr<mozIStorageAsyncStatement> mStmtInsert;

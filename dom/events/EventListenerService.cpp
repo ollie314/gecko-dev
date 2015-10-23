@@ -226,7 +226,7 @@ EventListenerService::GetEventTargetChainFor(nsIDOMEventTarget* aEventTarget,
   *aCount = 0;
   *aOutArray = nullptr;
   NS_ENSURE_ARG(aEventTarget);
-  WidgetEvent event(true, NS_EVENT_NULL);
+  WidgetEvent event(true, eVoidEvent);
   nsTArray<EventTarget*> targets;
   nsresult rv = EventDispatcher::Dispatch(aEventTarget, nullptr, &event,
                                           nullptr, nullptr, nullptr, &targets);
@@ -376,7 +376,7 @@ EventListenerService::NotifyAboutMainThreadListenerChangeInternal(dom::EventTarg
     NS_DispatchToCurrentThread(runnable);
   }
 
-  nsRefPtr<EventListenerChange> changes = mPendingListenerChangesSet.Get(aTarget);
+  RefPtr<EventListenerChange> changes = mPendingListenerChangesSet.Get(aTarget);
   if (!changes) {
     changes = new EventListenerChange(aTarget);
     mPendingListenerChanges->AppendElement(changes, false);

@@ -17,7 +17,7 @@ MutationEvent::MutationEvent(EventTarget* aOwner,
                              nsPresContext* aPresContext,
                              InternalMutationEvent* aEvent)
   : Event(aOwner, aPresContext,
-          aEvent ? aEvent : new InternalMutationEvent(false, 0))
+          aEvent ? aEvent : new InternalMutationEvent(false, eVoidEvent))
 {
   mEventIsInternal = (aEvent == nullptr);
 }
@@ -124,6 +124,6 @@ NS_NewDOMMutationEvent(EventTarget* aOwner,
                        nsPresContext* aPresContext,
                        InternalMutationEvent* aEvent) 
 {
-  nsRefPtr<MutationEvent> it = new MutationEvent(aOwner, aPresContext, aEvent);
+  RefPtr<MutationEvent> it = new MutationEvent(aOwner, aPresContext, aEvent);
   return it.forget();
 }

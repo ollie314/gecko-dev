@@ -143,8 +143,17 @@ StrokeOptionsToPaint(SkPaint& aPaint, const StrokeOptions &aOptions)
 
     for (uint32_t i = 0; i < dashCount; i++) {
       pattern[i] = SkFloatToScalar(aOptions.mDashPattern[i % aOptions.mDashLength]);
-      if (!pattern[i])
-          pattern[i] = SK_ScalarNearlyZero;
+      // bugs 1002466 & 1214309 - Dash intervals that are (close to) zero
+      // are skipped, ignoring other stroke settings. Nudge the dash interval
+      // to be just large enough that it is not interpreted as degenerate.
+      // Ideally this value would just be SK_ScalarNearlyZero, the smallest
+      // reasonable value that is not zero. But error in FP operations may
+      // cause dash intervals to result in a value less than this and still
+      // be skipped. To give some headroom to allow the value to still come
+      // out greater-than-but-still-close-to SK_ScalarNearlyZero, fudge it
+      // upward by *33/32.
+      if (pattern[i] == 0)
+          pattern[i] = SkScalarMulDiv(SK_ScalarNearlyZero, 33, 32);
     }
 
     SkDashPathEffect* dash = SkDashPathEffect::Create(&pattern.front(),
@@ -235,6 +244,12 @@ static inline SkColor ColorToSkColor(const Color &color, Float aAlpha)
                         ColorFloatToByte(color.g), ColorFloatToByte(color.b));
 }
 
+static inline SkPoint
+PointToSkPoint(const Point &aPoint)
+{
+  return SkPoint::Make(SkFloatToScalar(aPoint.x), SkFloatToScalar(aPoint.y));
+}
+
 static inline SkRect
 RectToSkRect(const Rect& aRect)
 {
@@ -288,6 +303,22 @@ ExtendModeToTileMode(ExtendMode aMode)
       return SkShader::kMirror_TileMode;
   }
   return SkShader::kClamp_TileMode;
+}
+
+static inline SkPaint::Hinting
+GfxHintingToSkiaHinting(FontHinting aHinting)
+{
+  switch (aHinting) {
+    case FontHinting::NONE:
+      return SkPaint::kNo_Hinting;
+    case FontHinting::LIGHT:
+      return SkPaint::kSlight_Hinting;
+    case FontHinting::NORMAL:
+      return SkPaint::kNormal_Hinting;
+    case FontHinting::FULL:
+      return SkPaint::kFull_Hinting;
+  }
+  return SkPaint::kNormal_Hinting;
 }
 
 } // namespace gfx

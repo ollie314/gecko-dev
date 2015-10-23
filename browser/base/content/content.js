@@ -6,7 +6,7 @@
 /* This content script should work in any browser or iframe and should not
  * depend on the frame being contained in tabbrowser. */
 
-let {classes: Cc, interfaces: Ci, utils: Cu, results: Cr} = Components;
+var {classes: Cc, interfaces: Ci, utils: Cu, results: Cr} = Components;
 
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
@@ -14,6 +14,7 @@ Cu.import("resource:///modules/ContentWebRTC.jsm");
 Cu.import("resource:///modules/ContentObservers.jsm");
 Cu.import("resource://gre/modules/InlineSpellChecker.jsm");
 Cu.import("resource://gre/modules/InlineSpellCheckerContent.jsm");
+Cu.import("resource://gre/modules/Task.jsm");
 
 XPCOMUtils.defineLazyModuleGetter(this, "BrowserUtils",
   "resource://gre/modules/BrowserUtils.jsm");
@@ -38,8 +39,8 @@ XPCOMUtils.defineLazyGetter(this, "PageMenuChild", function() {
   Cu.import("resource://gre/modules/PageMenu.jsm", tmp);
   return new tmp.PageMenuChild();
 });
-
-XPCOMUtils.defineLazyModuleGetter(this, "Feeds", "resource:///modules/Feeds.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "Feeds",
+  "resource:///modules/Feeds.jsm");
 
 // TabChildGlobal
 var global = this;
@@ -71,7 +72,7 @@ addEventListener("blur", function(event) {
   LoginManagerContent.onUsernameInput(event);
 });
 
-let handleContentContextMenu = function (event) {
+var handleContentContextMenu = function (event) {
   let defaultPrevented = event.defaultPrevented;
   if (!Services.prefs.getBoolPref("dom.event.contextmenu.enabled")) {
     let plugin = null;
@@ -106,6 +107,7 @@ let handleContentContextMenu = function (event) {
   let frameOuterWindowID = doc.defaultView.QueryInterface(Ci.nsIInterfaceRequestor)
                                           .getInterface(Ci.nsIDOMWindowUtils)
                                           .outerWindowID;
+  let loginFillInfo = LoginManagerContent.getFieldContext(event.target);
 
   // get referrer attribute from clicked link and parse it
   // if per element referrer is enabled, the element referrer overrules
@@ -167,7 +169,8 @@ let handleContentContextMenu = function (event) {
                    { editFlags, spellInfo, customMenuItems, addonInfo,
                      principal, docLocation, charSet, baseURI, referrer,
                      referrerPolicy, contentType, contentDisposition,
-                     frameOuterWindowID, selectionInfo, disableSetDesktopBg },
+                     frameOuterWindowID, selectionInfo, disableSetDesktopBg,
+                     loginFillInfo, },
                    { event, popupNode: event.target });
   }
   else {
@@ -189,6 +192,7 @@ let handleContentContextMenu = function (event) {
       contentDisposition: contentDisposition,
       selectionInfo: selectionInfo,
       disableSetDesktopBackground: disableSetDesktopBg,
+      loginFillInfo,
     };
   }
 }
@@ -203,12 +207,13 @@ const TLS_ERROR_REPORT_TELEMETRY_EXPANDED = 1;
 const TLS_ERROR_REPORT_TELEMETRY_SUCCESS  = 6;
 const TLS_ERROR_REPORT_TELEMETRY_FAILURE  = 7;
 
-let AboutNetErrorListener = {
+var AboutNetErrorListener = {
   init: function(chromeGlobal) {
     chromeGlobal.addEventListener('AboutNetErrorLoad', this, false, true);
     chromeGlobal.addEventListener('AboutNetErrorSetAutomatic', this, false, true);
     chromeGlobal.addEventListener('AboutNetErrorSendReport', this, false, true);
     chromeGlobal.addEventListener('AboutNetErrorUIExpanded', this, false, true);
+    chromeGlobal.addEventListener('AboutNetErrorOverride', this, false, true);
   },
 
   get isAboutNetError() {
@@ -233,6 +238,9 @@ let AboutNetErrorListener = {
     case "AboutNetErrorUIExpanded":
       sendAsyncMessage("Browser:SSLErrorReportTelemetry",
                        {reportStatus: TLS_ERROR_REPORT_TELEMETRY_EXPANDED});
+      break;
+    case "AboutNetErrorOverride":
+      this.onOverride(aEvent);
       break;
     }
   },
@@ -326,13 +334,23 @@ let AboutNetErrorListener = {
         location: {hostname: contentDoc.location.hostname, port: contentDoc.location.port},
         securityInfo: serializedSecurityInfo
       });
+  },
+
+  onOverride: function(evt) {
+    let contentDoc = content.document;
+    let location = contentDoc.location;
+
+    sendAsyncMessage("Browser:OverrideWeakCrypto", {
+      documentURI: contentDoc.documentURI,
+      location: {hostname: location.hostname, port: location.port}
+    });
   }
 }
 
 AboutNetErrorListener.init(this);
 
 
-let ClickEventHandler = {
+var ClickEventHandler = {
   init: function init() {
     Cc["@mozilla.org/eventlistenerservice;1"]
       .getService(Ci.nsIEventListenerService)
@@ -514,7 +532,7 @@ ClickEventHandler.init();
 ContentLinkHandler.init(this);
 
 // TODO: Load this lazily so the JSM is run only if a relevant event/message fires.
-let pluginContent = new PluginContent(global);
+var pluginContent = new PluginContent(global);
 
 addEventListener("DOMWebNotificationClicked", function(event) {
   sendAsyncMessage("DOMWebNotificationClicked", {});
@@ -546,7 +564,7 @@ addEventListener("pageshow", function(event) {
   }
 });
 
-let PageMetadataMessenger = {
+var PageMetadataMessenger = {
   init() {
     addMessageListener("PageMetadata:GetPageData", this);
     addMessageListener("PageMetadata:GetMicrodata", this);
@@ -749,7 +767,15 @@ addMessageListener("ContextMenu:SearchFieldBookmarkData", (message) => {
                    { spec, title, description, postData, charset });
 });
 
-let LightWeightThemeWebInstallListener = {
+addMessageListener("Bookmarks:GetPageDetails", (message) => {
+  let doc = content.document;
+  let isErrorPage = /^about:(neterror|certerror|blocked)/.test(doc.documentURI);
+  sendAsyncMessage("Bookmarks:GetPageDetails:Result",
+                   { isErrorPage: isErrorPage,
+                     description: PlacesUIUtils.getDescriptionFromDocument(doc) });
+});
+
+var LightWeightThemeWebInstallListener = {
   _previewWindow: null,
 
   init: function() {
@@ -849,53 +875,44 @@ addMessageListener("ContextMenu:SetAsDesktopBackground", (message) => {
     sendAsyncMessage("ContextMenu:SetAsDesktopBackground:Result", { disable });
 });
 
-let pageInfoListener = {
+var PageInfoListener = {
 
-  init: function(chromeGlobal) {
-    chromeGlobal.addMessageListener("PageInfo:getData", this, false, true);
+  init: function() {
+    addMessageListener("PageInfo:getData", this);
   },
 
   receiveMessage: function(message) {
-    this.imageViewRows = [];
-    this.frameList = [];
-    this.strings = message.data.strings;
+    let strings = message.data.strings;
+    let window;
+    let document;
 
     let frameOuterWindowID = message.data.frameOuterWindowID;
 
     // If inside frame then get the frame's window and document.
     if (frameOuterWindowID) {
-      this.window = Services.wm.getOuterWindowWithId(frameOuterWindowID);
-      this.document = this.window.document;
+      window = Services.wm.getOuterWindowWithId(frameOuterWindowID);
+      document = window.document;
     }
     else {
-      this.document = content.document;
-      this.window = content.window;
+      window = content.window;
+      document = content.document;
     }
 
-    let pageInfoData = {metaViewRows: this.getMetaInfo(), docInfo: this.getDocumentInfo(),
-                        feeds: this.getFeedsInfo(), windowInfo: this.getWindowInfo()};
+    let pageInfoData = {metaViewRows: this.getMetaInfo(document),
+                        docInfo: this.getDocumentInfo(document),
+                        feeds: this.getFeedsInfo(document, strings),
+                        windowInfo: this.getWindowInfo(window)};
     sendAsyncMessage("PageInfo:data", pageInfoData);
 
     // Separate step so page info dialog isn't blank while waiting for this to finish.
-    this.getMediaInfo();
-
-    // Send the message after all the media elements have been walked through.
-    let pageInfoMediaData = {imageViewRows: this.imageViewRows};
-
-    this.imageViewRows = null;
-    this.frameList = null;
-    this.strings = null;
-    this.window = null;
-    this.document = null;
-
-    sendAsyncMessage("PageInfo:mediaData", pageInfoMediaData);
+    this.getMediaInfo(document, window, strings);
   },
 
-  getMetaInfo: function() {
+  getMetaInfo: function(document) {
     let metaViewRows = [];
 
     // Get the meta tags from the page.
-    let metaNodes = this.document.getElementsByTagName("meta");
+    let metaNodes = document.getElementsByTagName("meta");
 
     for (let metaNode of metaNodes) {
       metaViewRows.push([metaNode.name || metaNode.httpEquiv || metaNode.getAttribute("property"),
@@ -905,13 +922,13 @@ let pageInfoListener = {
     return metaViewRows;
   },
 
-  getWindowInfo: function() {
+  getWindowInfo: function(window) {
     let windowInfo = {};
-    windowInfo.isTopWindow = this.window == this.window.top;
+    windowInfo.isTopWindow = window == window.top;
 
     let hostName = null;
     try {
-      hostName = this.window.location.host;
+      hostName = window.location.host;
     }
     catch (exception) { }
 
@@ -919,19 +936,19 @@ let pageInfoListener = {
     return windowInfo;
   },
 
-  getDocumentInfo: function() {
+  getDocumentInfo: function(document) {
     let docInfo = {};
-    docInfo.title = this.document.title;
-    docInfo.location = this.document.location.toString();
-    docInfo.referrer = this.document.referrer;
-    docInfo.compatMode = this.document.compatMode;
-    docInfo.contentType = this.document.contentType;
-    docInfo.characterSet = this.document.characterSet;
-    docInfo.lastModified = this.document.lastModified;
+    docInfo.title = document.title;
+    docInfo.location = document.location.toString();
+    docInfo.referrer = document.referrer;
+    docInfo.compatMode = document.compatMode;
+    docInfo.contentType = document.contentType;
+    docInfo.characterSet = document.characterSet;
+    docInfo.lastModified = document.lastModified;
 
     let documentURIObject = {};
-    documentURIObject.spec = this.document.documentURIObject.spec;
-    documentURIObject.originCharset = this.document.documentURIObject.originCharset;
+    documentURIObject.spec = document.documentURIObject.spec;
+    documentURIObject.originCharset = document.documentURIObject.originCharset;
     docInfo.documentURIObject = documentURIObject;
 
     docInfo.isContentWindowPrivate = PrivateBrowsingUtils.isContentWindowPrivate(content);
@@ -939,10 +956,10 @@ let pageInfoListener = {
     return docInfo;
   },
 
-  getFeedsInfo: function() {
+  getFeedsInfo: function(document, strings) {
     let feeds = [];
     // Get the feeds from the page.
-    let linkNodes = this.document.getElementsByTagName("link");
+    let linkNodes = document.getElementsByTagName("link");
     let length = linkNodes.length;
     for (let i = 0; i < length; i++) {
       let link = linkNodes[i];
@@ -953,15 +970,15 @@ let pageInfoListener = {
       let rels = {};
 
       if (rel) {
-        for each (let relVal in rel.split(/\s+/)) {
+        for (let relVal of rel.split(/\s+/)) {
           rels[relVal] = true;
         }
       }
 
       if (rels.feed || (link.type && rels.alternate && !rels.stylesheet)) {
-        let type = Feeds.isValidFeed(link, this.document.nodePrincipal, "feed" in rels);
+        let type = Feeds.isValidFeed(link, document.nodePrincipal, "feed" in rels);
         if (type) {
-          type = this.strings[type] || this.strings["application/rss+xml"];
+          type = strings[type] || strings["application/rss+xml"];
           feeds.push([link.title, type, link.href]);
         }
       }
@@ -970,66 +987,66 @@ let pageInfoListener = {
   },
 
   // Only called once to get the media tab's media elements from the content page.
-  // The actual work is done with a TreeWalker that calls doGrab() once for
-  // each element node in the document.
-  getMediaInfo: function()
+  getMediaInfo: function(document, window, strings)
   {
-    this.goThroughFrames(this.document, this.window);
-    this.processFrames();
+    let frameList = this.goThroughFrames(document, window);
+    Task.spawn(() => this.processFrames(document, frameList, strings));
   },
 
-  goThroughFrames: function(aDocument, aWindow)
+  goThroughFrames: function(document, window)
   {
-    this.frameList.push(aDocument);
-    if (aWindow && aWindow.frames.length > 0) {
-      let num = aWindow.frames.length;
+    let frameList = [document];
+    if (window && window.frames.length > 0) {
+      let num = window.frames.length;
       for (let i = 0; i < num; i++) {
-        this.goThroughFrames(aWindow.frames[i].document, aWindow.frames[i]);  // recurse through the frames
+        // Recurse through the frames.
+        frameList.concat(this.goThroughFrames(window.frames[i].document,
+                                              window.frames[i]));
       }
     }
+    return frameList;
   },
 
-  processFrames: function()
+  processFrames: function*(document, frameList, strings)
   {
-    if (this.frameList.length) {
-      let doc = this.frameList[0];
-      let iterator = doc.createTreeWalker(doc, content.NodeFilter.SHOW_ELEMENT, elem => this.grabAll(elem));
-      this.frameList.shift();
-      this.doGrab(iterator);
-    }
-  },
+    let nodeCount = 0;
+    for (let doc of frameList) {
+      let iterator = doc.createTreeWalker(doc, content.NodeFilter.SHOW_ELEMENT);
 
-  /**
-   * This function's previous purpose in pageInfo.js was to get loop through 500 elements at a time.
-   * The iterator filter will filter for media elements.
-   * #TODO Bug 1175794: refactor pageInfo.js to receive a media element at a time
-   * from messages and continually update UI.
-   */
-  doGrab: function(iterator)
-  {
-    while (true)
-    {
-      if (!iterator.nextNode()) {
-        this.processFrames();
-        return;
+      // Goes through all the elements on the doc. imageViewRows takes only the media elements.
+      while (iterator.nextNode()) {
+        let mediaNode = this.getMediaNode(document, strings, iterator.currentNode);
+
+        if (mediaNode) {
+          sendAsyncMessage("PageInfo:mediaData",
+                           {imageViewRow: mediaNode, isComplete: false});
+        }
+
+        if (++nodeCount % 500 == 0) {
+          // setTimeout every 500 elements so we don't keep blocking the content process.
+          yield new Promise(resolve => setTimeout(resolve, 10));
+        }
       }
     }
+    // Send that page info media fetching has finished.
+    sendAsyncMessage("PageInfo:mediaData", {isComplete: true});
   },
 
-  grabAll: function(elem)
+  getMediaNode: function(document, strings, elem)
   {
     // Check for images defined in CSS (e.g. background, borders), any node may have multiple.
     let computedStyle = elem.ownerDocument.defaultView.getComputedStyle(elem, "");
+    let mediaElement = null;
 
     let addImage = (url, type, alt, elem, isBg) => {
-      let element = this.serializeElementInfo(url, type, alt, elem, isBg);
-      this.imageViewRows.push([url, type, alt, element, isBg]);
+      let element = this.serializeElementInfo(document, url, type, alt, elem, isBg);
+      mediaElement = [url, type, alt, element, isBg];
     };
 
     if (computedStyle) {
       let addImgFunc = (label, val) => {
         if (val.primitiveType == content.CSSPrimitiveValue.CSS_URI) {
-          addImage(val.getStringValue(), label, this.strings.notSet, elem, true);
+          addImage(val.getStringValue(), label, strings.notSet, elem, true);
         }
         else if (val.primitiveType == content.CSSPrimitiveValue.CSS_STRING) {
           // This is for -moz-image-rect.
@@ -1037,7 +1054,7 @@ let pageInfoListener = {
           let strVal = val.getStringValue();
           if (strVal.search(/^.*url\(\"?/) > -1) {
             let url = strVal.replace(/^.*url\(\"?/,"").replace(/\"?\).*$/,"");
-            addImage(url, label, this.strings.notSet, elem, true);
+            addImage(url, label, strings.notSet, elem, true);
           }
         }
         else if (val.cssValueType == content.CSSValue.CSS_VALUE_LIST) {
@@ -1048,50 +1065,50 @@ let pageInfoListener = {
         }
       };
 
-      addImgFunc(this.strings.mediaBGImg, computedStyle.getPropertyCSSValue("background-image"));
-      addImgFunc(this.strings.mediaBorderImg, computedStyle.getPropertyCSSValue("border-image-source"));
-      addImgFunc(this.strings.mediaListImg, computedStyle.getPropertyCSSValue("list-style-image"));
-      addImgFunc(this.strings.mediaCursor, computedStyle.getPropertyCSSValue("cursor"));
+      addImgFunc(strings.mediaBGImg, computedStyle.getPropertyCSSValue("background-image"));
+      addImgFunc(strings.mediaBorderImg, computedStyle.getPropertyCSSValue("border-image-source"));
+      addImgFunc(strings.mediaListImg, computedStyle.getPropertyCSSValue("list-style-image"));
+      addImgFunc(strings.mediaCursor, computedStyle.getPropertyCSSValue("cursor"));
     }
 
     // One swi^H^H^Hif-else to rule them all.
     if (elem instanceof content.HTMLImageElement) {
-      addImage(elem.src, this.strings.mediaImg,
-               (elem.hasAttribute("alt")) ? elem.alt : this.strings.notSet, elem, false);
+      addImage(elem.src, strings.mediaImg,
+               (elem.hasAttribute("alt")) ? elem.alt : strings.notSet, elem, false);
     }
     else if (elem instanceof content.SVGImageElement) {
       try {
         // Note: makeURLAbsolute will throw if either the baseURI is not a valid URI
         //       or the URI formed from the baseURI and the URL is not a valid URI.
         let href = makeURLAbsolute(elem.baseURI, elem.href.baseVal);
-        addImage(href, this.strings.mediaImg, "", elem, false);
+        addImage(href, strings.mediaImg, "", elem, false);
       } catch (e) { }
     }
     else if (elem instanceof content.HTMLVideoElement) {
-      addImage(elem.currentSrc, this.strings.mediaVideo, "", elem, false);
+      addImage(elem.currentSrc, strings.mediaVideo, "", elem, false);
     }
     else if (elem instanceof content.HTMLAudioElement) {
-      addImage(elem.currentSrc, this.strings.mediaAudio, "", elem, false);
+      addImage(elem.currentSrc, strings.mediaAudio, "", elem, false);
     }
     else if (elem instanceof content.HTMLLinkElement) {
       if (elem.rel && /\bicon\b/i.test(elem.rel)) {
-        addImage(elem.href, this.strings.mediaLink, "", elem, false);
+        addImage(elem.href, strings.mediaLink, "", elem, false);
       }
     }
     else if (elem instanceof content.HTMLInputElement || elem instanceof content.HTMLButtonElement) {
       if (elem.type.toLowerCase() == "image") {
-        addImage(elem.src, this.strings.mediaInput,
-                 (elem.hasAttribute("alt")) ? elem.alt : this.strings.notSet, elem, false);
+        addImage(elem.src, strings.mediaInput,
+                 (elem.hasAttribute("alt")) ? elem.alt : strings.notSet, elem, false);
       }
     }
     else if (elem instanceof content.HTMLObjectElement) {
-      addImage(elem.data, this.strings.mediaObject, this.getValueText(elem), elem, false);
+      addImage(elem.data, strings.mediaObject, this.getValueText(elem), elem, false);
     }
     else if (elem instanceof content.HTMLEmbedElement) {
-      addImage(elem.src, this.strings.mediaEmbed, "", elem, false);
+      addImage(elem.src, strings.mediaEmbed, "", elem, false);
     }
 
-    return content.NodeFilter.FILTER_ACCEPT;
+    return mediaElement;
   },
 
   /**
@@ -1099,17 +1116,14 @@ let pageInfoListener = {
    * makePreview in pageInfo.js uses to figure out how to display the preview.
    */
 
-  serializeElementInfo: function(url, type, alt, item, isBG)
+  serializeElementInfo: function(document, url, type, alt, item, isBG)
   {
-    // Interface for image loading content.
-    const nsIImageLoadingContent = Components.interfaces.nsIImageLoadingContent;
-
     let result = {};
 
     let imageText;
     if (!isBG &&
         !(item instanceof content.SVGImageElement) &&
-        !(this.document instanceof content.ImageDocument)) {
+        !(document instanceof content.ImageDocument)) {
       imageText = item.title || item.alt;
 
       if (!imageText && !(item instanceof content.HTMLImageElement)) {
@@ -1127,10 +1141,9 @@ let pageInfoListener = {
       result.mimeType = item.type;
     }
 
-    if (!result.mimeType && !isBG && item instanceof nsIImageLoadingContent) {
+    if (!result.mimeType && !isBG && item instanceof Ci.nsIImageLoadingContent) {
       // Interface for image loading content.
-      const nsIImageLoadingContent = Components.interfaces.nsIImageLoadingContent;
-      let imageRequest = item.getRequest(nsIImageLoadingContent.CURRENT_REQUEST);
+      let imageRequest = item.getRequest(Ci.nsIImageLoadingContent.CURRENT_REQUEST);
       if (imageRequest) {
         result.mimeType = imageRequest.mimeType;
         let image = !(imageRequest.imageStatus & imageRequest.STATUS_ERROR) && imageRequest.image;
@@ -1140,7 +1153,7 @@ let pageInfoListener = {
       }
     }
 
-    // if we have a data url, get the MIME type from the url
+    // If we have a data url, get the MIME type from the url.
     if (!result.mimeType && url.startsWith("data:")) {
       let dataMimeType = /^data:(image\/[^;,]+)/i.exec(url);
       if (dataMimeType)
@@ -1155,7 +1168,18 @@ let pageInfoListener = {
     result.HTMLVideoElement = item instanceof content.HTMLVideoElement;
     result.HTMLAudioElement = item instanceof content.HTMLAudioElement;
 
-    if (!isBG) {
+    if (isBG) {
+      // Items that are showing this image as a background
+      // image might not necessarily have a width or height,
+      // so we'll dynamically generate an image and send up the
+      // natural dimensions.
+      let img = content.document.createElement("img");
+      img.src = url;
+      result.naturalWidth = img.naturalWidth;
+      result.naturalHeight = img.naturalHeight;
+    } else {
+      // Otherwise, we can use the current width and height
+      // of the image.
       result.width = item.width;
       result.height = item.height;
     }
@@ -1240,4 +1264,4 @@ let pageInfoListener = {
     return text.replace(endRE, "");
   }
 };
-pageInfoListener.init(this);
+PageInfoListener.init();

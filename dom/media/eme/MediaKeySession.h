@@ -41,6 +41,7 @@ public:
                   nsPIDOMWindow* aParent,
                   MediaKeys* aKeys,
                   const nsAString& aKeySystem,
+                  const nsAString& aCDMVersion,
                   SessionType aSessionType,
                   ErrorResult& aRv);
 
@@ -101,17 +102,18 @@ private:
   already_AddRefed<DetailedPromise> MakePromise(ErrorResult& aRv,
                                                 const nsACString& aName);
 
-  nsRefPtr<DetailedPromise> mClosed;
+  RefPtr<DetailedPromise> mClosed;
 
-  nsRefPtr<MediaKeyError> mMediaKeyError;
-  nsRefPtr<MediaKeys> mKeys;
+  RefPtr<MediaKeyError> mMediaKeyError;
+  RefPtr<MediaKeys> mKeys;
   const nsString mKeySystem;
+  const nsString mCDMVersion;
   nsString mSessionId;
   const SessionType mSessionType;
   const uint32_t mToken;
   bool mIsClosed;
   bool mUninitialized;
-  nsRefPtr<MediaKeyStatusMap> mKeyStatusMap;
+  RefPtr<MediaKeyStatusMap> mKeyStatusMap;
 };
 
 } // namespace dom

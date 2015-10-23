@@ -53,6 +53,8 @@
 #  define MOZ_HAVE_NEVER_INLINE          __declspec(noinline)
 #  define MOZ_HAVE_NORETURN              __declspec(noreturn)
 #  if _MSC_VER >= 1900
+#    define MOZ_HAVE_CXX11_CONSTEXPR
+#    define MOZ_HAVE_CXX11_CONSTEXPR_IN_TEMPLATES
 #    define MOZ_HAVE_EXPLICIT_CONVERSION
 #  endif
 #  ifdef __clang__
@@ -334,6 +336,35 @@
 #  define MOZ_WARN_UNUSED_RESULT
 #endif
 
+/**
+ * MOZ_FALLTHROUGH is an annotation to suppress compiler warnings about switch
+ * cases that fall through without a break or return statement. MOZ_FALLTHROUGH
+ * is only needed on cases that have code:
+ *
+ * switch (foo) {
+ *   case 1: // These cases have no code. No fallthrough annotations are needed.
+ *   case 2:
+ *   case 3:
+ *     foo = 4; // This case has code, so a fallthrough annotation is needed:
+ *     MOZ_FALLTHROUGH;
+ *   default:
+ *     return foo;
+ * }
+ */
+#if defined(__clang__) && __cplusplus >= 201103L
+   /* clang's fallthrough annotations are only available starting in C++11. */
+#  define MOZ_FALLTHROUGH [[clang::fallthrough]]
+#elif defined(_MSC_VER)
+   /*
+    * MSVC's __fallthrough annotations are checked by /analyze (Code Analysis):
+    * https://msdn.microsoft.com/en-us/library/ms235402%28VS.80%29.aspx
+    */
+#  include <sal.h>
+#  define MOZ_FALLTHROUGH __fallthrough
+#else
+#  define MOZ_FALLTHROUGH /* FALLTHROUGH */
+#endif
+
 #ifdef __cplusplus
 
 /*
@@ -406,6 +437,16 @@
  *   temporary object. If a member of another class uses this class, or if
  *   another class inherits from this class, then it is considered to be a heap
  *   class as well, although this attribute need not be provided in such cases.
+ * MOZ_NON_TEMPORARY_CLASS: Applies to all classes. Any class with this
+ *   annotation is expected not to live in a temporary. If a member of another
+ *   class uses this class or if another class inherits from this class, then it
+ *   is considered to be a non-temporary class as well, although this attribute
+ *   need not be provided in such cases.
+ * MOZ_RAII: Applies to all classes. Any class with this annotation is assumed
+ *   to be a RAII guard, which is expected to live on the stack in an automatic
+ *   allocation. It is prohibited from being allocated in a temporary, static
+ *   storage, or on the heap. This is a combination of MOZ_STACK_CLASS and
+ *   MOZ_NON_TEMPORARY_CLASS.
  * MOZ_ONLY_USED_TO_AVOID_STATIC_CONSTRUCTORS: Applies to all classes that are
  *   intended to prevent introducing static initializers.  This attribute
  *   currently makes it a compile-time error to instantiate these classes
@@ -475,12 +516,17 @@
  *   declarations where an instance of the template should be considered, for
  *   static analysis purposes, to inherit any type annotations (such as
  *   MOZ_MUST_USE and MOZ_STACK_CLASS) from its template arguments.
+ * MOZ_NON_AUTOABLE: Applies to class declarations. Makes it a compile time error to
+ *   use `auto` in place of this type in variable declarations.  This is intended to
+ *   be used with types which are intended to be implicitly constructed into other
+ *   other types before being assigned to variables.
  */
 #ifdef MOZ_CLANG_PLUGIN
 #  define MOZ_MUST_OVERRIDE __attribute__((annotate("moz_must_override")))
 #  define MOZ_STACK_CLASS __attribute__((annotate("moz_stack_class")))
 #  define MOZ_NONHEAP_CLASS __attribute__((annotate("moz_nonheap_class")))
 #  define MOZ_HEAP_CLASS __attribute__((annotate("moz_heap_class")))
+#  define MOZ_NON_TEMPORARY_CLASS __attribute__((annotate("moz_non_temporary_class")))
 #  define MOZ_TRIVIAL_CTOR_DTOR __attribute__((annotate("moz_trivial_ctor_dtor")))
 #  ifdef DEBUG
      /* in debug builds, these classes do have non-trivial constructors. */
@@ -499,8 +545,9 @@
 #  define MOZ_NEEDS_NO_VTABLE_TYPE __attribute__((annotate("moz_needs_no_vtable_type")))
 #  define MOZ_NON_MEMMOVABLE __attribute__((annotate("moz_non_memmovable")))
 #  define MOZ_NEEDS_MEMMOVABLE_TYPE __attribute__((annotate("moz_needs_memmovable_type")))
-#  define MOZ_INHERIT_TYPE_ANNOTATIONS_FROM_TEMPLATE_ARGS               \
+#  define MOZ_INHERIT_TYPE_ANNOTATIONS_FROM_TEMPLATE_ARGS \
     __attribute__((annotate("moz_inherit_type_annotations_from_template_args")))
+#  define MOZ_NON_AUTOABLE __attribute__((annotate("moz_non_autoable")))
 /*
  * It turns out that clang doesn't like void func() __attribute__ {} without a
  * warning, so use pragmas to disable the warning. This code won't work on GCC
@@ -516,6 +563,7 @@
 #  define MOZ_STACK_CLASS /* nothing */
 #  define MOZ_NONHEAP_CLASS /* nothing */
 #  define MOZ_HEAP_CLASS /* nothing */
+#  define MOZ_NON_TEMPORARY_CLASS /* nothing */
 #  define MOZ_TRIVIAL_CTOR_DTOR /* nothing */
 #  define MOZ_ONLY_USED_TO_AVOID_STATIC_CONSTRUCTORS /* nothing */
 #  define MOZ_IMPLICIT /* nothing */
@@ -530,7 +578,26 @@
 #  define MOZ_NON_MEMMOVABLE /* nothing */
 #  define MOZ_NEEDS_MEMMOVABLE_TYPE /* nothing */
 #  define MOZ_INHERIT_TYPE_ANNOTATIONS_FROM_TEMPLATE_ARGS /* nothing */
+#  define MOZ_NON_AUTOABLE /* nothing */
 #endif /* MOZ_CLANG_PLUGIN */
+
+#define MOZ_RAII MOZ_NON_TEMPORARY_CLASS MOZ_STACK_CLASS
+
+/*
+ * MOZ_HAVE_REF_QUALIFIERS is defined for compilers that support C++11's rvalue
+ * qualifier, "&&".
+ */
+#if defined(_MSC_VER) && _MSC_VER >= 1900
+#  define MOZ_HAVE_REF_QUALIFIERS
+#elif defined(__clang__)
+// All supported Clang versions
+#  define MOZ_HAVE_REF_QUALIFIERS
+#elif defined(__GNUC__)
+#  include "mozilla/Compiler.h"
+#  if MOZ_GCC_VERSION_AT_LEAST(4, 8, 1)
+#    define MOZ_HAVE_REF_QUALIFIERS
+#  endif
+#endif
 
 #endif /* __cplusplus */
 

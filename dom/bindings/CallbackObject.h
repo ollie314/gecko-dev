@@ -83,6 +83,16 @@ public:
     return result;
   }
 
+  void MarkForCC()
+  {
+    if (mCallback) {
+      JS::ExposeObjectToActiveJS(mCallback);
+    }
+    if (mCreationStack) {
+      JS::ExposeObjectToActiveJS(mCreationStack);
+    }
+  }
+
   /*
    * This getter does not change the color of the JSObject meaning that the
    * object returned is not guaranteed to be kept alive past the next CC.
@@ -396,7 +406,7 @@ public:
   already_AddRefed<XPCOMCallbackT> ToXPCOMCallback() const
   {
     if (!HasWebIDLCallback()) {
-      nsRefPtr<XPCOMCallbackT> callback = GetXPCOMCallback();
+      RefPtr<XPCOMCallbackT> callback = GetXPCOMCallback();
       return callback.forget();
     }
 
@@ -411,7 +421,7 @@ public:
   already_AddRefed<WebIDLCallbackT> ToWebIDLCallback() const
   {
     if (HasWebIDLCallback()) {
-      nsRefPtr<WebIDLCallbackT> callback = GetWebIDLCallback();
+      RefPtr<WebIDLCallbackT> callback = GetWebIDLCallback();
       return callback.forget();
     }
     return nullptr;

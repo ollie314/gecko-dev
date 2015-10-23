@@ -21,7 +21,7 @@ MediaDataDecoderCallbackProxy::FlushComplete()
   mProxyDecoder->FlushComplete();
 }
 
-nsRefPtr<MediaDataDecoder::InitPromise>
+RefPtr<MediaDataDecoder::InitPromise>
 MediaDataDecoderProxy::InternalInit()
 {
   MOZ_ASSERT(!mIsShutdown);
@@ -29,13 +29,13 @@ MediaDataDecoderProxy::InternalInit()
   return mProxyDecoder->Init();
 }
 
-nsRefPtr<MediaDataDecoder::InitPromise>
+RefPtr<MediaDataDecoder::InitPromise>
 MediaDataDecoderProxy::Init()
 {
   MOZ_ASSERT(!mIsShutdown);
 
-  return ProxyMediaCall(mProxyThreadWrapper, this, __func__,
-                        &MediaDataDecoderProxy::InternalInit);
+  return InvokeAsync(mProxyThreadWrapper, this, __func__,
+                     &MediaDataDecoderProxy::InternalInit);
 }
 
 nsresult

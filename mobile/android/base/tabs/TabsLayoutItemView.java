@@ -4,27 +4,22 @@
 
 package org.mozilla.gecko.tabs;
 
-import org.mozilla.gecko.GeckoAppShell;
-import org.mozilla.gecko.GeckoEvent;
+import org.mozilla.gecko.AppConstants;
 import org.mozilla.gecko.R;
 import org.mozilla.gecko.Tab;
+import org.mozilla.gecko.Tabs;
 import org.mozilla.gecko.util.HardwareUtils;
 import org.mozilla.gecko.widget.TabThumbnailWrapper;
-
-import org.json.JSONException;
-import org.json.JSONObject;
 
 import android.content.Context;
 import android.graphics.Rect;
 import android.graphics.drawable.Drawable;
 import android.util.AttributeSet;
-import android.util.Log;
 import android.util.TypedValue;
 import android.view.TouchDelegate;
 import android.view.View;
 import android.view.ViewTreeObserver;
 import android.widget.Checkable;
-import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
@@ -37,9 +32,8 @@ public class TabsLayoutItemView extends LinearLayout
 
     private int mTabId;
     private TextView mTitle;
-    private ImageView mThumbnail;
+    private TabsPanelThumbnailView mThumbnail;
     private ImageView mCloseButton;
-    private ImageView mAudioPlayingButton;
     private TabThumbnailWrapper mThumbnailWrapper;
 
     public TabsLayoutItemView(Context context, AttributeSet attrs) {
@@ -98,32 +92,11 @@ public class TabsLayoutItemView extends LinearLayout
     protected void onFinishInflate() {
         super.onFinishInflate();
         mTitle = (TextView) findViewById(R.id.title);
-        mThumbnail = (ImageView) findViewById(R.id.thumbnail);
+        mThumbnail = (TabsPanelThumbnailView) findViewById(R.id.thumbnail);
         mCloseButton = (ImageView) findViewById(R.id.close);
-        mAudioPlayingButton = (ImageView) findViewById(R.id.audio_playing);
         mThumbnailWrapper = (TabThumbnailWrapper) findViewById(R.id.wrapper);
 
-        if (HardwareUtils.isTablet()) {
-            growCloseButtonHitArea();
-        }
-
-        mAudioPlayingButton.setOnClickListener(new View.OnClickListener() {
-            @Override
-            public void onClick(View v) {
-                if (mTabId < 0) {
-                    throw new IllegalStateException("Invalid tab id:" + mTabId);
-                }
-
-                // TODO: Toggle icon in the UI as well (bug 1190301)
-                final JSONObject args = new JSONObject();
-                try {
-                    args.put("tabId", mTabId);
-                    GeckoAppShell.sendEventToGecko(GeckoEvent.createBroadcastEvent("Tab:ToggleMuteAudio", args.toString()));
-                } catch (JSONException e) {
-                    Log.e(LOGTAG, "Error toggling mute audio: error building json arguments", e);
-                }
-            }
-        });
+        growCloseButtonHitArea();
     }
 
     private void growCloseButtonHitArea() {
@@ -156,15 +129,30 @@ public class TabsLayoutItemView extends LinearLayout
 
         mTabId = tab.getId();
 
+        setChecked(Tabs.getInstance().isSelectedTab(tab));
+
         Drawable thumbnailImage = tab.getThumbnail();
         mThumbnail.setImageDrawable(thumbnailImage);
+
+        mThumbnail.setPrivateMode(tab.isPrivate());
 
         if (mThumbnailWrapper != null) {
             mThumbnailWrapper.setRecording(tab.isRecording());
         }
-        mTitle.setText(tab.getDisplayTitle());
+
+        final String tabTitle = tab.getDisplayTitle();
+        mTitle.setText(tabTitle);
         mCloseButton.setTag(this);
-        mAudioPlayingButton.setVisibility(tab.isAudioPlaying() ? View.VISIBLE : View.GONE);
+
+        if (tab.isAudioPlaying()) {
+            mTitle.setCompoundDrawablesWithIntrinsicBounds(R.drawable.tab_audio_playing, 0, 0, 0);
+            final String tabTitleWithAudio =
+                    getResources().getString(R.string.tab_title_prefix_is_playing_audio, tabTitle);
+            mTitle.setContentDescription(tabTitleWithAudio);
+        } else {
+            mTitle.setCompoundDrawables(null, null, null, null);
+            mTitle.setContentDescription(tabTitle);
+        }
     }
 
     public int getTabId() {

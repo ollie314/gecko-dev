@@ -59,6 +59,10 @@ extern  "C" void sync_instruction_memory(caddr_t v, u_int len);
 #include <sys/cachectl.h>
 #endif
 
+#if defined(JS_CODEGEN_ARM) && defined(XP_IOS)
+#include <libkern/OSCacheControl.h>
+#endif
+
 namespace JS {
     struct CodeSizes;
 } // namespace JS
@@ -236,7 +240,11 @@ class ExecutableAllocator
         }
         systemRelease(pool->m_allocation);
         MOZ_ASSERT(m_pools.initialized());
-        m_pools.remove(m_pools.lookup(pool));   // this asserts if |pool| is not in m_pools
+
+        // Pool may not be present in m_pools if we hit OOM during creation.
+        auto ptr = m_pools.lookup(pool);
+        if (ptr)
+            m_pools.remove(ptr);
     }
 
     void addSizeOfCode(JS::CodeSizes* sizes) const;
@@ -299,7 +307,13 @@ class ExecutableAllocator
             systemRelease(a);
             return nullptr;
         }
-        m_pools.put(pool);
+
+        if (!m_pools.put(pool)) {
+            js_delete(pool);
+            systemRelease(a);
+            return nullptr;
+        }
+
         return pool;
     }
 
@@ -398,6 +412,11 @@ class ExecutableAllocator
     static void cacheFlush(void* code, size_t size)
     {
         __clear_cache(code, reinterpret_cast<char*>(code) + size);
+    }
+#elif defined(JS_CODEGEN_ARM) && defined(XP_IOS)
+    static void cacheFlush(void* code, size_t size)
+    {
+        sys_icache_invalidate(code, size);
     }
 #elif defined(JS_CODEGEN_ARM) && (defined(__linux__) || defined(ANDROID)) && defined(__GNUC__)
     static void cacheFlush(void* code, size_t size)

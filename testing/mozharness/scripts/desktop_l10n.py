@@ -11,6 +11,7 @@ This script manages Desktop repacks for nightly builds.
 import os
 import re
 import sys
+import time
 import shlex
 import logging
 
@@ -60,15 +61,17 @@ PyMakeIgnoreList = [
 # it's a list of values that are already known before starting a build
 configuration_tokens = ('branch',
                         'platform',
-                        'en_us_binary_url',
                         'update_platform',
                         'update_channel',
-                        'ssh_key_dir')
+                        'ssh_key_dir',
+                        'stage_product',
+                        )
 # some other values such as "%(version)s", "%(buildid)s", ...
 # are defined at run time and they cannot be enforced in the _pre_config_lock
 # phase
 runtime_config_tokens = ('buildid', 'version', 'locale', 'from_buildid',
-                         'abs_objdir', 'abs_merge_dir', 'version', 'to_buildid')
+                         'abs_objdir', 'abs_merge_dir', 'version',
+                         'to_buildid', 'en_us_binary_url')
 
 
 # DesktopSingleLocale {{{1
@@ -105,7 +108,8 @@ class DesktopSingleLocale(LocalesMixin, ReleaseMixin, MockMixin, BuildbotMixin,
         {"action": "extend",
          "dest": "locales",
          "type": "string",
-         "help": "Specify the locale(s) to sign and update"}
+         "help": "Specify the locale(s) to sign and update. Optionally pass"
+                 " revision separated by colon, en-GB:default."}
     ], [
         ['--locales-file', ],
         {"action": "store",
@@ -203,7 +207,6 @@ class DesktopSingleLocale(LocalesMixin, ReleaseMixin, MockMixin, BuildbotMixin,
         self.version = None
         self.upload_urls = {}
         self.locales_property = {}
-        self.l10n_dir = None
         self.package_urls = {}
         self.pushdate = None
         # upload_files is a dictionary of files to upload, keyed by locale.
@@ -326,11 +329,17 @@ class DesktopSingleLocale(LocalesMixin, ReleaseMixin, MockMixin, BuildbotMixin,
             return self.bootstrap_env
         config = self.config
         replace_dict = self.query_abs_dirs()
+
+        replace_dict['en_us_binary_url'] = config.get('en_us_binary_url')
+        # Override en_us_binary_url if passed as a buildbot property
+        self.read_buildbot_config()
+        if self.buildbot_config["properties"].get("en_us_binary_url"):
+            self.info("Overriding en_us_binary_url with %s" %
+                      self.buildbot_config["properties"]["en_us_binary_url"])
+            replace_dict['en_us_binary_url'] = \
+                str(self.buildbot_config["properties"]["en_us_binary_url"])
         bootstrap_env = self.query_env(partial_env=config.get("bootstrap_env"),
                                        replace_dict=replace_dict)
-        if config.get('en_us_binary_url') and \
-           config.get('release_config_file'):
-            bootstrap_env['EN_US_BINARY_URL'] = config['en_us_binary_url']
         if 'MOZ_SIGNING_SERVERS' in os.environ:
             sign_cmd = self.query_moz_sign_cmd(formats=None)
             sign_cmd = subprocess.list2cmdline(sign_cmd)
@@ -598,26 +607,7 @@ class DesktopSingleLocale(LocalesMixin, ReleaseMixin, MockMixin, BuildbotMixin,
         src = os.path.join(dirs['abs_work_dir'], mozconfig)
         dst = os.path.join(dirs['abs_mozilla_dir'], '.mozconfig')
         self.copyfile(src, dst)
-
-        # STUPID HACK HERE
-        # should we update the mozconfig so it has the right value?
-        with self.opened(src, 'r') as (in_mozconfig, in_error):
-            if in_error:
-                self.fatal('cannot open {0}'.format(src))
-            with self.opened(dst, open_mode='w') as (out_mozconfig, out_error):
-                if out_error:
-                    self.fatal('cannot write {0}'.format(dst))
-                for line in in_mozconfig:
-                    if 'with-l10n-base' in line:
-                        line = 'ac_add_options --with-l10n-base=../../l10n\n'
-                        self.l10n_dir = line.partition('=')[2].strip()
-                    out_mozconfig.write(line)
-        # now log
-        with self.opened(dst, 'r') as (mozconfig, in_error):
-            if in_error:
-                self.fatal('cannot open {0}'.format(dst))
-            for line in mozconfig:
-                self.info(line.strip())
+        self.read_from_file(dst, verbose=True)
 
     def _mach(self, target, env, halt_on_failure=True, output_parser=None):
         dirs = self.query_abs_dirs()
@@ -685,19 +675,6 @@ class DesktopSingleLocale(LocalesMixin, ReleaseMixin, MockMixin, BuildbotMixin,
         env = self.query_bootstrap_env()
         dirs = self.query_abs_dirs()
         cwd = dirs['abs_locales_dir']
-        binary_file = env['EN_US_BINARY_URL']
-        if binary_file.endswith(('tar.bz2', 'dmg', 'exe')):
-            # specified EN_US_BINARY url is an installer file...
-            dst_filename = binary_file.split('/')[-1].strip()
-            dst_filename = os.path.join(dirs['abs_objdir'], 'dist', dst_filename)
-            # we need to set ZIP_IN so make unpack finds this binary file.
-            # Please note this is required only if the en-us-binary-url provided
-            # has a different version number from the one in the current
-            # checkout.
-            self.bootstrap_env['ZIP_IN'] = dst_filename
-            return self._retry_download_file(binary_file, dst_filename, error_level=FATAL)
-
-        # binary url is not an installer, use make wget-en-US to download it
         return self._make(target=["wget-en-US"], cwd=cwd, env=env)
 
     def make_upload(self, locale):
@@ -721,14 +698,11 @@ class DesktopSingleLocale(LocalesMixin, ReleaseMixin, MockMixin, BuildbotMixin,
         if locale not in self.package_urls:
             self.package_urls[locale] = {}
         self.package_urls[locale].update(parser.matches)
-        if 'partialMarUrl' in self.package_urls[locale]:
-            self.package_urls[locale]['partialInfo'] = self._get_partial_info(
-                self.package_urls[locale]['partialMarUrl'])
         if retval == SUCCESS:
-            self.info('Upload successful (%s)' % (locale))
+            self.info('Upload successful (%s)' % locale)
             ret = SUCCESS
         else:
-            self.error('failed to upload %s' % (locale))
+            self.error('failed to upload %s' % locale)
             ret = FAILURE
         return ret
 
@@ -756,7 +730,6 @@ class DesktopSingleLocale(LocalesMixin, ReleaseMixin, MockMixin, BuildbotMixin,
         """wrapper for make installers-(locale)"""
         env = self.query_l10n_env()
         self._copy_mozconfig()
-        env['L10NBASEDIR'] = self.l10n_dir
         dirs = self.query_abs_dirs()
         cwd = os.path.join(dirs['abs_locales_dir'])
         target = ["installers-%s" % locale,
@@ -808,29 +781,6 @@ class DesktopSingleLocale(LocalesMixin, ReleaseMixin, MockMixin, BuildbotMixin,
                 abs_dirs[key] = dirs[key]
         self.abs_dirs = abs_dirs
         return self.abs_dirs
-
-    def _get_partial_info(self, partial_url):
-        """takes a partial url and returns a partial info dictionary"""
-        partial_file = partial_url.split('/')[-1]
-        # now get from_build...
-        # firefox-39.0a1.ar.win32.partial.20150320030211-20150320075143.mar
-        # partial file ^                  ^            ^
-        #                                 |            |
-        # we need ------------------------+------------+
-        from_buildid = partial_file.partition('partial.')[2]
-        from_buildid = from_buildid.partition('-')[0]
-        self.info('from buildid: {0}'.format(from_buildid))
-
-        dirs = self.query_abs_dirs()
-        abs_partial_file = os.path.join(dirs['abs_objdir'], 'dist',
-                                        'update', partial_file)
-
-        size = self.query_filesize(abs_partial_file)
-        hash_ = self.query_sha512sum(abs_partial_file)
-        return [{'from_buildid': from_buildid,
-                 'hash': hash_,
-                 'size': size,
-                 'url': partial_url}]
 
     def submit_to_balrog(self):
         """submit to barlog"""
@@ -1009,13 +959,14 @@ class DesktopSingleLocale(LocalesMixin, ReleaseMixin, MockMixin, BuildbotMixin,
         self.enable_mock()
         self.activate_virtualenv()
 
-        # Enable Taskcluster debug logging, so at least we get some debug
-        # messages while we are testing uploads.
-        logging.getLogger('taskcluster').setLevel(logging.DEBUG)
-
         branch = self.config['branch']
         platform = self.config['platform']
         revision = self._query_revision()
+        repo = self.query_l10n_repo()
+        if not repo:
+            self.fatal("Unable to determine repository for querying the push info.")
+        pushinfo = self.vcs_query_pushinfo(repo, revision, vcs='hgtool')
+        pushdate = time.strftime('%Y%m%d%H%M%S', time.gmtime(pushinfo.pushdate))
 
         routes_json = os.path.join(self.query_abs_dirs()['abs_mozilla_dir'],
                                    'testing/taskcluster/routes.json')
@@ -1028,11 +979,13 @@ class DesktopSingleLocale(LocalesMixin, ReleaseMixin, MockMixin, BuildbotMixin,
             routes = []
             for template in templates:
                 fmt = {
-                    # TODO: Bug 1133074
-                    #index = self.config.get('taskcluster_index', 'index.garbage.staging')
-                    'index': 'index.garbage.staging.mshal-testing',
+                    'index': self.config.get('taskcluster_index', 'index.garbage.staging'),
                     'project': branch,
                     'head_rev': revision,
+                    'pushdate': pushdate,
+                    'year': pushdate[0:4],
+                    'month': pushdate[4:6],
+                    'day': pushdate[6:8],
                     'build_product': self.config['stage_product'],
                     'build_name': self.query_build_name(),
                     'build_type': self.query_build_type(),
@@ -1040,10 +993,10 @@ class DesktopSingleLocale(LocalesMixin, ReleaseMixin, MockMixin, BuildbotMixin,
                 }
                 fmt.update(self.buildid_to_dict(self._query_buildid()))
                 routes.append(template.format(**fmt))
-                self.info('Using routes: %s' % routes)
 
+            self.info('Using routes: %s' % routes)
             tc = Taskcluster(branch,
-                             self.query_pushdate(),
+                             pushinfo.pushdate, # Use pushdate as the rank
                              client_id,
                              access_token,
                              self.log_obj,
@@ -1058,48 +1011,6 @@ class DesktopSingleLocale(LocalesMixin, ReleaseMixin, MockMixin, BuildbotMixin,
                 # locations.
                 tc.create_artifact(task, upload_file)
             tc.report_completed(task)
-
-    def query_pushdate(self):
-        if self.pushdate:
-            return self.pushdate
-
-        mozilla_dir = self.config['mozilla_dir']
-        repo = None
-        for repository in self.config['repos']:
-            if repository.get('dest') == mozilla_dir:
-                repo = repository['repo']
-                break
-
-        if not repo:
-            self.fatal("Unable to determine repository for querying the pushdate.")
-        try:
-            url = '%s/json-pushes?changeset=%s' % (
-                repo,
-                self._query_revision(),
-            )
-            self.info('Pushdate URL is: %s' % url)
-            contents = self.retry(self.load_json_from_url, args=(url,))
-
-            # The contents should be something like:
-            # {
-            #   "28537": {
-            #    "changesets": [
-            #     "1d0a914ae676cc5ed203cdc05c16d8e0c22af7e5",
-            #    ],
-            #    "date": 1428072488,
-            #    "user": "user@mozilla.com"
-            #   }
-            # }
-            #
-            # So we grab the first element ("28537" in this case) and then pull
-            # out the 'date' field.
-            self.pushdate = contents.itervalues().next()['date']
-            self.info('Pushdate is: %s' % self.pushdate)
-        except Exception:
-            self.exception("Failed to get pushdate from hg.mozilla.org")
-            raise
-
-        return self.pushdate
 
 # main {{{
 if __name__ == '__main__':

@@ -14,6 +14,7 @@
 #include "ExtendedValidation.h"
 #include "NSSCertDBTrustDomain.h"
 #include "pkix/pkixtypes.h"
+#include "pkix/Time.h"
 #include "nsNSSComponent.h"
 #include "mozilla/Base64.h"
 #include "nsCOMPtr.h"
@@ -819,28 +820,26 @@ void nsNSSCertificateDB::DisplayCertificateAlert(nsIInterfaceRequestor *ctx,
     return;
   }
 
-  nsPSMUITracker tracker;
-  if (!tracker.isUIForbidden()) {
+  nsCOMPtr<nsIInterfaceRequestor> my_ctx = ctx;
+  if (!my_ctx) {
+    my_ctx = new PipUIContext();
+  }
 
-    nsCOMPtr<nsIInterfaceRequestor> my_ctx = ctx;
-    if (!my_ctx)
-      my_ctx = new PipUIContext();
+  // This shall be replaced by embedding ovverridable prompts
+  // as discussed in bug 310446, and should make use of certToShow.
 
-    // This shall be replaced by embedding ovverridable prompts
-    // as discussed in bug 310446, and should make use of certToShow.
+  nsresult rv;
+  nsCOMPtr<nsINSSComponent> nssComponent(do_GetService(kNSSComponentCID, &rv));
+  if (NS_SUCCEEDED(rv)) {
+    nsAutoString tmpMessage;
+    nssComponent->GetPIPNSSBundleString(stringID, tmpMessage);
 
-    nsresult rv;
-    nsCOMPtr<nsINSSComponent> nssComponent(do_GetService(kNSSComponentCID, &rv));
-    if (NS_SUCCEEDED(rv)) {
-      nsAutoString tmpMessage;
-      nssComponent->GetPIPNSSBundleString(stringID, tmpMessage);
-
-      nsCOMPtr<nsIPrompt> prompt (do_GetInterface(my_ctx));
-      if (!prompt)
-        return;
-    
-      prompt->Alert(nullptr, tmpMessage.get());
+    nsCOMPtr<nsIPrompt> prompt (do_GetInterface(my_ctx));
+    if (!prompt) {
+      return;
     }
+
+    prompt->Alert(nullptr, tmpMessage.get());
   }
 }
 
@@ -1385,7 +1384,7 @@ nsNSSCertificateDB::FindCertByEmailAddress(nsISupports *aToken, const char *aEma
   }
 
   // node now contains the first valid certificate with correct usage 
-  nsRefPtr<nsNSSCertificate> nssCert = nsNSSCertificate::Create(node->cert);
+  RefPtr<nsNSSCertificate> nssCert = nsNSSCertificate::Create(node->cert);
   if (!nssCert)
     return NS_ERROR_OUT_OF_MEMORY;
 
@@ -1698,14 +1697,16 @@ nsNSSCertificateDB::GetCerts(nsIX509CertList **_retval)
   return NS_OK;
 }
 
-NS_IMETHODIMP
-nsNSSCertificateDB::VerifyCertNow(nsIX509Cert* aCert,
-                                  int64_t /*SECCertificateUsage*/ aUsage,
-                                  uint32_t aFlags,
-                                  const char* aHostname,
-                                  nsIX509CertList** aVerifiedChain,
-                                  bool* aHasEVPolicy,
-                                  int32_t* /*PRErrorCode*/ _retval )
+nsresult
+VerifyCertAtTime(nsIX509Cert* aCert,
+                 int64_t /*SECCertificateUsage*/ aUsage,
+                 uint32_t aFlags,
+                 const char* aHostname,
+                 mozilla::pkix::Time aTime,
+                 nsIX509CertList** aVerifiedChain,
+                 bool* aHasEVPolicy,
+                 int32_t* /*PRErrorCode*/ _retval,
+                 const nsNSSShutDownPreventionLock& locker)
 {
   NS_ENSURE_ARG_POINTER(aCert);
   NS_ENSURE_ARG_POINTER(aHasEVPolicy);
@@ -1715,11 +1716,6 @@ nsNSSCertificateDB::VerifyCertNow(nsIX509Cert* aCert,
   *aVerifiedChain = nullptr;
   *aHasEVPolicy = false;
   *_retval = PR_UNKNOWN_ERROR;
-
-  nsNSSShutDownPreventionLock locker;
-  if (isAlreadyShutDown()) {
-    return NS_ERROR_NOT_AVAILABLE;
-  }
 
 #ifndef MOZ_NO_EV_CERTS
   EnsureIdentityInfoLoaded();
@@ -1740,7 +1736,7 @@ nsNSSCertificateDB::VerifyCertNow(nsIX509Cert* aCert,
   if (aHostname && aUsage == certificateUsageSSLServer) {
     srv = certVerifier->VerifySSLServerCert(nssCert,
                                             nullptr, // stapledOCSPResponse
-                                            mozilla::pkix::Now(),
+                                            aTime,
                                             nullptr, // Assume no context
                                             aHostname,
                                             false, // don't save intermediates
@@ -1748,7 +1744,7 @@ nsNSSCertificateDB::VerifyCertNow(nsIX509Cert* aCert,
                                             &resultChain,
                                             &evOidPolicy);
   } else {
-    srv = certVerifier->VerifyCert(nssCert, aUsage, mozilla::pkix::Now(),
+    srv = certVerifier->VerifyCert(nssCert, aUsage, aTime,
                                    nullptr, // Assume no context
                                    aHostname,
                                    aFlags,
@@ -1777,6 +1773,45 @@ nsNSSCertificateDB::VerifyCertNow(nsIX509Cert* aCert,
   nssCertList.forget(aVerifiedChain);
 
   return NS_OK;
+}
+
+NS_IMETHODIMP
+nsNSSCertificateDB::VerifyCertNow(nsIX509Cert* aCert,
+                                  int64_t /*SECCertificateUsage*/ aUsage,
+                                  uint32_t aFlags,
+                                  const char* aHostname,
+                                  nsIX509CertList** aVerifiedChain,
+                                  bool* aHasEVPolicy,
+                                  int32_t* /*PRErrorCode*/ _retval)
+{
+  nsNSSShutDownPreventionLock locker;
+  if (isAlreadyShutDown()) {
+    return NS_ERROR_NOT_AVAILABLE;
+  }
+
+  return ::VerifyCertAtTime(aCert, aUsage, aFlags, aHostname,
+                            mozilla::pkix::Now(),
+                            aVerifiedChain, aHasEVPolicy, _retval, locker);
+}
+
+NS_IMETHODIMP
+nsNSSCertificateDB::VerifyCertAtTime(nsIX509Cert* aCert,
+                                     int64_t /*SECCertificateUsage*/ aUsage,
+                                     uint32_t aFlags,
+                                     const char* aHostname,
+                                     uint64_t aTime,
+                                     nsIX509CertList** aVerifiedChain,
+                                     bool* aHasEVPolicy,
+                                     int32_t* /*PRErrorCode*/ _retval)
+{
+  nsNSSShutDownPreventionLock locker;
+  if (isAlreadyShutDown()) {
+    return NS_ERROR_NOT_AVAILABLE;
+  }
+
+  return ::VerifyCertAtTime(aCert, aUsage, aFlags, aHostname,
+                            mozilla::pkix::TimeFromEpochInSeconds(aTime),
+                            aVerifiedChain, aHasEVPolicy, _retval, locker);
 }
 
 NS_IMETHODIMP
