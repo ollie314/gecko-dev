@@ -4844,20 +4844,6 @@ ScriptOffset(JSContext* cx, JSScript* script, const Value& v, size_t* offsetp)
     return true;
 }
 
-static bool
-DebuggerScript_getOffsetLine(JSContext* cx, unsigned argc, Value* vp)
-{
-    THIS_DEBUGSCRIPT_SCRIPT(cx, argc, vp, "getOffsetLine", args, obj, script);
-    if (!args.requireAtLeast(cx, "Debugger.Script.getOffsetLine", 1))
-        return false;
-    size_t offset;
-    if (!ScriptOffset(cx, script, args[0], &offset))
-        return false;
-    unsigned lineno = PCToLineNumber(script, script->offsetToPC(offset));
-    args.rval().setNumber(lineno);
-    return true;
-}
-
 namespace {
 
 class BytecodeRangeWithPosition : private BytecodeRange
@@ -4870,23 +4856,35 @@ class BytecodeRangeWithPosition : private BytecodeRange
 
     BytecodeRangeWithPosition(JSContext* cx, JSScript* script)
       : BytecodeRange(cx, script), lineno(script->lineno()), column(0),
-        sn(script->notes()), snpc(script->code())
+        sn(script->notes()), snpc(script->code()), isEntryPoint(false)
     {
         if (!SN_IS_TERMINATOR(sn))
             snpc += SN_DELTA(sn);
         updatePosition();
         while (frontPC() != script->main())
             popFront();
+        isEntryPoint = true;
     }
 
     void popFront() {
         BytecodeRange::popFront();
-        if (!empty())
+        if (empty())
+            isEntryPoint = false;
+        else
             updatePosition();
     }
 
     size_t frontLineNumber() const { return lineno; }
     size_t frontColumnNumber() const { return column; }
+
+    // Entry points are restricted to bytecode offsets that have an
+    // explicit mention in the line table.  This restriction avoids a
+    // number of failing cases caused by some instructions not having
+    // sensible (to the user) line numbers, and it is one way to
+    // implement the idea that the bytecode emitter should tell the
+    // debugger exactly which offsets represent "interesting" (to the
+    // user) places to stop.
+    bool frontIsEntryPoint() const { return isEntryPoint; }
 
   private:
     void updatePosition() {
@@ -4894,29 +4892,35 @@ class BytecodeRangeWithPosition : private BytecodeRange
          * Determine the current line number by reading all source notes up to
          * and including the current offset.
          */
+        jsbytecode *lastLinePC = nullptr;
         while (!SN_IS_TERMINATOR(sn) && snpc <= frontPC()) {
             SrcNoteType type = (SrcNoteType) SN_TYPE(sn);
             if (type == SRC_COLSPAN) {
                 ptrdiff_t colspan = SN_OFFSET_TO_COLSPAN(GetSrcNoteOffset(sn, 0));
                 MOZ_ASSERT(ptrdiff_t(column) + colspan >= 0);
                 column += colspan;
+                lastLinePC = snpc;
             } else if (type == SRC_SETLINE) {
                 lineno = size_t(GetSrcNoteOffset(sn, 0));
                 column = 0;
+                lastLinePC = snpc;
             } else if (type == SRC_NEWLINE) {
                 lineno++;
                 column = 0;
+                lastLinePC = snpc;
             }
 
             sn = SN_NEXT(sn);
             snpc += SN_DELTA(sn);
         }
+        isEntryPoint = lastLinePC == frontPC();
     }
 
     size_t lineno;
     size_t column;
     jssrcnote* sn;
     jsbytecode* snpc;
+    bool isEntryPoint;
 };
 
 /*
@@ -5088,6 +5092,50 @@ class FlowGraphSummary {
 } /* anonymous namespace */
 
 static bool
+DebuggerScript_getOffsetLocation(JSContext* cx, unsigned argc, Value* vp)
+{
+    THIS_DEBUGSCRIPT_SCRIPT(cx, argc, vp, "getOffsetLocation", args, obj, script);
+    if (!args.requireAtLeast(cx, "Debugger.Script.getOffsetLocation", 1))
+        return false;
+    size_t offset;
+    if (!ScriptOffset(cx, script, args[0], &offset))
+        return false;
+
+    FlowGraphSummary flowData(cx);
+    if (!flowData.populate(cx, script))
+        return false;
+
+    RootedPlainObject result(cx, NewBuiltinClassInstance<PlainObject>(cx));
+    if (!result)
+        return false;
+
+    BytecodeRangeWithPosition r(cx, script);
+    while (!r.empty() && r.frontOffset() < offset)
+        r.popFront();
+
+    RootedId id(cx, NameToId(cx->names().lineNumber));
+    RootedValue value(cx, NumberValue(r.frontLineNumber()));
+    if (!DefineProperty(cx, result, id, value))
+        return false;
+
+    value = NumberValue(r.frontColumnNumber());
+    if (!DefineProperty(cx, result, cx->names().columnNumber, value))
+        return false;
+
+    // The same entry point test that is used by getAllColumnOffsets.
+    bool isEntryPoint = (r.frontIsEntryPoint() &&
+                         !flowData[offset].hasNoEdges() &&
+                         (flowData[offset].lineno() != r.frontLineNumber() ||
+                          flowData[offset].column() != r.frontColumnNumber()));
+    value.setBoolean(isEntryPoint);
+    if (!DefineProperty(cx, result, cx->names().isEntryPoint, value))
+        return false;
+
+    args.rval().setObject(*result);
+    return true;
+}
+
+static bool
 DebuggerScript_getAllOffsets(JSContext* cx, unsigned argc, Value* vp)
 {
     THIS_DEBUGSCRIPT_SCRIPT(cx, argc, vp, "getAllOffsets", args, obj, script);
@@ -5105,6 +5153,9 @@ DebuggerScript_getAllOffsets(JSContext* cx, unsigned argc, Value* vp)
     if (!result)
         return false;
     for (BytecodeRangeWithPosition r(cx, script); !r.empty(); r.popFront()) {
+        if (!r.frontIsEntryPoint())
+            continue;
+
         size_t offset = r.frontOffset();
         size_t lineno = r.frontLineNumber();
 
@@ -5178,7 +5229,8 @@ DebuggerScript_getAllColumnOffsets(JSContext* cx, unsigned argc, Value* vp)
         size_t offset = r.frontOffset();
 
         /* Make a note, if the current instruction is an entry point for the current position. */
-        if (!flowData[offset].hasNoEdges() &&
+        if (r.frontIsEntryPoint() &&
+            !flowData[offset].hasNoEdges() &&
             (flowData[offset].lineno() != lineno ||
              flowData[offset].column() != column)) {
             RootedPlainObject entry(cx, NewBuiltinClassInstance<PlainObject>(cx));
@@ -5242,6 +5294,9 @@ DebuggerScript_getLineOffsets(JSContext* cx, unsigned argc, Value* vp)
     if (!result)
         return false;
     for (BytecodeRangeWithPosition r(cx, script); !r.empty(); r.popFront()) {
+        if (!r.frontIsEntryPoint())
+            continue;
+
         size_t offset = r.frontOffset();
 
         /* If the op at offset is an entry point, append offset to result. */
@@ -5646,7 +5701,7 @@ static const JSFunctionSpec DebuggerScript_methods[] = {
     JS_FN("getAllOffsets", DebuggerScript_getAllOffsets, 0, 0),
     JS_FN("getAllColumnOffsets", DebuggerScript_getAllColumnOffsets, 0, 0),
     JS_FN("getLineOffsets", DebuggerScript_getLineOffsets, 1, 0),
-    JS_FN("getOffsetLine", DebuggerScript_getOffsetLine, 0, 0),
+    JS_FN("getOffsetLocation", DebuggerScript_getOffsetLocation, 0, 0),
     JS_FN("setBreakpoint", DebuggerScript_setBreakpoint, 2, 0),
     JS_FN("getBreakpoints", DebuggerScript_getBreakpoints, 1, 0),
     JS_FN("clearBreakpoint", DebuggerScript_clearBreakpoint, 1, 0),
@@ -7967,7 +8022,7 @@ DebuggerEnv_getCallee(JSContext* cx, unsigned argc, Value* vp)
         return true;
 
     JSObject& scope = env->as<DebugScopeObject>().scope();
-    if (!scope.is<CallObject>() || scope.is<ModuleEnvironmentObject>())
+    if (!scope.is<CallObject>())
         return true;
 
     CallObject& callobj = scope.as<CallObject>();

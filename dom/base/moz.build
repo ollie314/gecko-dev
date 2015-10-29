@@ -154,6 +154,7 @@ EXPORTS.mozilla.dom += [
     'BarProps.h',
     'BlobSet.h',
     'ChildIterator.h',
+    'ChromeNodeList.h',
     'ChromeUtils.h',
     'Comment.h',
     'Console.h',
@@ -209,6 +210,7 @@ EXPORTS.mozilla.dom += [
     'URL.h',
     'URLSearchParams.h',
     'WebSocket.h',
+    'WindowOrientationObserver.h',
 ]
 
 UNIFIED_SOURCES += [
@@ -216,6 +218,7 @@ UNIFIED_SOURCES += [
     'Attr.cpp',
     'BarProps.cpp',
     'ChildIterator.cpp',
+    'ChromeNodeList.cpp',
     'ChromeUtils.cpp',
     'Comment.cpp',
     'Console.cpp',
@@ -355,6 +358,7 @@ UNIFIED_SOURCES += [
     'URLSearchParams.cpp',
     'WebSocket.cpp',
     'WindowNamedPropertiesHandler.cpp',
+    'WindowOrientationObserver.cpp',
 ]
 
 if CONFIG['MOZ_WEBRTC']:

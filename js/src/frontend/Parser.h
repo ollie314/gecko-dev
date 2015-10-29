@@ -382,6 +382,7 @@ enum class PropertyType {
 enum YieldHandling { YieldIsName, YieldIsKeyword };
 enum InHandling { InAllowed, InProhibited };
 enum DefaultHandling { NameRequired, AllowDefaultName };
+enum TripledotHandling { TripledotAllowed, TripledotProhibited };
 
 template <typename ParseHandler>
 class Parser : private JS::AutoGCRooter, public StrictModeGetter
@@ -681,7 +682,6 @@ class Parser : private JS::AutoGCRooter, public StrictModeGetter
     Node debuggerStatement();
 
     Node lexicalDeclaration(YieldHandling yieldHandling, bool isConst);
-    Node letDeclarationOrBlock(YieldHandling yieldHandling);
     Node importDeclaration();
     Node exportDeclaration();
     Node expressionStatement(YieldHandling yieldHandling,
@@ -692,22 +692,27 @@ class Parser : private JS::AutoGCRooter, public StrictModeGetter
                    bool* psimple = nullptr, StaticBlockObject* blockObj = nullptr,
                    VarContext varContext = HoistVars);
     Node expr(InHandling inHandling, YieldHandling yieldHandling,
+              TripledotHandling tripledotHandling,
               InvokedPrediction invoked = PredictUninvoked);
     Node assignExpr(InHandling inHandling, YieldHandling yieldHandling,
+                    TripledotHandling tripledotHandling,
                     InvokedPrediction invoked = PredictUninvoked);
     Node assignExprWithoutYield(YieldHandling yieldHandling, unsigned err);
     Node yieldExpression(InHandling inHandling);
     Node condExpr1(InHandling inHandling, YieldHandling yieldHandling,
+                   TripledotHandling tripledotHandling,
                    InvokedPrediction invoked = PredictUninvoked);
     Node orExpr1(InHandling inHandling, YieldHandling yieldHandling,
-                 InvokedPrediction invoked = PredictUninvoked);
-    Node unaryExpr(YieldHandling yieldHandling, InvokedPrediction invoked = PredictUninvoked);
-    Node memberExpr(YieldHandling yieldHandling, TokenKind tt, bool allowCallSyntax,
-                    InvokedPrediction invoked = PredictUninvoked);
-    Node primaryExpr(YieldHandling yieldHandling, TokenKind tt,
+                 TripledotHandling tripledotHandling,
+                   InvokedPrediction invoked = PredictUninvoked);
+    Node unaryExpr(YieldHandling yieldHandling, TripledotHandling tripledotHandling,
+                   InvokedPrediction invoked = PredictUninvoked);
+    Node memberExpr(YieldHandling yieldHandling, TripledotHandling tripledotHandling, TokenKind tt,
+                    bool allowCallSyntax, InvokedPrediction invoked = PredictUninvoked);
+    Node primaryExpr(YieldHandling yieldHandling, TripledotHandling tripledotHandling, TokenKind tt,
                      InvokedPrediction invoked = PredictUninvoked);
-    Node parenExprOrGeneratorComprehension(YieldHandling yieldHandling);
-    Node exprInParens(InHandling inHandling, YieldHandling yieldHandling);
+    Node exprInParens(InHandling inHandling, YieldHandling yieldHandling,
+                      TripledotHandling tripledotHandling);
 
     bool tryNewTarget(Node& newTarget);
     bool checkAndMarkSuperScope();
@@ -732,24 +737,22 @@ class Parser : private JS::AutoGCRooter, public StrictModeGetter
 
     Node condition(InHandling inHandling, YieldHandling yieldHandling);
 
-    Node generatorComprehensionLambda(GeneratorKind comprehensionKind, unsigned begin,
-                                      Node innerStmt);
-
+    /* comprehensions */
     Node legacyComprehensionTail(Node kid, unsigned blockid, GeneratorKind comprehensionKind,
                                  ParseContext<ParseHandler>* outerpc,
                                  unsigned innerBlockScopeDepth);
     Node legacyArrayComprehension(Node array);
+    Node generatorComprehensionLambda(GeneratorKind comprehensionKind, unsigned begin,
+                                      Node innerStmt);
     Node legacyGeneratorExpr(Node kid);
-
-    Node comprehensionTail(GeneratorKind comprehensionKind);
-    Node comprehensionIf(GeneratorKind comprehensionKind);
     Node comprehensionFor(GeneratorKind comprehensionKind);
+    Node comprehensionIf(GeneratorKind comprehensionKind);
+    Node comprehensionTail(GeneratorKind comprehensionKind);
     Node comprehension(GeneratorKind comprehensionKind);
     Node arrayComprehension(uint32_t begin);
     Node generatorComprehension(uint32_t begin);
 
     bool argumentList(YieldHandling yieldHandling, Node listNode, bool* isSpread);
-    Node deprecatedLetBlock(YieldHandling yieldHandling);
     Node destructuringExpr(YieldHandling yieldHandling, BindData<ParseHandler>* data,
                            TokenKind tt);
     Node destructuringExprWithoutYield(YieldHandling yieldHandling, BindData<ParseHandler>* data,
@@ -795,6 +798,15 @@ class Parser : private JS::AutoGCRooter, public StrictModeGetter
     bool isValidForStatementLHS(Node pn1, JSVersion version, bool forDecl, bool forEach,
                                 ParseNodeKind headKind);
     bool checkForHeadConstInitializers(Node pn1);
+
+    // Use when the current token is TOK_NAME and is known to be 'let'.
+    bool shouldParseLetDeclaration(bool* parseDeclOut);
+
+    // Use when the lookahead token is TOK_NAME and is known to be 'let'. If a
+    // let declaration should be parsed, the TOK_NAME token of 'let' is
+    // consumed. Otherwise, the current token remains the TOK_NAME token of
+    // 'let'.
+    bool peekShouldParseLetDeclaration(bool* parseDeclOut, TokenStream::Modifier modifier);
 
   public:
     enum FunctionCallBehavior {

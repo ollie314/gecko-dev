@@ -152,13 +152,16 @@ pref("dom.serviceWorkers.enabled", false);
 pref("dom.serviceWorkers.interception.enabled", false);
 
 // Allow service workers to intercept opaque (cross origin) responses
-pref("dom.serviceWorkers.interception.opaque.enabled", false);
+pref("dom.serviceWorkers.interception.opaque.enabled", true);
 
 // The amount of time (milliseconds) service workers keep running after each event.
 pref("dom.serviceWorkers.idle_timeout", 30000);
 
 // The amount of time (milliseconds) service workers can be kept running using waitUntil promises.
 pref("dom.serviceWorkers.idle_extended_timeout", 300000);
+
+// Enable test for 24 hours update, service workers will always treat last update check time is over 24 hours
+pref("dom.serviceWorkers.testUpdateOverOneDay", false);
 
 // Whether nonzero values can be returned from performance.timing.*
 pref("dom.enable_performance", true);
@@ -342,7 +345,7 @@ pref("media.wave.enabled", true);
 #ifdef MOZ_WEBM
 pref("media.webm.enabled", true);
 #if defined(MOZ_FMP4) && defined(MOZ_WMF)
-pref("media.webm.intel_decoder.enabled", false);
+pref("media.webm.intel_decoder.enabled", true);
 #endif
 #endif
 #ifdef MOZ_GSTREAMER
@@ -350,6 +353,9 @@ pref("media.gstreamer.enabled", true);
 pref("media.gstreamer.enable-blacklist", true);
 #endif
 #ifdef MOZ_APPLEMEDIA
+#ifdef MOZ_WIDGET_UIKIT
+pref("media.mp3.enabled", true);
+#endif
 pref("media.apple.mp3.enabled", true);
 pref("media.apple.mp4.enabled", true);
 #endif
@@ -521,6 +527,9 @@ pref("media.video-queue.send-to-compositor-size", 9999);
 // Whether to disable the video stats to prevent fingerprinting
 pref("media.video_stats.enabled", true);
 
+// Weather we allow AMD switchable graphics
+pref("layers.amd-switchable-gfx.enabled", true);
+
 // Whether to use async panning and zooming
 pref("layers.async-pan-zoom.enabled", false);
 
@@ -558,6 +567,7 @@ pref("apz.fling_curve_function_x2", "1.0");
 pref("apz.fling_curve_function_y2", "1.0");
 pref("apz.fling_curve_threshold_inches_per_ms", "-1.0");
 pref("apz.fling_friction", "0.002");
+pref("apz.fling_snap_friction", "0.015");
 pref("apz.fling_stop_on_tap_threshold", "0.05");
 pref("apz.fling_stopped_threshold", "0.01");
 pref("apz.highlight_checkerboarded_areas", false);
@@ -3254,11 +3264,7 @@ pref("ui.window_class_override", "");
 pref("ui.elantech_gesture_hacks.enabled", -1);
 
 // Show the Windows on-screen keyboard (osk.exe) when a text field is focused.
-#ifdef RELEASE_BUILD
-pref("ui.osk.enabled", false);
-#else
 pref("ui.osk.enabled", true);
-#endif
 // Only show the on-screen keyboard if there are no physical keyboards attached
 // to the device.
 pref("ui.osk.detect_physical_keyboard", true);
@@ -4919,7 +4925,7 @@ pref("dom.beforeAfterKeyboardEvent.enabled", false);
 // Presentation API
 pref("dom.presentation.enabled", false);
 pref("dom.presentation.tcp_server.debug", false);
-pref("dom.presentation.discovery.enabled", true);
+pref("dom.presentation.discovery.enabled", false);
 pref("dom.presentation.discovery.timeout_ms", 10000);
 pref("dom.presentation.discoverable", false);
 
@@ -5097,6 +5103,9 @@ pref("memory.report_concurrency", 10);
 
 // Add Mozilla AudioChannel APIs.
 pref("media.useAudioChannelAPI", false);
+
+// Expose Request.cache. Currently disabled since the implementation is incomplete.
+pref("dom.requestcache.enabled", false);
 
 // Expose Request.context. Currently disabled since the spec is in flux.
 pref("dom.requestcontext.enabled", false);

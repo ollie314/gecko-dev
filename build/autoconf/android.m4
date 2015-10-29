@@ -337,6 +337,19 @@ fi
 
 ])
 
+AC_DEFUN([MOZ_ANDROID_GOOGLE_CLOUD_MESSAGING],
+[
+
+if test -n "$MOZ_ANDROID_GCM" ; then
+    AC_SUBST(MOZ_ANDROID_GCM)
+
+    MOZ_ANDROID_AAR(play-services-base, 8.1.0, google, com/google/android/gms)
+    MOZ_ANDROID_AAR(play-services-basement, 8.1.0, google, com/google/android/gms)
+    MOZ_ANDROID_AAR(play-services-gcm, 8.1.0, google, com/google/android/gms)
+fi
+
+])
+
 dnl Configure an Android SDK.
 dnl Arg 1: target SDK version, like 22.
 dnl Arg 2: build tools version, like 22.0.1.
@@ -433,6 +446,7 @@ case "$target" in
     AC_SUBST(ANDROID_TOOLS)
 
     MOZ_ANDROID_AAR(appcompat-v7, 23.0.1, android, com/android/support)
+    MOZ_ANDROID_AAR(design, 23.0.1, android, com/android/support)
     MOZ_ANDROID_AAR(recyclerview-v7, 23.0.1, android, com/android/support)
     MOZ_ANDROID_AAR(support-v4, 23.0.1, android, com/android/support, REQUIRED_INTERNAL_IMPL)
 

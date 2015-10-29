@@ -1797,9 +1797,9 @@ CASE(EnableInterruptsPseudoOpcode)
 
 /* Various 1-byte no-ops. */
 CASE(JSOP_NOP)
-CASE(JSOP_UNUSED2)
 CASE(JSOP_UNUSED14)
 CASE(JSOP_BACKPATCH)
+CASE(JSOP_UNUSED145)
 CASE(JSOP_UNUSED171)
 CASE(JSOP_UNUSED172)
 CASE(JSOP_UNUSED173)
@@ -1908,6 +1908,10 @@ END_CASE(JSOP_DUPAT)
 CASE(JSOP_SETRVAL)
     POP_RETURN_VALUE();
 END_CASE(JSOP_SETRVAL)
+
+CASE(JSOP_GETRVAL)
+    PUSH_COPY(REGS.fp()->returnValue());
+END_CASE(JSOP_GETRVAL)
 
 CASE(JSOP_ENTERWITH)
 {
@@ -2135,16 +2139,6 @@ CASE(JSOP_PICK)
     REGS.sp[-1] = lval;
 }
 END_CASE(JSOP_PICK)
-
-CASE(JSOP_BINDINTRINSIC)
-{
-    NativeObject* holder = GlobalObject::getIntrinsicsHolder(cx, cx->global());
-    if (!holder)
-        goto error;
-
-    PUSH_OBJECT(*holder);
-}
-END_CASE(JSOP_BINDINTRINSIC)
 
 CASE(JSOP_BINDGNAME)
 CASE(JSOP_BINDNAME)
@@ -2569,9 +2563,6 @@ CASE(JSOP_SETINTRINSIC)
 
     if (!SetIntrinsicOperation(cx, script, REGS.pc, value))
         goto error;
-
-    REGS.sp[-2] = REGS.sp[-1];
-    REGS.sp--;
 }
 END_CASE(JSOP_SETINTRINSIC)
 
@@ -4515,6 +4506,31 @@ js::SpreadCallOperation(JSContext* cx, HandleScript script, jsbytecode* pc, Hand
                              constructing ? JSMSG_TOO_MANY_CON_SPREADARGS
                                           : JSMSG_TOO_MANY_FUN_SPREADARGS);
         return false;
+    }
+
+    // Do our own checks for the callee being a function, as Invoke uses the
+    // expression decompiler to decompile the callee stack operand based on
+    // the number of arguments. Spread operations have the callee at sp - 3
+    // when not constructing, and sp - 4 when constructing.
+    if (callee.isPrimitive()) {
+        return ReportIsNotFunction(cx, callee, 2 + constructing,
+                                   constructing ? CONSTRUCT : NO_CONSTRUCT);
+    }
+
+    const Class* clasp = callee.toObject().getClass();
+    if (MOZ_UNLIKELY(clasp != &JSFunction::class_)) {
+#if JS_HAS_NO_SUCH_METHOD
+        if (MOZ_UNLIKELY(clasp != &js_NoSuchMethodClass)) {
+#endif
+
+            if (!callee.toObject().callHook()) {
+                return ReportIsNotFunction(cx, callee, 2 + constructing,
+                                           constructing ? CONSTRUCT : NO_CONSTRUCT);
+            }
+
+#if JS_HAS_NO_SUCH_METHOD
+        }
+#endif
     }
 
 #ifdef DEBUG

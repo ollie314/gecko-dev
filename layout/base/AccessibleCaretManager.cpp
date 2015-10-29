@@ -291,11 +291,7 @@ AccessibleCaretManager::UpdateCaretsForSelectionMode(UpdateCaretsHint aHint)
 
   UpdateCaretsForTilt();
 
-  if ((firstCaretResult == PositionChangedResult::Changed ||
-       secondCaretResult == PositionChangedResult::Changed ||
-       firstCaretResult == PositionChangedResult::Invisible ||
-       secondCaretResult == PositionChangedResult::Invisible) &&
-      !mActiveCaret) {
+  if (!mActiveCaret) {
     DispatchCaretStateChangedEvent(CaretChangedReason::Updateposition);
   }
 }
@@ -1058,7 +1054,7 @@ AccessibleCaretManager::DispatchCaretStateChangedEvent(CaretChangedReason aReaso
   }
 
   RefPtr<DOMRect> domRect = new DOMRect(ToSupports(doc));
-  nsRect rect = nsContentUtils::GetSelectionBoundingRect(sel);
+  nsRect rect = nsLayoutUtils::GetSelectionBoundingRect(sel);
 
   nsIFrame* commonAncestorFrame = nullptr;
   nsIFrame* rootFrame = mPresShell->GetRootFrame();

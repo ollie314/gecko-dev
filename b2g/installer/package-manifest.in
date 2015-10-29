@@ -382,6 +382,8 @@
 @RESPATH@/components/ConsoleAPIStorage.js
 @RESPATH@/components/BrowserElementParent.manifest
 @RESPATH@/components/BrowserElementParent.js
+@RESPATH@/components/BrowserElementProxy.manifest
+@RESPATH@/components/BrowserElementProxy.js
 @RESPATH@/components/ContactManager.js
 @RESPATH@/components/ContactManager.manifest
 @RESPATH@/components/PhoneNumberService.js
@@ -732,9 +734,6 @@
 ; [Browser Chrome Files]
 @RESPATH@/chrome/browser@JAREXT@
 @RESPATH@/chrome/browser.manifest
-@RESPATH@/extensions/{972ce4c6-7e08-4474-a285-3208198ce6fd}/install.rdf
-@RESPATH@/extensions/{972ce4c6-7e08-4474-a285-3208198ce6fd}/icon.png
-@RESPATH@/extensions/{972ce4c6-7e08-4474-a285-3208198ce6fd}/preview.png
 @RESPATH@/chrome/toolkit@JAREXT@
 @RESPATH@/chrome/toolkit.manifest
 #ifdef XP_UNIX

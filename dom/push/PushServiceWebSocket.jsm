@@ -10,6 +10,13 @@ const Ci = Components.interfaces;
 const Cu = Components.utils;
 const Cr = Components.results;
 
+Cu.import("resource://gre/modules/AppConstants.jsm");
+Cu.import("resource://gre/modules/Preferences.jsm");
+Cu.import("resource://gre/modules/Promise.jsm");
+Cu.import("resource://gre/modules/Services.jsm");
+Cu.import("resource://gre/modules/Timer.jsm");
+Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+
 const {PushDB} = Cu.import("resource://gre/modules/PushDB.jsm");
 const {PushRecord} = Cu.import("resource://gre/modules/PushRecord.jsm");
 const {
@@ -18,22 +25,16 @@ const {
   getEncryptionKeyParams,
   getEncryptionParams,
 } = Cu.import("resource://gre/modules/PushCrypto.jsm");
-Cu.import("resource://gre/modules/Preferences.jsm");
-Cu.import("resource://gre/modules/Timer.jsm");
-Cu.import("resource://gre/modules/Promise.jsm");
-Cu.import("resource://gre/modules/XPCOMUtils.jsm");
-Cu.import("resource://gre/modules/Services.jsm");
-
 
 XPCOMUtils.defineLazyServiceGetter(this, "gDNSService",
                                    "@mozilla.org/network/dns-service;1",
                                    "nsIDNSService");
 
-#ifdef MOZ_B2G
-XPCOMUtils.defineLazyServiceGetter(this, "gPowerManagerService",
-                                   "@mozilla.org/power/powermanagerservice;1",
-                                   "nsIPowerManagerService");
-#endif
+if (AppConstants.MOZ_B2G) {
+  XPCOMUtils.defineLazyServiceGetter(this, "gPowerManagerService",
+                                     "@mozilla.org/power/powermanagerservice;1",
+                                     "nsIPowerManagerService");
+}
 
 var threadManager = Cc["@mozilla.org/thread-manager;1"]
                       .getService(Ci.nsIThreadManager);
@@ -154,6 +155,10 @@ this.PushServiceWebSocket = {
                       kPUSHWSDB_STORE_NAME,
                       "channelID",
                       PushRecordWebSocket);
+  },
+
+  serviceType: function() {
+    return "WebSocket";
   },
 
   disconnect: function() {
@@ -638,7 +643,7 @@ this.PushServiceWebSocket = {
     try {
       // Grab a wakelock before we open the socket to ensure we don't go to
       // sleep before connection the is opened.
-      this._ws.asyncOpen(uri, uri.spec, this._wsListener, null);
+      this._ws.asyncOpen(uri, uri.spec, 0, this._wsListener, null);
       this._acquireWakeLock();
       this._currentState = STATE_WAITING_FOR_WS_START;
     } catch(e) {
@@ -727,7 +732,10 @@ this.PushServiceWebSocket = {
   },
 
   _acquireWakeLock: function() {
-#ifdef MOZ_B2G
+    if (!AppConstants.MOZ_B2G) {
+      return;
+    }
+
     // Disable the wake lock on non-B2G platforms to work around bug 1154492.
     if (!this._socketWakeLock) {
       debug("Acquiring Socket Wakelock");
@@ -748,11 +756,13 @@ this.PushServiceWebSocket = {
                         // to sleep just as the socket connected.
                         this._requestTimeout + 1000,
                         Ci.nsITimer.TYPE_ONE_SHOT);
-#endif
   },
 
   _releaseWakeLock: function() {
-#ifdef MOZ_B2G
+    if (!AppConstants.MOZ_B2G) {
+      return;
+    }
+
     debug("Releasing Socket WakeLock");
     if (this._socketWakeLockTimer) {
       this._socketWakeLockTimer.cancel();
@@ -761,7 +771,6 @@ this.PushServiceWebSocket = {
       this._socketWakeLock.unlock();
       this._socketWakeLock = null;
     }
-#endif
   },
 
   /**
@@ -1118,9 +1127,6 @@ this.PushServiceWebSocket = {
       return;
     }
 
-    // Since we've had a successful connection reset the retry fail count.
-    this._retryFailCount = 0;
-
     let data = {
       messageType: "hello",
       use_webpush: true,
@@ -1128,14 +1134,6 @@ this.PushServiceWebSocket = {
 
     if (this._UAID) {
       data.uaid = this._UAID;
-    }
-
-    function sendHelloMessage(ids) {
-      // On success, ids is an array, on error its not.
-      data.channelIDs = ids.map ?
-                           ids.map(function(el) { return el.channelID; }) : [];
-      this._wsSendMessage(data);
-      this._currentState = STATE_WAITING_FOR_HELLO;
     }
 
     this._networkInfo.getNetworkState((networkState) => {
@@ -1156,9 +1154,8 @@ this.PushServiceWebSocket = {
         };
       }
 
-      this._mainPushService.getAllUnexpired()
-        .then(sendHelloMessage.bind(this),
-              sendHelloMessage.bind(this));
+      this._wsSendMessage(data);
+      this._currentState = STATE_WAITING_FOR_HELLO;
     });
   },
 
@@ -1196,12 +1193,10 @@ this.PushServiceWebSocket = {
       return;
     }
 
-    // If we are not waiting for a hello message, reset the retry fail count
-    if (this._currentState != STATE_WAITING_FOR_HELLO) {
-      debug('Reseting _retryFailCount and _pingIntervalRetryTimes');
-      this._retryFailCount = 0;
-      this._pingIntervalRetryTimes = {};
-    }
+    // If we receive a message, we know the connection succeeded. Reset the
+    // connection attempt and ping interval counters.
+    this._retryFailCount = 0;
+    this._pingIntervalRetryTimes = {};
 
     let doNotHandle = false;
     if ((message === '{}') ||

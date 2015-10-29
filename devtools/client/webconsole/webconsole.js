@@ -3230,6 +3230,13 @@ JSTerm.prototype = {
     this.lastInputValue && this.setInputValue(this.lastInputValue);
   },
 
+  focus: function() {
+    let inputNode = this.inputNode;
+    if (!inputNode.getAttribute("focused")) {
+      inputNode.focus();
+    }
+  },
+
   /**
    * The JavaScript evaluation response handler.
    *
@@ -3444,6 +3451,7 @@ JSTerm.prototype = {
       bindObjectActor: aOptions.bindObjectActor,
       frameActor: frameActor,
       selectedNodeActor: aOptions.selectedNodeActor,
+      selectedObjectActor: aOptions.selectedObjectActor,
     };
 
     this.webConsoleClient.evaluateJSAsync(aString, onResult, evalOptions);
@@ -3945,6 +3953,7 @@ JSTerm.prototype = {
     this.completeNode.value = "";
     this.resizeInput();
     this._inputChanged = true;
+    this.emit("set-input-value");
   },
 
   /**
@@ -5024,13 +5033,17 @@ WebConsoleConnectionProxy.prototype = {
 
     let client = this.client = this.target.client;
 
-    client.addListener("logMessage", this._onLogMessage);
-    client.addListener("pageError", this._onPageError);
-    client.addListener("consoleAPICall", this._onConsoleAPICall);
-    client.addListener("fileActivity", this._onFileActivity);
-    client.addListener("reflowActivity", this._onReflowActivity);
-    client.addListener("serverLogCall", this._onServerLogCall);
-    client.addListener("lastPrivateContextExited", this._onLastPrivateContextExited);
+    if (this.target.isWorkerTarget) {
+      // XXXworkers: Not Console API yet inside of workers (Bug 1209353).
+    } else {
+      client.addListener("logMessage", this._onLogMessage);
+      client.addListener("pageError", this._onPageError);
+      client.addListener("consoleAPICall", this._onConsoleAPICall);
+      client.addListener("fileActivity", this._onFileActivity);
+      client.addListener("reflowActivity", this._onReflowActivity);
+      client.addListener("serverLogCall", this._onServerLogCall);
+      client.addListener("lastPrivateContextExited", this._onLastPrivateContextExited);
+    }
     this.target.on("will-navigate", this._onTabNavigated);
     this.target.on("navigate", this._onTabNavigated);
 

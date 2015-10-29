@@ -7,16 +7,42 @@
 #ifndef mozilla_image_decoders_nsBMPDecoder_h
 #define mozilla_image_decoders_nsBMPDecoder_h
 
-#include "BMPFileHeaders.h"
+#include "BMPHeaders.h"
 #include "Decoder.h"
 #include "gfxColor.h"
-#include "nsAutoPtr.h"
 #include "StreamingLexer.h"
+#include "mozilla/UniquePtr.h"
 
 namespace mozilla {
 namespace image {
 
 namespace bmp {
+
+/// This struct contains the fields from the file header and info header that
+/// we use during decoding. (Excluding bitfields fields, which are kept in
+/// BitFields.)
+struct Header {
+  uint32_t mDataOffset;     // Offset to raster data.
+  uint32_t mBIHSize;        // Header size.
+  int32_t  mWidth;          // Image width.
+  int32_t  mHeight;         // Image height.
+  uint16_t mBpp;            // Bits per pixel.
+  uint32_t mCompression;    // See struct Compression for valid values.
+  uint32_t mImageSize;      // (compressed) image size. Can be 0 if
+                            // mCompression==0.
+  uint32_t mNumColors;      // Used colors.
+
+  Header()
+   : mDataOffset(0)
+   , mBIHSize(0)
+   , mWidth(0)
+   , mHeight(0)
+   , mBpp(0)
+   , mCompression(0)
+   , mImageSize(0)
+   , mNumColors(0)
+  {}
+};
 
 /// An entry in the color table.
 struct ColorTableEntry {
@@ -39,12 +65,26 @@ class BitFields {
     void Set(uint32_t aMask);
 
   public:
+    Value()
+    {
+      mMask = 0;
+      mRightShift = 0;
+      mBitWidth = 0;
+    }
+
+    /// Returns true if this channel is used. Only used for alpha.
+    bool IsPresent() const { return mMask != 0x0; }
+
     /// Extracts the single color value from the multi-color value.
     uint8_t Get(uint32_t aVal) const;
 
-    /// Specialized version of Get() for the case where the bit-width is 5.
-    /// (It will assert if called and the bit-width is not 5.)
+    /// Like Get(), but specially for alpha.
+    uint8_t GetAlpha(uint32_t aVal, bool& aHasAlphaOut) const;
+
+    /// Specialized versions of Get() for when the bit-width is 5 or 8.
+    /// (They will assert if called and the bit-width is not 5 or 8.)
     uint8_t Get5(uint32_t aVal) const;
+    uint8_t Get8(uint32_t aVal) const;
   };
 
 public:
@@ -52,15 +92,23 @@ public:
   Value mRed;
   Value mGreen;
   Value mBlue;
+  Value mAlpha;
 
   /// Set bitfields to the standard 5-5-5 16bpp values.
   void SetR5G5B5();
 
+  /// Set bitfields to the standard 8-8-8 32bpp values.
+  void SetR8G8B8();
+
   /// Test if bitfields have the standard 5-5-5 16bpp values.
   bool IsR5G5B5() const;
 
-  /// Read the bitfields from a header.
-  void ReadFromHeader(const char* aData);
+  /// Test if bitfields have the standard 8-8-8 32bpp values.
+  bool IsR8G8B8() const;
+
+  /// Read the bitfields from a header. The reading of the alpha mask is
+  /// optional.
+  void ReadFromHeader(const char* aData, bool aReadAlpha);
 
   /// Length of the bitfields structure in the BMP file.
   static const size_t LENGTH = 12;
@@ -77,33 +125,29 @@ class nsBMPDecoder : public Decoder
 public:
   ~nsBMPDecoder();
 
-  /// Specifies whether or not the BMP file will contain alpha data. If set to
-  /// true and the BMP is 32BPP, the alpha data will be retrieved from the 4th
-  /// byte of image data per pixel.
-  void SetUseAlphaData(bool useAlphaData);
-
-  /// Obtains the bits per pixel from the internal BIH header.
-  int32_t GetBitsPerPixel() const;
-
-  /// Obtains the width from the internal BIH header.
-  int32_t GetWidth() const;
-
-  /// Obtains the abs-value of the height from the internal BIH header.
-  int32_t GetHeight() const;
-
   /// Obtains the internal output image buffer.
-  uint32_t* GetImageData();
+  uint32_t* GetImageData() { return reinterpret_cast<uint32_t*>(mImageData); }
+
+  /// Obtains the length of the internal output image buffer.
   size_t GetImageDataLength() const { return mImageDataLength; }
 
   /// Obtains the size of the compressed image resource.
   int32_t GetCompressedImageSize() const;
 
-  /// Obtains whether or not a BMP file had alpha data in its 4th byte for 32BPP
-  /// bitmaps. Use only after the bitmap has been processed.
-  bool HasAlphaData() const { return mHaveAlphaData; }
+  /// Mark this BMP as being within an ICO file. Only used for testing purposes
+  /// because the ICO-specific constructor does this marking automatically.
+  void SetIsWithinICO() { mIsWithinICO = true; }
 
-  /// Marks this BMP as having alpha data (due to e.g. an ICO alpha mask).
-  void SetHasAlphaData() { mHaveAlphaData = true; }
+  /// Did the BMP file have alpha data of any kind? (Only use this after the
+  /// bitmap has been fully decoded.)
+  bool HasTransparency() const { return mDoesHaveTransparency; }
+
+  /// Force transparency from outside. (Used by the ICO decoder.)
+  void SetHasTransparency()
+  {
+    mMayHaveTransparency = true;
+    mDoesHaveTransparency = true;
+  }
 
   virtual void WriteInternal(const char* aBuffer,
                              uint32_t aCount) override;
@@ -112,14 +156,6 @@ public:
 private:
   friend class DecoderFactory;
   friend class nsICODecoder;
-
-  // Decoders should only be instantiated via DecoderFactory.
-  // XXX(seth): nsICODecoder is temporarily an exception to this rule.
-  explicit nsBMPDecoder(RasterImage* aImage);
-
-  uint32_t* RowBuffer();
-
-  void FinishRow();
 
   enum class State {
     FILE_HEADER,
@@ -136,6 +172,23 @@ private:
     FAILURE
   };
 
+  // This is the constructor used by DecoderFactory.
+  explicit nsBMPDecoder(RasterImage* aImage);
+
+  // This is the constructor used by nsICODecoder.
+  // XXX(seth): nsICODecoder is temporarily an exception to the rule that
+  //            decoders should only be instantiated via DecoderFactory.
+  nsBMPDecoder(RasterImage* aImage, uint32_t aDataOffset);
+
+  // Helper constructor called by the other two.
+  nsBMPDecoder(RasterImage* aImage, State aState, size_t aLength);
+
+  int32_t AbsoluteHeight() const { return abs(mH.mHeight); }
+
+  uint32_t* RowBuffer();
+
+  void FinishRow();
+
   LexerTransition<State> ReadFileHeader(const char* aData, size_t aLength);
   LexerTransition<State> ReadInfoHeaderSize(const char* aData, size_t aLength);
   LexerTransition<State> ReadInfoHeaderRest(const char* aData, size_t aLength);
@@ -149,14 +202,24 @@ private:
 
   StreamingLexer<State> mLexer;
 
-  bmp::FileHeader mBFH;
-  bmp::V5InfoHeader mBIH;
+  bmp::Header mH;
+
+  // If the BMP is within an ICO file our treatment of it differs slightly.
+  bool mIsWithinICO;
 
   bmp::BitFields mBitFields;
 
+  // Might the image have transparency? Determined from the headers during
+  // metadata decode. (Does not guarantee the image actually has transparency.)
+  bool mMayHaveTransparency;
+
+  // Does the image have transparency? Determined during full decoding, so only
+  // use this after that has been completed.
+  bool mDoesHaveTransparency;
+
   uint32_t mNumColors;      // The number of used colors, i.e. the number of
                             // entries in mColors, if it's present.
-  bmp::ColorTableEntry* mColors; // The color table, if it's present.
+  UniquePtr<bmp::ColorTableEntry[]> mColors; // The color table, if it's present.
   uint32_t mBytesPerColor;  // 3 or 4, depending on the format
 
   // The number of bytes prior to the optional gap that have been read. This
@@ -172,54 +235,7 @@ private:
 
   // Only used in RLE_ABSOLUTE state: the number of pixels to read.
   uint32_t mAbsoluteModeNumPixels;
-
-  // Stores whether the image data may store alpha data, or if the alpha data
-  // is unspecified and filled with a padding byte of 0. When a 32BPP bitmap
-  // is stored in an ICO or CUR file, its 4th byte is used for alpha
-  // transparency.  When it is stored in a BMP, its 4th byte is reserved and
-  // is always 0. Reference:
-  //   http://en.wikipedia.org/wiki/ICO_(file_format)#cite_note-9
-  // Bitmaps where the alpha bytes are all 0 should be fully visible.
-  bool mUseAlphaData;
-
-  // Whether the 4th byte alpha data was found to be non zero and hence used.
-  bool mHaveAlphaData;
 };
-
-/// Sets the pixel data in aDecoded to the given values.
-/// @param aDecoded pointer to pixel to be set, will be incremented to point to
-/// the next pixel.
-static inline void
-SetPixel(uint32_t*& aDecoded, uint8_t aRed, uint8_t aGreen,
-         uint8_t aBlue, uint8_t aAlpha = 0xFF)
-{
-  *aDecoded++ = gfxPackedPixel(aAlpha, aRed, aGreen, aBlue);
-}
-
-static inline void
-SetPixel(uint32_t*& aDecoded, uint8_t idx, bmp::ColorTableEntry* aColors)
-{
-  SetPixel(aDecoded,
-           aColors[idx].mRed, aColors[idx].mGreen, aColors[idx].mBlue);
-}
-
-/// Sets two (or one if aCount = 1) pixels
-/// @param aDecoded where the data is stored. Will be moved 4 resp 8 bytes
-/// depending on whether one or two pixels are written.
-/// @param aData The values for the two pixels
-/// @param aCount Current count. Is decremented by one or two.
-inline void
-Set4BitPixel(uint32_t*& aDecoded, uint8_t aData, uint32_t& aCount,
-             bmp::ColorTableEntry* aColors)
-{
-  uint8_t idx = aData >> 4;
-  SetPixel(aDecoded, idx, aColors);
-  if (--aCount > 0) {
-    idx = aData & 0xF;
-    SetPixel(aDecoded, idx, aColors);
-    --aCount;
-  }
-}
 
 } // namespace image
 } // namespace mozilla

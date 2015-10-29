@@ -18,12 +18,16 @@ import org.mozilla.gecko.animation.ViewHelper;
 import org.mozilla.gecko.db.BrowserContract.Combined;
 import org.mozilla.gecko.db.BrowserDB;
 import org.mozilla.gecko.db.SuggestedSites;
+import org.mozilla.gecko.db.TabsAccessor;
 import org.mozilla.gecko.distribution.Distribution;
 import org.mozilla.gecko.favicons.Favicons;
 import org.mozilla.gecko.favicons.LoadFaviconTask;
 import org.mozilla.gecko.favicons.OnFaviconLoadedListener;
 import org.mozilla.gecko.favicons.decoders.IconDirectoryEntry;
 import org.mozilla.gecko.firstrun.FirstrunPane;
+import org.mozilla.gecko.fxa.FirefoxAccounts;
+import org.mozilla.gecko.fxa.FxAccountConstants;
+import org.mozilla.gecko.fxa.activities.FxAccountWebFlowActivity;
 import org.mozilla.gecko.gfx.DynamicToolbarAnimator;
 import org.mozilla.gecko.gfx.ImmutableViewportMetrics;
 import org.mozilla.gecko.gfx.LayerView;
@@ -82,6 +86,7 @@ import org.mozilla.gecko.widget.ButtonToast;
 import org.mozilla.gecko.widget.ButtonToast.ToastListener;
 import org.mozilla.gecko.widget.GeckoActionProvider;
 
+import android.accounts.Account;
 import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.ContentResolver;
@@ -104,6 +109,8 @@ import android.nfc.NfcEvent;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.StrictMode;
+import android.support.annotation.NonNull;
+import android.support.annotation.WorkerThread;
 import android.support.v4.app.Fragment;
 import android.support.v4.app.FragmentManager;
 import android.support.v4.view.MenuItemCompat;
@@ -265,175 +272,6 @@ public class BrowserApp extends GeckoApp
     private boolean mHideWebContentOnAnimationEnd;
 
     private final DynamicToolbar mDynamicToolbar = new DynamicToolbar();
-
-    private DragHelper mDragHelper;
-
-    private class DragHelper implements OuterLayout.DragCallback {
-        private int[] mToolbarLocation = new int[2]; // to avoid creation every time we need to check for toolbar location.
-        // When dragging horizontally, the area of mainlayout between left drag bound and right drag bound can
-        // be dragged. A touch on the right of that area will automatically close the view.
-        private int mStatusBarHeight;
-
-        public DragHelper() {
-            // If a layout round happens from the root, the offset placed by viewdraghelper gets forgotten and
-            // main layout gets replaced to offset 0.
-            ((MainLayout) mMainLayout).setLayoutInterceptor(new LayoutInterceptor() {
-                @Override
-                public void onLayout() {
-                    if (mRootLayout.isMoving()) {
-                        mRootLayout.restoreTargetViewPosition();
-                    }
-                }
-            });
-        }
-
-        @Override
-        public void onDragProgress(float progress) {
-            mBrowserToolbar.setToolBarButtonsAlpha(1.0f - progress);
-            mTabsPanel.translateInRange(progress);
-        }
-
-        @Override
-        public View getViewToDrag() {
-            return mMainLayout;
-        }
-
-        /**
-         * Since pressing the tabs button slides the main layout, whereas draghelper changes its offset, here we
-         * restore the position of mainlayout as if it was opened by pressing the button. This allows the closing
-         * mechanism to work.
-         */
-        @Override
-        public void startDrag(boolean wasOpen) {
-            if (wasOpen) {
-                mTabsPanel.setHWLayerEnabled(true);
-                mMainLayout.offsetTopAndBottom(getDragRange());
-                mMainLayout.scrollTo(0, 0);
-            } else {
-                prepareTabsToShow();
-                mBrowserToolbar.hideVirtualKeyboard();
-            }
-            mBrowserToolbar.setContextMenuEnabled(false);
-        }
-
-        @Override
-        public void stopDrag(boolean stoppingToOpen) {
-            if (stoppingToOpen) {
-                mTabsPanel.setHWLayerEnabled(false);
-                mMainLayout.offsetTopAndBottom(-getDragRange());
-                mMainLayout.scrollTo(0, -getDragRange());
-            } else {
-                mTabsPanel.hideImmediately();
-                mTabsPanel.setHWLayerEnabled(false);
-            }
-            // Re-enabling context menu only while stopping to close.
-            if (stoppingToOpen) {
-                mBrowserToolbar.setContextMenuEnabled(false);
-            } else {
-                mBrowserToolbar.setContextMenuEnabled(true);
-            }
-        }
-
-        @Override
-        public int getDragRange() {
-            return mTabsPanel.getVerticalPanelHeight();
-        }
-
-        @Override
-        public int getOrderedChildIndex(int index) {
-            // See ViewDragHelper's findTopChildUnder method. ViewDragHelper looks for the topmost view in z order
-            // to understand what needs to be dragged. Here we are tampering Toast's index in case it's hidden,
-            // otherwise draghelper would try to drag it.
-            int mainLayoutIndex = mRootLayout.indexOfChild(mMainLayout);
-            if (index > mainLayoutIndex &&  (mToast == null || !mToast.isVisible())) {
-                return mainLayoutIndex;
-            } else {
-                return index;
-            }
-        }
-
-        @Override
-        public boolean canDrag(MotionEvent event) {
-            if (!AppConstants.MOZ_DRAGGABLE_URLBAR) {
-                return false;
-            }
-
-            // if no current tab is active.
-            if (Tabs.getInstance().getSelectedTab() == null) {
-                return false;
-            }
-
-            // currently disabled for tablets.
-            if (HardwareUtils.isTablet()) {
-                return false;
-            }
-
-            // not enabled in editing mode.
-            if (mBrowserToolbar.isEditing()) {
-                return false;
-            }
-
-            return isInToolbarBounds((int) event.getRawY());
-        }
-
-        @Override
-        public boolean canInterceptEventWhileOpen(MotionEvent event) {
-            if (event.getActionMasked() != MotionEvent.ACTION_DOWN) {
-                return false;
-            }
-
-            // Need to check if are intercepting a touch on main layout since we might hit a visible toast.
-            if (mRootLayout.findTopChildUnder(event) == mMainLayout &&
-                isInToolbarBounds((int) event.getRawY())) {
-                return true;
-            }
-            return false;
-        }
-
-        private boolean isInToolbarBounds(int y) {
-            mBrowserToolbar.getLocationOnScreen(mToolbarLocation);
-            final int upperLimit = mToolbarLocation[1] + mBrowserToolbar.getMeasuredHeight();
-            final int lowerLimit = mToolbarLocation[1];
-            return (y > lowerLimit && y < upperLimit);
-        }
-
-        public void prepareTabsToShow() {
-            if (ensureTabsPanelExists()) {
-                // If we've just inflated the tabs panel, only show it once the current
-                // layout pass is done to avoid displayed temporary UI states during
-                // relayout.
-                final ViewTreeObserver vto = mTabsPanel.getViewTreeObserver();
-                if (vto.isAlive()) {
-                    vto.addOnGlobalLayoutListener(new ViewTreeObserver.OnGlobalLayoutListener() {
-                        @Override
-                        public void onGlobalLayout() {
-                            mTabsPanel.getViewTreeObserver().removeGlobalOnLayoutListener(this);
-                            prepareTabsToShow();
-                        }
-                    });
-                }
-            } else {
-                mTabsPanel.prepareToDrag();
-            }
-        }
-
-        public int getLowerLimit() {
-            return getStatusBarHeight();
-        }
-
-        private int getStatusBarHeight() {
-            if (mStatusBarHeight != 0) {
-                return mStatusBarHeight;
-            }
-            final int resourceId = getResources().getIdentifier("status_bar_height", "dimen", "android");
-            if (resourceId > 0) {
-                mStatusBarHeight = getResources().getDimensionPixelSize(resourceId);
-                return mStatusBarHeight;
-            }
-            Log.e(LOGTAG, "Unable to find statusbar height");
-            return 0;
-        }
-    }
 
     @Override
     public View onCreateView(final String name, final Context context, final AttributeSet attrs) {
@@ -897,9 +735,6 @@ public class BrowserApp extends GeckoApp
                 setDynamicToolbarEnabled(enabled);
             }
         });
-
-        mDragHelper = new DragHelper();
-        mRootLayout.setDraggableCallback(mDragHelper);
 
         // Set the maximum bits-per-pixel the favicon system cares about.
         IconDirectoryEntry.setMaxBPP(GeckoAppShell.getScreenDepth());
@@ -1677,7 +1512,6 @@ public class BrowserApp extends GeckoApp
         invalidateOptionsMenu();
 
         if (mTabsPanel != null) {
-            mRootLayout.reset();
             mTabsPanel.refresh();
         }
 
@@ -2163,13 +1997,10 @@ public class BrowserApp extends GeckoApp
         if (!areTabsShown()) {
             mTabsPanel.setVisibility(View.INVISIBLE);
             mTabsPanel.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
-            mRootLayout.setClosed();
-            mBrowserToolbar.setContextMenuEnabled(true);
         } else {
             // Cancel editing mode to return to page content when the TabsPanel closes. We cancel
             // it here because there are graphical glitches if it's canceled while it's visible.
             mBrowserToolbar.cancelEdit();
-            mRootLayout.setOpen();
         }
 
         mTabsPanel.finishTabsAnimation();
@@ -3405,16 +3236,13 @@ public class BrowserApp extends GeckoApp
         if (itemId == R.id.send_to_device) {
             tab = Tabs.getInstance().getSelectedTab();
             if (tab != null) {
-                String url = tab.getURL();
-                if (url != null) {
-                    if (AboutPages.isAboutReader(url)) {
-                        url = ReaderModeUtils.getUrlFromAboutReader(url);
+                final Tab selectedTab = tab;
+                ThreadUtils.postToBackgroundThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        handleSendToDevice(selectedTab);
                     }
-                    Intent sendToDeviceIntent = GeckoAppShell.getShareIntent(getContext(), url,
-                            "text/plain", tab.getDisplayTitle());
-                    sendToDeviceIntent.setClass(getContext(), ShareDialog.class);
-                    startActivity(sendToDeviceIntent);
-                }
+                });
             }
             return true;
         }
@@ -3542,6 +3370,46 @@ public class BrowserApp extends GeckoApp
         }
 
         return super.onOptionsItemSelected(item);
+    }
+
+    /**
+     * Handles a press to the send to device button in the browser menu. The
+     * expected states when the user presses the button are:
+     *   * Not signed in: open to FxA sign-up
+     *   * Signed in but no other devices: display toast with a message
+     * explaining they should connect another device to use this feature
+     *   * Signed in but >= 1 other device: display device list
+     */
+    @WorkerThread
+    private void handleSendToDevice(@NonNull final Tab selectedTab) {
+        final Account account = FirefoxAccounts.getFirefoxAccount(this);
+        if (account == null) {
+            // TODO (bug 1217164): Go back to previous tab on back press
+            final Intent intent = new Intent(FxAccountConstants.ACTION_FXA_GET_STARTED);
+            intent.putExtra(FxAccountWebFlowActivity.EXTRA_ENDPOINT, FxAccountConstants.ENDPOINT_PREFERENCES);
+            startActivity(intent);
+            return;
+        }
+
+        final BrowserDB browserDB = GeckoProfile.get(this).getDB();
+        final TabsAccessor tabsAccessor = browserDB.getTabsAccessor();
+        final int remoteClientCount = tabsAccessor.getRemoteClientCount(this);
+        if (remoteClientCount == 0) {
+            final Toast toast = Toast.makeText(this, R.string.menu_no_synced_devices, Toast.LENGTH_LONG);
+            toast.show();
+
+        } else {
+            String url = selectedTab.getURL();
+            if (url != null) {
+                if (AboutPages.isAboutReader(url)) {
+                    url = ReaderModeUtils.getUrlFromAboutReader(url);
+                }
+                final Intent sendToDeviceIntent = GeckoAppShell.getShareIntent(getContext(), url,
+                        "text/plain", selectedTab.getDisplayTitle());
+                sendToDeviceIntent.setClass(getContext(), ShareDialog.class);
+                startActivity(sendToDeviceIntent);
+            }
+        }
     }
 
     @Override

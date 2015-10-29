@@ -9,7 +9,7 @@ const NS_ALERT_HORIZONTAL = 1;
 const NS_ALERT_LEFT = 2;
 const NS_ALERT_TOP = 4;
 
-const WINDOW_MARGIN = 0;
+const WINDOW_MARGIN = 10;
 
 Cu.import("resource://gre/modules/Services.jsm");
 
@@ -62,6 +62,9 @@ function prefillAlertInfo() {
           ALERT_BUNDLE.formatStringFromName("webActions.disableForOrigin.label",
                                             [hostPort],
                                             1));
+        let openSettings = document.getElementById("openSettingsMenuItem");
+        openSettings.setAttribute("label",
+          ALERT_BUNDLE.GetStringFromName("webActions.settings.label"));
       }
     }
     case 10:
@@ -128,8 +131,8 @@ function onAlertLoad() {
     let alertBox = document.getElementById("alertBox");
     alertBox.addEventListener("animationend", function hideAlert(event) {
       if (event.animationName == "alert-animation" ||
-          event.animationName == "alert-zoom-animation" ||
-          event.animationName == "alert-fadeout-animation") {
+          event.animationName == "alert-clicked-animation" ||
+          event.animationName == "alert-closing-animation") {
         alertBox.removeEventListener("animationend", hideAlert, false);
         window.close();
       }
@@ -249,6 +252,11 @@ function doNotDisturb() {
 
 function disableForOrigin() {
   gAlertListener.observe(null, "alertdisablecallback", gAlertCookie);
+  onAlertClose();
+}
+
+function openSettings() {
+  gAlertListener.observe(null, "alertsettingscallback", gAlertCookie);
   onAlertClose();
 }
 

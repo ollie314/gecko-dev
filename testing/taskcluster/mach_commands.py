@@ -110,7 +110,7 @@ def decorate_task_treeherder_routes(task, suffix):
     for env in treeheder_env:
         task['routes'].append('{}.{}'.format(TREEHERDER_ROUTES[env], suffix))
 
-def decorate_task_json_routes(build, task, json_routes, parameters):
+def decorate_task_json_routes(task, json_routes, parameters):
     """
     Decorate the given task with routes.json routes.
 
@@ -118,15 +118,9 @@ def decorate_task_json_routes(build, task, json_routes, parameters):
     :param json_routes: the list of routes to use from routes.json
     :param parameters: dictionary of parameters to use in route templates
     """
-    fmt = parameters.copy()
-    fmt.update({
-        'build_product': task['extra']['build_product'],
-        'build_name': build['build_name'],
-        'build_type': build['build_type'],
-    })
     routes = task.get('routes', [])
     for route in json_routes:
-        routes.append(route.format(**fmt))
+        routes.append(route.format(**parameters))
 
     task['routes'] = routes
 
@@ -436,6 +430,14 @@ class Graph(object):
             build_parameters = dict(parameters)
             build_parameters['build_slugid'] = slugid()
             build_task = templates.load(build['task'], build_parameters)
+
+            # Copy build_* attributes to expose them to post-build tasks
+            # as well as json routes and tests
+            task_extra = build_task['task']['extra']
+            build_parameters['build_name'] = task_extra['build_name']
+            build_parameters['build_type'] = task_extra['build_type']
+            build_parameters['build_product'] = task_extra['build_product']
+
             set_interactive_task(build_task, interactive)
 
             # try builds don't use cache
@@ -445,8 +447,7 @@ class Graph(object):
             if params['revision_hash']:
                 decorate_task_treeherder_routes(build_task['task'],
                                                 treeherder_route)
-                decorate_task_json_routes(build,
-                                          build_task['task'],
+                decorate_task_json_routes(build_task['task'],
                                           json_routes,
                                           build_parameters)
 
@@ -543,20 +544,28 @@ class Graph(object):
                 if mozharness_url:
                     test_parameters['mozharness_url'] = mozharness_url
                 test_definition = templates.load(test['task'], {})['task']
-                chunk_config = test_definition['extra']['chunks']
+                chunk_config = test_definition['extra'].get('chunks', {})
 
                 # Allow branch configs to override task level chunking...
                 if 'chunks' in test:
                     chunk_config['total'] = test['chunks']
 
-                test_parameters['total_chunks'] = chunk_config['total']
+                chunked = 'total' in chunk_config
+                if chunked:
+                    test_parameters['total_chunks'] = chunk_config['total']
 
-                for chunk in range(1, chunk_config['total'] + 1):
-                    if 'only_chunks' in test and \
+                if 'suite' in test_definition['extra']:
+                    suite_config = test_definition['extra']['suite']
+                    test_parameters['suite'] = suite_config['name']
+                    test_parameters['flavor'] = suite_config.get('flavor', '')
+
+                for chunk in range(1, chunk_config.get('total', 1) + 1):
+                    if 'only_chunks' in test and chunked and \
                         chunk not in test['only_chunks']:
                         continue
 
-                    test_parameters['chunk'] = chunk
+                    if chunked:
+                        test_parameters['chunk'] = chunk
                     test_task = configure_dependent_task(test['task'],
                                                          test_parameters,
                                                          slugid(),

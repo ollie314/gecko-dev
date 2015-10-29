@@ -858,6 +858,10 @@ or run without that action (ie: --no-{action})"
         # to activate the right behaviour in mozonfigs while we transition
         if c.get('enable_release_promotion'):
             env['ENABLE_RELEASE_PROMOTION'] = "1"
+            update_channel = c.get('update_channel', self.branch)
+            self.info("Release promotion update channel: %s"
+                      % (update_channel,))
+            env["MOZ_UPDATE_CHANNEL"] = update_channel
 
         # we can't make env an attribute of self because env can change on
         # every call for reasons like MOZ_SIGN_CMD
@@ -1807,10 +1811,8 @@ or run without that action (ie: --no-{action})"
             self._ccache_s()
 
     def preflight_package_source(self):
-        # Make sure to have an empty .mozconfig. Removing it is not enough,
-        # because MOZ_OBJDIR is not used in this case
-        self._touch_file(os.path.join(self.query_abs_dirs()['abs_src_dir'],
-                                      '.mozconfig'))
+        self._get_mozconfig()
+        self._run_tooltool()
 
     def package_source(self):
         """generates source archives and uploads them"""

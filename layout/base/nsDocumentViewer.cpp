@@ -990,6 +990,14 @@ nsDocumentViewer::LoadComplete(nsresult aStatus)
                           "content-document-loaded",
                           nullptr);
 
+      // Notify any devtools about the load.
+      RefPtr<TimelineConsumers> timelines = TimelineConsumers::Get();
+
+      if (timelines && timelines->HasConsumer(docShell)) {
+        timelines->AddMarkerForDocShell(
+          docShell, "document::Load", MarkerTracingType::TIMESTAMP);
+      }
+
       EventDispatcher::Dispatch(window, mPresContext, &event, nullptr, &status);
       if (timing) {
         timing->NotifyLoadEventEnd();
@@ -3777,9 +3785,9 @@ nsDocumentViewer::PrintPreview(nsIPrintSettings* aPrintSettings,
     return NS_ERROR_FAILURE;
   }
 
-  nsCOMPtr<nsIDOMDocument> domDoc;
-  aChildDOMWin->GetDocument(getter_AddRefs(domDoc));
-  nsCOMPtr<nsIDocument> doc = do_QueryInterface(domDoc);
+  nsCOMPtr<nsPIDOMWindow> window = do_QueryInterface(aChildDOMWin);
+  MOZ_ASSERT(window);
+  nsCOMPtr<nsIDocument> doc = window->GetDoc();
   NS_ENSURE_STATE(doc);
 
   nsAutoPtr<nsPrintEventDispatcher> beforeAndAfterPrint(
@@ -4141,7 +4149,7 @@ nsDocumentViewer::ShouldAttachToTopLevel()
   if (nsIWidget::UsePuppetWidgets())
     return true;
 
-#if defined(XP_WIN) || defined(MOZ_WIDGET_GTK) || defined(MOZ_WIDGET_ANDROID)
+#if defined(XP_WIN) || defined(MOZ_WIDGET_GTK) || defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_UIKIT)
   // On windows, in the parent process we also attach, but just to
   // chrome items
   nsWindowType winType = mParentWidget->WindowType();
@@ -4349,9 +4357,9 @@ nsDocumentViewer::OnDonePrinting()
     if (mDeferredWindowClose) {
       mDeferredWindowClose = false;
       if (mContainer) {
-        nsCOMPtr<nsIDOMWindow> win = mContainer->GetWindow();
-        if (win)
+        if (nsCOMPtr<nsPIDOMWindow> win = do_QueryInterface(mContainer->GetWindow())) {
           win->Close();
+        }
       }
     } else if (mClosingWhilePrinting) {
       if (mDocument) {

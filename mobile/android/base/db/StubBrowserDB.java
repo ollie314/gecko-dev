@@ -118,6 +118,11 @@ class StubTabsAccessor implements TabsAccessor {
     }
 
     @Override
+    public int getRemoteClientCount(Context context) {
+        return 0;
+    }
+
+    @Override
     public List<RemoteClient> getClientsWithoutTabsByRecencyFromCursor(Cursor cursor) {
         return new ArrayList<>();
     }
@@ -228,6 +233,9 @@ public class StubBrowserDB implements BrowserDB {
     public Cursor getRecentHistoryBetweenTime(ContentResolver cr, int limit, long time, long end) {
         return null;
     }
+
+    @Override
+    public long getPrePathLastVisitedTimeMilliseconds(ContentResolver cr, String prePath) { return 0; }
 
     public void expireHistory(ContentResolver cr, BrowserContract.ExpirePriority priority) {
     }

@@ -102,7 +102,14 @@
      *   Stack: => undefined
      */ \
     macro(JSOP_UNDEFINED, 1,  js_undefined_str, "",       1,  0,  1, JOF_BYTE) \
-    macro(JSOP_UNUSED2,   2,  "unused2",    NULL,         1,  1,  0, JOF_BYTE) \
+    /*
+     * Pushes stack frame's 'rval' onto the stack.
+     *   Category: Statements
+     *   Type: Function
+     *   Operands:
+     *   Stack: => rval
+     */ \
+    macro(JSOP_GETRVAL,   2,  "getrval",    NULL,         1,  0,  1, JOF_BYTE) \
     /*
      * Pops the top of stack value, converts it to an object, and adds a
      * 'DynamicWithObject' wrapping that object to the scope chain.
@@ -1467,24 +1474,14 @@
      */ \
     macro(JSOP_GETINTRINSIC,  143, "getintrinsic",  NULL, 5,  0,  1, JOF_ATOM|JOF_NAME|JOF_TYPESET) \
     /*
-     * Pops the top two values on the stack as 'val' and 'scope', sets intrinsic
-     * as 'val', and pushes 'val' onto the stack.
-     *
-     * 'scope' is not used.
+     * Stores the top stack value in the specified intrinsic.
      *   Category: Variables and Scopes
      *   Type: Intrinsics
      *   Operands: uint32_t nameIndex
-     *   Stack: scope, val => val
+     *   Stack: val => val
      */ \
-    macro(JSOP_SETINTRINSIC,  144, "setintrinsic",  NULL, 5,  2,  1, JOF_ATOM|JOF_NAME|JOF_SET|JOF_DETECTING) \
-    /*
-     * Pushes 'intrinsicHolder' onto the stack.
-     *   Category: Variables and Scopes
-     *   Type: Intrinsics
-     *   Operands: uint32_t nameIndex
-     *   Stack: => intrinsicHolder
-     */ \
-    macro(JSOP_BINDINTRINSIC, 145, "bindintrinsic", NULL, 5,  0,  1, JOF_ATOM|JOF_NAME|JOF_SET) \
+    macro(JSOP_SETINTRINSIC,  144, "setintrinsic",  NULL, 5,  1,  1, JOF_ATOM|JOF_NAME|JOF_SET|JOF_DETECTING) \
+    macro(JSOP_UNUSED145,     145, "unused145",     NULL, 1,  0,  0, JOF_BYTE) \
     /*
      * Initialize a non-configurable, non-writable, non-enumerable data-property on an object.
      *

@@ -1,4 +1,5 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -78,21 +79,18 @@ using namespace mozilla::gfx;
 using namespace mozilla::image;
 using namespace mozilla::layout;
 
-// Enumeration function that cancels all the image requests in our cache
-static PLDHashOperator
-CancelImageRequest(const nsAString& aKey,
-                   nsTreeImageCacheEntry aEntry, void* aData)
+// Function that cancels all the image requests in our cache.
+void
+nsTreeBodyFrame::CancelImageRequests()
 {
-
-  // If our imgIRequest object was registered with the refresh driver,
-  // then we need to deregister it.
-  nsTreeBodyFrame* frame = static_cast<nsTreeBodyFrame*>(aData);
-
-  nsLayoutUtils::DeregisterImageRequest(frame->PresContext(), aEntry.request,
-                                        nullptr);
-
-  aEntry.request->CancelAndForgetObserver(NS_BINDING_ABORTED);
-  return PL_DHASH_NEXT;
+  for (auto iter = mImageCache.Iter(); !iter.Done(); iter.Next()) {
+    // If our imgIRequest object was registered with the refresh driver
+    // then we need to deregister it.
+    nsTreeImageCacheEntry entry = iter.UserData();
+    nsLayoutUtils::DeregisterImageRequest(PresContext(), entry.request,
+                                          nullptr);
+    entry.request->CancelAndForgetObserver(NS_BINDING_ABORTED);
+  }
 }
 
 //
@@ -143,7 +141,7 @@ nsTreeBodyFrame::nsTreeBodyFrame(nsStyleContext* aContext)
 // Destructor
 nsTreeBodyFrame::~nsTreeBodyFrame()
 {
-  mImageCache.EnumerateRead(CancelImageRequest, this);
+  CancelImageRequests();
   DetachImageListeners();
   delete mSlots;
 }
@@ -3609,26 +3607,35 @@ nsTreeBodyFrame::PaintImage(int32_t              aRowIndex,
     // Deflate destRect for the border and padding.
     destRect.Deflate(bp);
 
-    // Get the image source rectangle - the rectangle containing the part of
-    // the image that we are going to display.
-    // sourceRect will be passed as the aSrcRect argument in the DrawImage method.
-    nsRect sourceRect = GetImageSourceRect(imageContext, useImageRegion, image);
-
-    // Let's say that the image is 100 pixels tall and
-    // that the CSS has specified that the destination height should be 50
-    // pixels tall. Let's say that the cell height is only 20 pixels. So, in
-    // those 20 visible pixels, we want to see the top 20/50ths of the image.
-    // So, the sourceRect.height should be 100 * 20 / 50, which is 40 pixels.
-    // Essentially, we are scaling the image as dictated by the CSS destination
-    // height and width, and we are then clipping the scaled image by the cell
-    // width and height.
+    // Compute the area where our whole image would be mapped, to get the
+    // desired subregion onto our actual destRect:
+    nsRect wholeImageDest;
     CSSIntSize rawImageCSSIntSize;
-    image->GetWidth(&rawImageCSSIntSize.width);
-    image->GetHeight(&rawImageCSSIntSize.height);
-    nsSize rawImageSize(CSSPixel::ToAppUnits(rawImageCSSIntSize));
-    nsRect wholeImageDest =
-      nsLayoutUtils::GetWholeImageDestination(rawImageSize, sourceRect,
-          nsRect(destRect.TopLeft(), imageDestSize));
+    if (NS_SUCCEEDED(image->GetWidth(&rawImageCSSIntSize.width)) &&
+        NS_SUCCEEDED(image->GetHeight(&rawImageCSSIntSize.height))) {
+      // Get the image source rectangle - the rectangle containing the part of
+      // the image that we are going to display.  sourceRect will be passed as
+      // the aSrcRect argument in the DrawImage method.
+      nsRect sourceRect = GetImageSourceRect(imageContext, useImageRegion, image);
+
+      // Let's say that the image is 100 pixels tall and that the CSS has
+      // specified that the destination height should be 50 pixels tall. Let's
+      // say that the cell height is only 20 pixels. So, in those 20 visible
+      // pixels, we want to see the top 20/50ths of the image.  So, the
+      // sourceRect.height should be 100 * 20 / 50, which is 40 pixels.
+      // Essentially, we are scaling the image as dictated by the CSS
+      // destination height and width, and we are then clipping the scaled
+      // image by the cell width and height.
+      nsSize rawImageSize(CSSPixel::ToAppUnits(rawImageCSSIntSize));
+      wholeImageDest =
+        nsLayoutUtils::GetWholeImageDestination(rawImageSize, sourceRect,
+                                                nsRect(destRect.TopLeft(),
+                                                       imageDestSize));
+    } else {
+      // GetWidth/GetHeight failed, so we can't easily map a subregion of the
+      // source image onto the destination area. So, just draw the whole image.
+      wholeImageDest = destRect;
+    }
 
     gfxContext* ctx = aRenderingContext.ThebesContext();
     if (opacity != 1.0f) {
@@ -4439,7 +4446,7 @@ nsresult
 nsTreeBodyFrame::ClearStyleAndImageCaches()
 {
   mStyleCache.Clear();
-  mImageCache.EnumerateRead(CancelImageRequest, this);
+  CancelImageRequests();
   mImageCache.Clear();
   return NS_OK;
 }

@@ -840,7 +840,7 @@ nsDocShell::nsDocShell()
 
 nsDocShell::~nsDocShell()
 {
-  MOZ_ASSERT(!IsObserved());
+  MOZ_ASSERT(!mObserved);
 
   Destroy();
 
@@ -2839,14 +2839,25 @@ NS_IMETHODIMP
 nsDocShell::SetRecordProfileTimelineMarkers(bool aValue)
 {
   bool currentValue = nsIDocShell::GetRecordProfileTimelineMarkers();
-  if (currentValue != aValue) {
-    if (aValue) {
-      TimelineConsumers::AddConsumer(this);
-      UseEntryScriptProfiling();
-    } else {
-      TimelineConsumers::RemoveConsumer(this);
-      UnuseEntryScriptProfiling();
-    }
+  if (currentValue == aValue) {
+    return NS_OK;
+  }
+
+  RefPtr<TimelineConsumers> timelines = TimelineConsumers::Get();
+  if (!timelines) {
+    return NS_OK;
+  }
+
+  if (aValue) {
+    MOZ_ASSERT(!timelines->HasConsumer(this));
+    timelines->AddConsumer(this);
+    MOZ_ASSERT(timelines->HasConsumer(this));
+    UseEntryScriptProfiling();
+  } else {
+    MOZ_ASSERT(timelines->HasConsumer(this));
+    timelines->RemoveConsumer(this);
+    MOZ_ASSERT(!timelines->HasConsumer(this));
+    UnuseEntryScriptProfiling();
   }
 
   return NS_OK;
@@ -2855,7 +2866,7 @@ nsDocShell::SetRecordProfileTimelineMarkers(bool aValue)
 NS_IMETHODIMP
 nsDocShell::GetRecordProfileTimelineMarkers(bool* aValue)
 {
-  *aValue = IsObserved();
+  *aValue = !!mObserved;
   return NS_OK;
 }
 
@@ -2867,7 +2878,7 @@ nsDocShell::PopProfileTimelineMarkers(
   nsTArray<dom::ProfileTimelineMarker> store;
   SequenceRooter<dom::ProfileTimelineMarker> rooter(aCx, &store);
 
-  if (IsObserved()) {
+  if (mObserved) {
     mObserved->PopMarkers(aCx, store);
   }
 
@@ -3492,14 +3503,13 @@ nsDocShell::CanAccessItem(nsIDocShellTreeItem* aTargetItem,
     return false;
   }
 
-  nsCOMPtr<nsIDOMWindow> targetWindow = aTargetItem->GetWindow();
+  nsCOMPtr<nsPIDOMWindow> targetWindow = aTargetItem->GetWindow();
   if (!targetWindow) {
     NS_ERROR("This should not happen, really");
     return false;
   }
 
-  nsCOMPtr<nsIDOMWindow> targetOpener;
-  targetWindow->GetOpener(getter_AddRefs(targetOpener));
+  nsCOMPtr<nsIDOMWindow> targetOpener = targetWindow->GetOpener();
   nsCOMPtr<nsIWebNavigation> openerWebNav(do_GetInterface(targetOpener));
   nsCOMPtr<nsIDocShellTreeItem> openerItem(do_QueryInterface(openerWebNav));
 
@@ -7479,7 +7489,7 @@ nsDocShell::EndPageLoad(nsIWebProgress* aProgress,
         return NS_OK;
       }
 
-      thisWindow->GetFrameElement(getter_AddRefs(frameElement));
+      frameElement = thisWindow->GetFrameElement();
       if (!frameElement) {
         return NS_OK;
       }
@@ -9728,8 +9738,7 @@ nsDocShell::InternalLoad(nsIURI* aURI,
           // So, the best we can do, is to tear down the new window
           // that was just created!
           //
-          nsCOMPtr<nsIDOMWindow> domWin = targetDocShell->GetWindow();
-          if (domWin) {
+          if (nsCOMPtr<nsPIDOMWindow> domWin = targetDocShell->GetWindow()) {
             domWin->Close();
           }
         }
@@ -10650,7 +10659,7 @@ nsDocShell::DoURILoad(nsIURI* aURI,
   nsCOMPtr<nsICacheInfoChannel> cacheChannel(do_QueryInterface(channel));
   nsCOMPtr<nsIUploadChannel> uploadChannel(do_QueryInterface(channel));
 
-  
+
   /* Get the cache Key from SH */
   nsCOMPtr<nsISupports> cacheKey;
   if (mLSHE) {
@@ -10658,7 +10667,7 @@ nsDocShell::DoURILoad(nsIURI* aURI,
   } else if (mOSHE) {  // for reload cases
     mOSHE->GetCacheKey(getter_AddRefs(cacheKey));
   }
-  
+
   if (uploadChannel) {
     // figure out if we need to set the post data stream on the channel...
     // right now, this is only done for http channels.....
@@ -10709,7 +10718,7 @@ nsDocShell::DoURILoad(nsIURI* aURI,
       }
     }
   }
-  
+
   if (httpChannel) {
     if (aHeadersData) {
       rv = AddHeadersToChannel(aHeadersData, httpChannel);
@@ -12995,10 +13004,11 @@ nsDocShell::GetAssociatedWindow(nsIDOMWindow** aWindow)
 NS_IMETHODIMP
 nsDocShell::GetTopWindow(nsIDOMWindow** aWindow)
 {
-  nsCOMPtr<nsIDOMWindow> win = GetWindow();
+  nsCOMPtr<nsPIDOMWindow> win = GetWindow();
   if (win) {
-    win->GetTop(aWindow);
+    win = win->GetTop();
   }
+  win.forget(aWindow);
   return NS_OK;
 }
 
@@ -13006,23 +13016,19 @@ NS_IMETHODIMP
 nsDocShell::GetTopFrameElement(nsIDOMElement** aElement)
 {
   *aElement = nullptr;
-  nsCOMPtr<nsIDOMWindow> win = GetWindow();
+  nsCOMPtr<nsPIDOMWindow> win = GetWindow();
   if (!win) {
     return NS_OK;
   }
 
-  nsCOMPtr<nsIDOMWindow> top;
-  win->GetScriptableTop(getter_AddRefs(top));
+  nsCOMPtr<nsPIDOMWindow> top = win->GetScriptableTop();
   NS_ENSURE_TRUE(top, NS_ERROR_FAILURE);
-
-  nsCOMPtr<nsPIDOMWindow> piTop = do_QueryInterface(top);
-  NS_ENSURE_TRUE(piTop, NS_ERROR_FAILURE);
 
   // GetFrameElementInternal, /not/ GetScriptableFrameElement -- if |top| is
   // inside <iframe mozbrowser>, we want to return the iframe, not null.
   // And we want to cross the content/chrome boundary.
   nsCOMPtr<nsIDOMElement> elt =
-    do_QueryInterface(piTop->GetFrameElementInternal());
+    do_QueryInterface(top->GetFrameElementInternal());
   elt.forget(aElement);
   return NS_OK;
 }
@@ -13892,26 +13898,30 @@ nsDocShell::NotifyJSRunToCompletionStart(const char* aReason,
                                          const char16_t* aFilename,
                                          const uint32_t aLineNumber)
 {
-  bool timelineOn = nsIDocShell::GetRecordProfileTimelineMarkers();
-
   // If first start, mark interval start.
-  if (timelineOn && mJSRunToCompletionDepth == 0) {
-    UniquePtr<TimelineMarker> marker = MakeUnique<JavascriptTimelineMarker>(
-      aReason, aFunctionName, aFilename, aLineNumber, MarkerTracingType::START);
-    TimelineConsumers::AddMarkerForDocShell(this, Move(marker));
+  if (mJSRunToCompletionDepth == 0) {
+    RefPtr<TimelineConsumers> timelines = TimelineConsumers::Get();
+    if (timelines && timelines->HasConsumer(this)) {
+      timelines->AddMarkerForDocShell(this, Move(
+        MakeUnique<JavascriptTimelineMarker>(
+          aReason, aFunctionName, aFilename, aLineNumber, MarkerTracingType::START)));
+    }
   }
+
   mJSRunToCompletionDepth++;
 }
 
 void
 nsDocShell::NotifyJSRunToCompletionStop()
 {
-  bool timelineOn = nsIDocShell::GetRecordProfileTimelineMarkers();
+  mJSRunToCompletionDepth--;
 
   // If last stop, mark interval end.
-  mJSRunToCompletionDepth--;
-  if (timelineOn && mJSRunToCompletionDepth == 0) {
-    TimelineConsumers::AddMarkerForDocShell(this, "Javascript", MarkerTracingType::END);
+  if (mJSRunToCompletionDepth == 0) {
+    RefPtr<TimelineConsumers> timelines = TimelineConsumers::Get();
+    if (timelines && timelines->HasConsumer(this)) {
+      timelines->AddMarkerForDocShell(this, "Javascript", MarkerTracingType::END);
+    }
   }
 }
 

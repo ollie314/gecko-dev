@@ -314,10 +314,9 @@ AsmJSModule::finish(ExclusiveContext* cx, TokenStream& tokenStream, MacroAssembl
     MOZ_ASSERT(masm.preBarrierTableBytes() == 0);
     MOZ_ASSERT(!masm.hasSelfReference());
 
-    // Copy over metadata, making sure to update all offsets on ARM.
-
-    staticLinkData_.interruptExitOffset = masm.actualOffset(interruptLabel.offset());
-    staticLinkData_.outOfBoundsExitOffset = masm.actualOffset(outOfBoundsLabel.offset());
+    // Copy over metadata.
+    staticLinkData_.interruptExitOffset = interruptLabel.offset();
+    staticLinkData_.outOfBoundsExitOffset = outOfBoundsLabel.offset();
 
     // Heap-access metadata used for link-time patching and fault-handling.
     heapAccesses_ = masm.extractAsmJSHeapAccesses();
@@ -325,30 +324,6 @@ AsmJSModule::finish(ExclusiveContext* cx, TokenStream& tokenStream, MacroAssembl
     // Call-site metadata used for stack unwinding.
     callSites_ = masm.extractCallSites();
 
-#if defined(JS_CODEGEN_ARM)
-    // ARM requires the offsets to be updated.
-    pod.functionBytes_ = masm.actualOffset(pod.functionBytes_);
-    for (size_t i = 0; i < heapAccesses_.length(); i++) {
-        AsmJSHeapAccess& a = heapAccesses_[i];
-        a.setInsnOffset(masm.actualOffset(a.insnOffset()));
-    }
-    for (unsigned i = 0; i < numExportedFunctions(); i++) {
-        if (!exportedFunction(i).isChangeHeap())
-            exportedFunction(i).updateCodeOffset(masm);
-    }
-    for (unsigned i = 0; i < numExits(); i++)
-        exit(i).updateOffsets(masm);
-    for (size_t i = 0; i < callSites_.length(); i++) {
-        CallSite& c = callSites_[i];
-        c.setReturnAddressOffset(masm.actualOffset(c.returnAddressOffset()));
-    }
-    for (size_t i = 0; i < codeRanges_.length(); i++) {
-        codeRanges_[i].updateOffsets(masm);
-        MOZ_ASSERT_IF(i > 0, codeRanges_[i - 1].end() <= codeRanges_[i].begin());
-    }
-    for (size_t i = 0; i < builtinThunkOffsets_.length(); i++)
-        builtinThunkOffsets_[i] = masm.actualOffset(builtinThunkOffsets_[i]);
-#endif
     MOZ_ASSERT(pod.functionBytes_ % AsmJSPageSize == 0);
 
     // Absolute link metadata: absolute addresses that refer to some fixed
@@ -356,7 +331,7 @@ AsmJSModule::finish(ExclusiveContext* cx, TokenStream& tokenStream, MacroAssembl
     AbsoluteLinkArray& absoluteLinks = staticLinkData_.absoluteLinks;
     for (size_t i = 0; i < masm.numAsmJSAbsoluteLinks(); i++) {
         AsmJSAbsoluteLink src = masm.asmJSAbsoluteLink(i);
-        if (!absoluteLinks[src.target].append(masm.actualOffset(src.patchAt.offset())))
+        if (!absoluteLinks[src.target].append(src.patchAt.offset()))
             return false;
     }
 
@@ -368,7 +343,7 @@ AsmJSModule::finish(ExclusiveContext* cx, TokenStream& tokenStream, MacroAssembl
     for (size_t i = 0; i < masm.numCodeLabels(); i++) {
         CodeLabel src = masm.codeLabel(i);
         int32_t labelOffset = src.dest()->offset();
-        int32_t targetOffset = masm.actualOffset(src.src()->offset());
+        int32_t targetOffset = src.src()->offset();
         // The patched uses of a label embed a linked list where the
         // to-be-patched immediate is the offset of the next to-be-patched
         // instruction.
@@ -409,6 +384,17 @@ AsmJSModule::finish(ExclusiveContext* cx, TokenStream& tokenStream, MacroAssembl
         if (!staticLinkData_.relativeLinks.append(link))
             return false;
     }
+#elif defined(JS_CODEGEN_MIPS64)
+    // On MIPS64 we need to update all the long jumps because they contain an
+    // absolute adress.
+    for (size_t i = 0; i < masm.numLongJumps(); i++) {
+        RelativeLink link(RelativeLink::InstructionImmediate);
+        link.patchAtOffset = masm.longJump(i);
+        InstImm* inst = (InstImm*)(code_ + masm.longJump(i));
+        link.targetOffset = Assembler::ExtractLoad64Value(inst) - (uint64_t)code_;
+        if (!staticLinkData_.relativeLinks.append(link))
+            return false;
+    }
 #endif
 
 #if defined(JS_CODEGEN_X64)
@@ -417,15 +403,6 @@ AsmJSModule::finish(ExclusiveContext* cx, TokenStream& tokenStream, MacroAssembl
     for (size_t i = 0; i < masm.numAsmJSGlobalAccesses(); i++) {
         AsmJSGlobalAccess a = masm.asmJSGlobalAccess(i);
         masm.patchAsmJSGlobalAccess(a.patchAt, code_, globalData(), a.globalDataOffset);
-    }
-#endif
-
-#if defined(MOZ_VTUNE) || defined(JS_ION_PERF)
-    // Fix up the code offsets.
-    for (size_t i = 0; i < profiledFunctions_.length(); i++) {
-        ProfiledFunction& pf = profiledFunctions_[i];
-        pf.pod.startCodeOffset = masm.actualOffset(pf.pod.startCodeOffset);
-        pf.pod.endCodeOffset = masm.actualOffset(pf.pod.endCodeOffset);
     }
 #endif
 
@@ -860,7 +837,7 @@ AsmJSModule::initHeap(Handle<ArrayBufferObjectMaybeShared*> heap, JSContext* cx)
         if (access.hasLengthCheck())
             X86Encoding::AddInt32(access.patchLengthAt(code_), heapLength);
     }
-#elif defined(JS_CODEGEN_ARM) || defined(JS_CODEGEN_MIPS32)
+#elif defined(JS_CODEGEN_ARM) || defined(JS_CODEGEN_MIPS32) || defined(JS_CODEGEN_MIPS64)
     uint32_t heapLength = heap->byteLength();
     for (unsigned i = 0; i < heapAccesses_.length(); i++) {
         jit::Assembler::UpdateBoundsCheck(heapLength,
@@ -1437,29 +1414,6 @@ AsmJSModule::CodeRange::CodeRange(AsmJSExit::BuiltinKind builtin, uint32_t begin
     MOZ_ASSERT(profilingReturn_ < end_);
 }
 
-void
-AsmJSModule::CodeRange::updateOffsets(jit::MacroAssembler& masm)
-{
-    uint32_t entryBefore = 0;
-    uint32_t profilingJumpBefore = 0;
-    uint32_t profilingEpilogueBefore = 0;
-    if (isFunction()) {
-        entryBefore = entry();
-        profilingJumpBefore = profilingJump();
-        profilingEpilogueBefore = profilingEpilogue();
-    }
-
-    begin_ = masm.actualOffset(begin_);
-    profilingReturn_ = masm.actualOffset(profilingReturn_);
-    end_ = masm.actualOffset(end_);
-
-    if (isFunction()) {
-        setDeltas(masm.actualOffset(entryBefore),
-                  masm.actualOffset(profilingJumpBefore),
-                  masm.actualOffset(profilingEpilogueBefore));
-    }
-}
-
 #if defined(MOZ_VTUNE) || defined(JS_ION_PERF)
 size_t
 AsmJSModule::ProfiledFunction::serializedSize() const
@@ -1796,6 +1750,9 @@ AsmJSModule::setProfilingEnabled(bool enabled, JSContext* cx)
 #elif defined(JS_CODEGEN_MIPS32)
         Instruction* instr = (Instruction*)(callerRetAddr - 4 * sizeof(uint32_t));
         void* callee = (void*)Assembler::ExtractLuiOriValue(instr, instr->next());
+#elif defined(JS_CODEGEN_MIPS64)
+        Instruction* instr = (Instruction*)(callerRetAddr - 6 * sizeof(uint32_t));
+        void* callee = (void*)Assembler::ExtractLoad64Value(instr);
 #elif defined(JS_CODEGEN_NONE)
         MOZ_CRASH();
         void* callee = nullptr;
@@ -1824,6 +1781,9 @@ AsmJSModule::setProfilingEnabled(bool enabled, JSContext* cx)
         Assembler::WriteLuiOriInstructions(instr, instr->next(),
                                            ScratchRegister, (uint32_t)newCallee);
         instr[2] = InstReg(op_special, ScratchRegister, zero, ra, ff_jalr);
+#elif defined(JS_CODEGEN_MIPS64)
+        Assembler::WriteLoad64Instructions(instr, ScratchRegister, (uint64_t)newCallee);
+        instr[4] = InstReg(op_special, ScratchRegister, zero, ra, ff_jalr);
 #elif defined(JS_CODEGEN_NONE)
         MOZ_CRASH();
 #else
@@ -1898,6 +1858,18 @@ AsmJSModule::setProfilingEnabled(bool enabled, JSContext* cx)
             instr[1].makeNop();
             instr[2].makeNop();
         }
+#elif defined(JS_CODEGEN_MIPS64)
+        Instruction* instr = (Instruction*)jump;
+        if (enabled) {
+            Assembler::WriteLoad64Instructions(instr, ScratchRegister, (uint64_t)profilingEpilogue);
+            instr[4] = InstReg(op_special, ScratchRegister, zero, zero, ff_jr);
+        } else {
+            instr[0].makeNop();
+            instr[1].makeNop();
+            instr[2].makeNop();
+            instr[3].makeNop();
+            instr[4].makeNop();
+        }
 #elif defined(JS_CODEGEN_NONE)
         MOZ_CRASH();
 #else
@@ -1938,6 +1910,7 @@ GetCPUID(uint32_t* cpuId)
         X64 = 0x2,
         ARM = 0x3,
         MIPS = 0x4,
+        MIPS64 = 0x5,
         ARCH_BITS = 3
     };
 
@@ -1956,6 +1929,10 @@ GetCPUID(uint32_t* cpuId)
 #elif defined(JS_CODEGEN_MIPS32)
     MOZ_ASSERT(GetMIPSFlags() <= (UINT32_MAX >> ARCH_BITS));
     *cpuId = MIPS | (GetMIPSFlags() << ARCH_BITS);
+    return true;
+#elif defined(JS_CODEGEN_MIPS64)
+    MOZ_ASSERT(GetMIPSFlags() <= (UINT32_MAX >> ARCH_BITS));
+    *cpuId = MIPS64 | (GetMIPSFlags() << ARCH_BITS);
     return true;
 #else
     return false;

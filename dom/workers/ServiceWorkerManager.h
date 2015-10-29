@@ -73,6 +73,8 @@ public:
   RefPtr<ServiceWorkerInfo> mWaitingWorker;
   RefPtr<ServiceWorkerInfo> mInstallingWorker;
 
+  uint64_t mLastUpdateCheckTime;
+
   // When unregister() is called on a registration, it is not immediately
   // removed since documents may be controlled. It is marked as
   // pendingUninstall and when all controlling documents go away, removed.
@@ -95,6 +97,9 @@ public:
 
     return newest.forget();
   }
+
+  already_AddRefed<ServiceWorkerInfo>
+  GetServiceWorkerInfoById(uint64_t aId);
 
   void
   StartControllingADocument()
@@ -129,6 +134,11 @@ public:
   void
   FinishActivate(bool aSuccess);
 
+  void
+  RefreshLastUpdateCheckTime();
+
+  bool
+  IsLastUpdateCheckTimeOverOneDay() const;
 };
 
 class ServiceWorkerUpdateFinishCallback

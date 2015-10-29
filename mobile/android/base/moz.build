@@ -52,6 +52,10 @@ if CONFIG['ANDROID_APPCOMPAT_V7_AAR']:
     ANDROID_EXTRA_PACKAGES += ['android.support.v7.appcompat']
     ANDROID_EXTRA_RES_DIRS += ['%' + CONFIG['ANDROID_APPCOMPAT_V7_AAR_RES']]
     resjar.generated_sources += ['android/support/v7/appcompat/R.java']
+if CONFIG['ANDROID_DESIGN_AAR']:
+    ANDROID_EXTRA_PACKAGES += ['android.support.design']
+    ANDROID_EXTRA_RES_DIRS += ['%' + CONFIG['ANDROID_DESIGN_AAR_RES']]
+    resjar.generated_sources += ['android/support/design/R.java']
 if CONFIG['ANDROID_RECYCLERVIEW_V7_AAR']:
     ANDROID_EXTRA_PACKAGES += ['android.support.v7.recyclerview']
     ANDROID_EXTRA_RES_DIRS += ['%' + CONFIG['ANDROID_RECYCLERVIEW_V7_AAR_RES']]
@@ -385,7 +389,6 @@ gbjar.sources += [
     'IntentHelper.java',
     'javaaddons/JavaAddonManager.java',
     'javaaddons/JavaAddonManagerV1.java',
-    'LayoutInterceptor.java',
     'LocaleManager.java',
     'Locales.java',
     'lwt/LightweightTheme.java',
@@ -398,8 +401,8 @@ gbjar.sources += [
     'menu/GeckoMenuItem.java',
     'menu/GeckoSubMenu.java',
     'menu/MenuItemActionBar.java',
-    'menu/MenuItemActionView.java',
     'menu/MenuItemDefault.java',
+    'menu/MenuItemSwitcherLayout.java',
     'menu/MenuPanel.java',
     'menu/MenuPopup.java',
     'MotionEventInterceptor.java',
@@ -409,7 +412,6 @@ gbjar.sources += [
     'NotificationService.java',
     'NSSBridge.java',
     'OrderedBroadcastHelper.java',
-    'OuterLayout.java',
     'preferences/AlignRightLinkPreference.java',
     'preferences/AndroidImport.java',
     'preferences/AndroidImportPreference.java',
@@ -470,7 +472,7 @@ gbjar.sources += [
     'sqlite/SQLiteBridgeException.java',
     'SuggestClient.java',
     'SurfaceBits.java',
-    'sync/TabReceivedBroadcastReceiver.java',
+    'sync/TabReceivedService.java',
     'Tab.java',
     'tabqueue/TabQueueDispatcher.java',
     'tabqueue/TabQueueHelper.java',
@@ -688,7 +690,30 @@ if CONFIG['MOZ_NATIVE_DEVICES']:
         ANDROID_EXTRA_RES_DIRS += ['%' + CONFIG['ANDROID_PLAY_SERVICES_CAST_AAR_RES']]
         resjar.generated_sources += ['com/google/android/gms/cast/R.java']
 
+if CONFIG['MOZ_ANDROID_GCM']:
+    gbjar.extra_jars += [
+        CONFIG['ANDROID_PLAY_SERVICES_BASE_AAR_LIB'],
+        CONFIG['ANDROID_PLAY_SERVICES_BASEMENT_AAR_LIB'],
+        CONFIG['ANDROID_PLAY_SERVICES_GCM_AAR_LIB'],
+    ]
+
+    if CONFIG['ANDROID_PLAY_SERVICES_BASE_AAR']:
+        ANDROID_EXTRA_PACKAGES += ['com.google.android.gms']
+        ANDROID_EXTRA_RES_DIRS += ['%' + CONFIG['ANDROID_PLAY_SERVICES_BASE_AAR_RES']]
+        resjar.generated_sources += ['com/google/android/gms/R.java']
+
+    if CONFIG['ANDROID_PLAY_SERVICES_BASEMENT_AAR']:
+        ANDROID_EXTRA_PACKAGES += ['com.google.android.gms']
+        ANDROID_EXTRA_RES_DIRS += ['%' + CONFIG['ANDROID_PLAY_SERVICES_BASEMENT_AAR_RES']]
+        resjar.generated_sources += ['com/google/android/gms/R.java']
+
+    if CONFIG['ANDROID_PLAY_SERVICES_GCM_AAR']:
+        ANDROID_EXTRA_PACKAGES += ['com.google.android.gms.gcm']
+        ANDROID_EXTRA_RES_DIRS += ['%' + CONFIG['ANDROID_PLAY_SERVICES_GCM_AAR_RES']]
+        resjar.generated_sources += ['com/google/android/gms/gcm/R.java']
+
 gbjar.extra_jars += [CONFIG['ANDROID_APPCOMPAT_V7_AAR_LIB']]
+gbjar.extra_jars += [CONFIG['ANDROID_DESIGN_AAR_LIB']]
 gbjar.extra_jars += [CONFIG['ANDROID_RECYCLERVIEW_V7_AAR_LIB']]
 
 gbjar.javac_flags += ['-Xlint:all,-deprecation,-fallthrough', '-J-Xmx512m', '-J-Xms128m']
@@ -832,11 +857,12 @@ ANDROID_ASSETS_DIRS += [
 for var in ('MOZ_ANDROID_ANR_REPORTER', 'MOZ_LINKER_EXTRACT', 'MOZ_DEBUG',
             'MOZ_ANDROID_SEARCH_ACTIVITY', 'MOZ_NATIVE_DEVICES', 'MOZ_ANDROID_MLS_STUMBLER',
             'MOZ_ANDROID_SHARE_OVERLAY', 'MOZ_ANDROID_DOWNLOADS_INTEGRATION', 'MOZ_INSTALL_TRACKING',
+            'MOZ_ANDROID_GCM',
             'MOZ_ANDROID_TAB_QUEUE', 'MOZ_ANDROID_FIREFOX_ACCOUNT_PROFILES'):
     if CONFIG[var]:
         DEFINES[var] = 1
 
-for var in ('MOZ_UPDATER', 'MOZ_PKG_SPECIAL'):
+for var in ('MOZ_UPDATER', 'MOZ_PKG_SPECIAL', 'MOZ_ANDROID_GCM_SENDERID'):
     if CONFIG[var]:
         DEFINES[var] = CONFIG[var]
 

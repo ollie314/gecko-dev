@@ -7,6 +7,15 @@
 * DOMString name
 * object? stack
 * object? endStack
+* unsigned short processType;
+* boolean isOffMainThread;
+
+The `processType` a GeckoProcessType enum listed in xpcom/build/nsXULAppAPI.h,
+specifying if this marker originates in a content, chrome, plugin etc. process.
+Additionally, markers may be created from any thread on those processes, and
+`isOffMainThread` highights whether or not they're from the main thread. The most
+common type of marker is probably going to be from a GeckoProcessType_Content's
+main thread when debugging content.
 
 ## DOMEvent
 
@@ -141,6 +150,40 @@ A marker generated via `console.timeStamp(label)`.
 * DOMString causeName - the label passed into `console.timeStamp(label)`
   if passed in.
 
+## document::DOMContentLoaded
+
+A marker generated when the DOMContentLoaded event is fired.
+
+## document::Load
+
+A marker generated when the document's "load" event is fired.
+
 ## Parse HTML
 
 ## Parse XML
+
+## Worker
+
+Emitted whenever there's an operation dealing with Workers (any kind of worker,
+Web Workers, Service Workers etc.). Currently there are 4 types of operations
+being tracked: serializing/deserializing data on the main thread, and also
+serializing/deserializing data off the main thread.
+
+* ProfileTimelineWorkerOperationType operationType - the type of operation
+  being done by the Worker or the main thread when dealing with workers.
+  Can be one of the following enums defined in ProfileTimelineMarker.webidl
+  * "serializeDataOffMainThread"
+  * "serializeDataOnMainThread"
+  * "deserializeDataOffMainThread"
+  * "deserializeDataOnMainThread"
+
+## Composite
+
+Composite markers trace the actual time an inner composite operation
+took on the compositor thread. Currently, these markers are only especially
+interesting for Gecko platform developers, and thus disabled by default.
+
+## CompositeForwardTransaction
+
+Markers generated when the IPC request was made to the compositor from
+the child process's main thread.

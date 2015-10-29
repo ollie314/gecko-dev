@@ -16,8 +16,10 @@
 #include "nsAccessibilityService.h"
 #endif
 #include "mozilla/BrowserElementParent.h"
+#include "mozilla/dom/ContentBridgeParent.h"
 #include "mozilla/dom/ContentParent.h"
 #include "mozilla/dom/DataTransfer.h"
+#include "mozilla/dom/Event.h"
 #include "mozilla/dom/indexedDB/ActorsParent.h"
 #include "mozilla/plugins/PluginWidgetParent.h"
 #include "mozilla/EventStateManager.h"
@@ -753,7 +755,7 @@ private:
   nsCString* mURLToLoad;
 };
 
-static already_AddRefed<nsIDOMWindow>
+static already_AddRefed<nsPIDOMWindow>
 FindMostRecentOpenWindow()
 {
   nsCOMPtr<nsIWindowMediator> windowMediator =
@@ -762,17 +764,16 @@ FindMostRecentOpenWindow()
   windowMediator->GetEnumerator(MOZ_UTF16("navigator:browser"),
                                 getter_AddRefs(windowEnumerator));
 
-  nsCOMPtr<nsIDOMWindow> latest;
+  nsCOMPtr<nsPIDOMWindow> latest;
 
   bool hasMore = false;
   MOZ_ALWAYS_TRUE(NS_SUCCEEDED(windowEnumerator->HasMoreElements(&hasMore)));
   while (hasMore) {
     nsCOMPtr<nsISupports> item;
     MOZ_ALWAYS_TRUE(NS_SUCCEEDED(windowEnumerator->GetNext(getter_AddRefs(item))));
-    nsCOMPtr<nsIDOMWindow> window = do_QueryInterface(item);
+    nsCOMPtr<nsPIDOMWindow> window = do_QueryInterface(item);
 
-    bool isClosed;
-    if (window && NS_SUCCEEDED(window->GetClosed(&isClosed)) && !isClosed) {
+    if (window && !window->Closed()) {
       latest = window;
     }
 
@@ -825,17 +826,14 @@ TabParent::RecvCreateWindow(PBrowserParent* aNewTab,
 
   nsCOMPtr<nsIContent> frame(do_QueryInterface(mFrameElement));
 
-  nsCOMPtr<nsIDOMWindow> parent;
+  nsCOMPtr<nsPIDOMWindow> parent;
   if (frame) {
-    parent = do_QueryInterface(frame->OwnerDoc()->GetWindow());
+    parent = frame->OwnerDoc()->GetWindow();
 
     // If our chrome window is in the process of closing, don't try to open a
     // new tab in it.
-    if (parent) {
-      bool isClosed;
-      if (NS_SUCCEEDED(parent->GetClosed(&isClosed)) && isClosed) {
-        parent = nullptr;
-      }
+    if (parent && parent->Closed()) {
+      parent = nullptr;
     }
   }
 

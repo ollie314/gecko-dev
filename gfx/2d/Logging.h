@@ -399,8 +399,8 @@ public:
         case SurfaceFormat::R8G8B8X8:
           mMessage << "SurfaceFormat::R8G8B8X8";
           break;
-        case SurfaceFormat::R5G6B5:
-          mMessage << "SurfaceFormat::R5G6B5";
+        case SurfaceFormat::R5G6B5_UINT16:
+          mMessage << "SurfaceFormat::R5G6B5_UINT16";
           break;
         case SurfaceFormat::A8:
           mMessage << "SurfaceFormat::A8";
@@ -546,20 +546,17 @@ typedef Log<LOG_CRITICAL, CriticalLogger> CriticalLog;
 //   firstTime = false;
 //   gfxCriticalError() << "This message only shows up once;
 // }
-#ifdef GFX_LOG_DEBUG
+#if defined(DEBUG)
 #define gfxDebug mozilla::gfx::DebugLog
 #define gfxDebugOnce static gfxDebug GFX_LOGGING_GLUE(sOnceAtLine,__LINE__) = gfxDebug
 #else
 #define gfxDebug if (1) ; else mozilla::gfx::NoLog
 #define gfxDebugOnce if (1) ; else mozilla::gfx::NoLog
 #endif
-#ifdef GFX_LOG_WARNING
+
+// Have gfxWarning available (behind a runtime preference)
 #define gfxWarning mozilla::gfx::WarningLog
 #define gfxWarningOnce static gfxWarning GFX_LOGGING_GLUE(sOnceAtLine,__LINE__) = gfxWarning
-#else
-#define gfxWarning if (1) ; else mozilla::gfx::NoLog
-#define gfxWarningOnce if (1) ; else mozilla::gfx::NoLog
-#endif
 
 // In the debug build, this is equivalent to the default gfxCriticalError.
 // In the non-debug build, on nightly and dev edition, it will MOZ_CRASH.

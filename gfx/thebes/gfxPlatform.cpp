@@ -1060,9 +1060,11 @@ gfxPlatform::ComputeTileSize()
   if (gfxPrefs::LayersTilesAdjust()) {
     gfx::IntSize screenSize = GetScreenSize();
     if (screenSize.width > 0) {
-      // FIXME: we should probably make sure this is within the max texture size,
-      // but I think everything should at least support 1024
-      w = h = std::max(std::min(NextPowerOfTwo(screenSize.width) / 2, 1024), 256);
+      // For the time being tiles larger than 512 probably do not make much
+      // sense. This is due to e.g. increased rasterisation time outweighing
+      // the decreased composition time, or large increases in memory usage
+      // for screens slightly wider than a higher power of two.
+      w = h = screenSize.width >= 512 ? 512 : 256;
     }
 
 #ifdef MOZ_WIDGET_GONK
@@ -1850,7 +1852,7 @@ gfxPlatform::Optimal2DFormatForContent(gfxContentType aContent)
     case gfxImageFormat::RGB24:
       return mozilla::gfx::SurfaceFormat::B8G8R8X8;
     case gfxImageFormat::RGB16_565:
-      return mozilla::gfx::SurfaceFormat::R5G6B5;
+      return mozilla::gfx::SurfaceFormat::R5G6B5_UINT16;
     default:
       NS_NOTREACHED("unknown gfxImageFormat for gfxContentType::COLOR");
       return mozilla::gfx::SurfaceFormat::B8G8R8A8;

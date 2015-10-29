@@ -1586,10 +1586,6 @@ IonBuilder::snoopControlFlow(JSOp op)
       case JSOP_THROW:
         return processThrow();
 
-      case JSOP_THROWSETCONST:
-      case JSOP_THROWSETALIASEDCONST:
-        return processThrowSetConst();
-
       case JSOP_GOTO:
       {
         jssrcnote* sn = info().getNote(gsn, pc);
@@ -1777,6 +1773,10 @@ IonBuilder::inspectOpcode(JSOp op)
       case JSOP_SETLOCAL:
         current->setLocal(GET_LOCALNO(pc));
         return true;
+
+      case JSOP_THROWSETCONST:
+      case JSOP_THROWSETALIASEDCONST:
+        return jsop_throwsetconst();
 
       case JSOP_CHECKLEXICAL:
         return jsop_checklexical();
@@ -3241,8 +3241,8 @@ IonBuilder::whileOrForInLoop(jssrcnote* sn)
 IonBuilder::ControlStatus
 IonBuilder::forLoop(JSOp op, jssrcnote* sn)
 {
-    // Skip the NOP or POP.
-    MOZ_ASSERT(op == JSOP_POP || op == JSOP_NOP);
+    // Skip the NOP.
+    MOZ_ASSERT(op == JSOP_NOP);
     pc = GetNextPc(pc);
 
     jsbytecode* condpc = pc + GetSrcNoteOffset(sn, 0);
@@ -9813,20 +9813,19 @@ IonBuilder::setElemTryCache(bool* emitted, MDefinition* object,
         return true;
     }
 
-    // TODO: Bug 876650: remove this check:
-    // Temporary disable the cache if non dense native,
-    // until the cache supports more ics
-    SetElemICInspector icInspect(inspector->setElemICInspector(pc));
-    if (!icInspect.sawDenseWrite() && !icInspect.sawTypedArrayWrite()) {
-        trackOptimizationOutcome(TrackedOutcome::SetElemNonDenseNonTANotCached);
-        return true;
-    }
+    bool barrier = true;
 
-    if (PropertyWriteNeedsTypeBarrier(alloc(), constraints(), current,
-                                      &object, nullptr, &value, /* canModify = */ true))
-    {
-        trackOptimizationOutcome(TrackedOutcome::NeedsTypeBarrier);
-        return true;
+    if (index->mightBeType(MIRType_Int32)) {
+        // Bail if we might have a barriered write to a dense element, as the
+        // dense element stub doesn't support this yet.
+        if (PropertyWriteNeedsTypeBarrier(alloc(), constraints(), current,
+                                          &object, nullptr, &value, /* canModify = */ true))
+        {
+            trackOptimizationOutcome(TrackedOutcome::NeedsTypeBarrier);
+            return true;
+        }
+        if (index->type() == MIRType_Int32)
+            barrier = false;
     }
 
     // We can avoid worrying about holes in the IC if we know a priori we are safe
@@ -9845,7 +9844,8 @@ IonBuilder::setElemTryCache(bool* emitted, MDefinition* object,
 
     // Emit SetElementCache.
     bool strict = JSOp(*pc) == JSOP_STRICTSETELEM;
-    MInstruction* ins = MSetElementCache::New(alloc(), object, index, value, strict, guardHoles);
+    MSetPropertyCache* ins =
+        MSetPropertyCache::New(alloc(), object, index, value, strict, barrier, guardHoles);
     current->add(ins);
     current->push(value);
 
@@ -12474,7 +12474,9 @@ IonBuilder::setPropTryCache(bool* emitted, MDefinition* obj,
 
     bool strict = IsStrictSetPC(pc);
 
-    MSetPropertyCache* ins = MSetPropertyCache::New(alloc(), obj, value, name, strict, barrier);
+    MConstant* id = constant(StringValue(name));
+    MSetPropertyCache* ins = MSetPropertyCache::New(alloc(), obj, id, value, strict, barrier,
+                                                    /* guardHoles = */ false);
     current->add(ins);
     current->push(value);
 
@@ -12738,20 +12740,13 @@ IonBuilder::jsop_deffun(uint32_t index)
     return resumeAfter(deffun);
 }
 
-IonBuilder::ControlStatus
-IonBuilder::processThrowSetConst()
+bool
+IonBuilder::jsop_throwsetconst()
 {
     current->peek(-1)->setImplicitlyUsedUnchecked();
     MInstruction* lexicalError = MThrowRuntimeLexicalError::New(alloc(), JSMSG_BAD_CONST_ASSIGN);
     current->add(lexicalError);
-    if (!resumeAfter(lexicalError))
-        return ControlStatus_Error;
-
-    current->end(MUnreachable::New(alloc()));
-
-    // Make sure no one tries to use this block now.
-    setCurrent(nullptr);
-    return processControlEnd();
+    return resumeAfter(lexicalError);
 }
 
 bool

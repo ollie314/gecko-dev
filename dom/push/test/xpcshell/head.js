@@ -279,7 +279,7 @@ MockWebSocket.prototype = {
     return this._originalURI;
   },
 
-  asyncOpen(uri, origin, listener, context) {
+  asyncOpen(uri, origin, windowId, listener, context) {
     this._listener = listener;
     this._context = context;
     waterfall(() => this._listener.onStart(this._context));
@@ -378,7 +378,11 @@ MockWebSocket.prototype = {
       () => this._listener.onServerClose(this._context, statusCode, reason),
       () => this._listener.onStop(this._context, Cr.NS_BASE_STREAM_CLOSED)
     );
-  }
+  },
+
+  serverInterrupt(result = Cr.NS_ERROR_NET_RESET) {
+    waterfall(() => this._listener.onStop(this._context, result));
+  },
 };
 
 /**

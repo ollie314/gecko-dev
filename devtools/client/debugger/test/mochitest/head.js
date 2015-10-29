@@ -1190,3 +1190,55 @@ function afterDispatch(store, type) {
     });
   });
 }
+
+// Return a promise with a reference to jsterm, opening the split
+// console if necessary.  This cleans up the split console pref so
+// it won't pollute other tests.
+function getSplitConsole(toolbox, win) {
+  registerCleanupFunction(() => {
+    Services.prefs.clearUserPref("devtools.toolbox.splitconsoleEnabled");
+  });
+
+  if (!win) {
+    win = toolbox.doc.defaultView;
+  }
+
+  if (!toolbox.splitConsole) {
+    EventUtils.synthesizeKey("VK_ESCAPE", {}, win);
+  }
+
+  return new Promise(resolve => {
+    toolbox.getPanelWhenReady("webconsole").then(() => {
+      ok(toolbox.splitConsole, "Split console is shown.");
+      let jsterm = toolbox.getPanel("webconsole").hud.jsterm;
+      resolve(jsterm);
+    });
+  });
+}
+
+// This can be removed once debugger uses shared-head.js (bug 1181838)
+function synthesizeKeyFromKeyTag(key) {
+  is(key && key.tagName, "key", "Successfully retrieved the <key> node");
+
+  let modifiersAttr = key.getAttribute("modifiers");
+
+  let name = null;
+
+  if (key.getAttribute("keycode"))
+    name = key.getAttribute("keycode");
+  else if (key.getAttribute("key"))
+    name = key.getAttribute("key");
+
+  isnot(name, null, "Successfully retrieved keycode/key");
+
+  let modifiers = {
+    shiftKey: !!modifiersAttr.match("shift"),
+    ctrlKey: !!modifiersAttr.match("control"),
+    altKey: !!modifiersAttr.match("alt"),
+    metaKey: !!modifiersAttr.match("meta"),
+    accelKey: !!modifiersAttr.match("accel")
+  };
+
+  info("Synthesizing key " + name + " " + JSON.stringify(modifiers));
+  EventUtils.synthesizeKey(name, modifiers);
+}

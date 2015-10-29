@@ -451,6 +451,8 @@ pref("browser.tabs.selectOwnerOnClose", true);
 
 pref("browser.tabs.showAudioPlayingIcon", true);
 
+pref("browser.tabs.dontfocusfordialogs", true);
+
 pref("browser.ctrlTab.previews", false);
 
 // By default, do not export HTML at shutdown.
@@ -1645,6 +1647,8 @@ pref("dom.serviceWorkers.interception.enabled", true);
 
 // Enable Push API.
 pref("dom.push.enabled", true);
+
+pref("dom.serviceWorkers.openWindow.enabled", true);
 #endif
 
 // These are the thumbnail width/height set in about:newtab.

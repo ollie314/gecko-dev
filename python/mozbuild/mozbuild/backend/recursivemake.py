@@ -505,13 +505,16 @@ class RecursiveMakeBackend(CommonBackend):
             self._process_exports(obj, obj.exports, backend_file)
 
         elif isinstance(obj, GeneratedFile):
+            dep_file = "%s.pp" % obj.output
             backend_file.write('GENERATED_FILES += %s\n' % obj.output)
+            backend_file.write('EXTRA_MDDEPEND_FILES += %s\n' % dep_file)
             if obj.script:
                 backend_file.write("""{output}: {script}{inputs}
 \t$(REPORT_BUILD)
-\t$(call py_action,file_generate,{script} {method} {output}{inputs})
+\t$(call py_action,file_generate,{script} {method} {output} $(MDDEPDIR)/{dep_file}{inputs})
 
 """.format(output=obj.output,
+           dep_file=dep_file,
            inputs=' ' + ' '.join(obj.inputs) if obj.inputs else '',
            script=obj.script,
            method=obj.method))
@@ -602,19 +605,23 @@ class RecursiveMakeBackend(CommonBackend):
                 backend_file.write('DIST_FILES += %s\n' % f)
 
         elif isinstance(obj, AndroidResDirs):
+            # Order matters.
             for p in obj.paths:
                 backend_file.write('ANDROID_RES_DIRS += %s\n' % p.full_path)
 
         elif isinstance(obj, AndroidAssetsDirs):
+            # Order matters.
             for p in obj.paths:
                 backend_file.write('ANDROID_ASSETS_DIRS += %s\n' % p.full_path)
 
         elif isinstance(obj, AndroidExtraResDirs):
-            for p in obj.paths:
-                backend_file.write('ANDROID_EXTRA_RES_DIRS += %s\n' % p.full_path)
+            # Order does not matter.
+            for p in sorted(set(p.full_path for p in obj.paths)):
+                backend_file.write('ANDROID_EXTRA_RES_DIRS += %s\n' % p)
 
         elif isinstance(obj, AndroidExtraPackages):
-            for p in obj.packages:
+            # Order does not matter.
+            for p in sorted(set(obj.packages)):
                 backend_file.write('ANDROID_EXTRA_PACKAGES += %s\n' % p)
 
         else:
@@ -1245,7 +1252,7 @@ INSTALL_TARGETS += %(prefix)s
                 (target, ' '.join(mozpath.join('generated', f) for f in jar.generated_sources)))
         if jar.extra_jars:
             backend_file.write('%s_EXTRA_JARS := %s\n' %
-                (target, ' '.join(jar.extra_jars)))
+                (target, ' '.join(sorted(set(jar.extra_jars)))))
         if jar.javac_flags:
             backend_file.write('%s_JAVAC_FLAGS := %s\n' %
                 (target, ' '.join(jar.javac_flags)))

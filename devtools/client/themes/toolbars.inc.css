@@ -79,7 +79,7 @@
   outline-offset: -4px;
 }
 
-.devtools-toolbarbutton[standalone] {
+.devtools-toolbarbutton[standalone], .devtools-toolbarbutton[data-standalone] {
   -moz-margin-end: 5px;
   border-width: 1px;
   border-style: solid;
@@ -164,10 +164,12 @@
 
 /* Text-only buttons */
 .theme-light .devtools-toolbarbutton[label]:not([text-as-image]):not([type=menu-button]),
+.theme-light .devtools-toolbarbutton[data-text-only],
 .theme-light #toolbox-buttons .devtools-toolbarbutton[text-as-image] {
   background-color: rgba(170, 170, 170, .2); /* Splitter */
 }
 .theme-dark .devtools-toolbarbutton[label]:not([text-as-image]):not([type=menu-button]),
+.theme-dark .devtools-toolbarbutton[data-text-only],
 .theme-dark #toolbox-buttons .devtools-toolbarbutton[text-as-image] {
   background-color: rgba(0, 0, 0, .2); /* Splitter */
 }
@@ -270,7 +272,7 @@
   position: relative;
 }
 
-.devtools-button[standalone] {
+.devtools-button[standalone], .devtools-button[data-standalone] {
   min-height: 32px;
   border-width: 1px;
 }
@@ -328,7 +330,7 @@
 .devtools-textinput,
 .devtools-searchinput {
   -moz-appearance: none;
-  margin: 1px 0;
+  margin: 1px 3px;
   border: 1px solid;
 %ifdef XP_MACOSX
   border-radius: 20px;
@@ -370,6 +372,31 @@
   display: flex;
   flex: 1;
   position: relative;
+  padding: 0 3px;
+}
+
+/* The spacing is accomplished with a padding on the searchbox */
+.devtools-searchbox > .devtools-textinput,
+.devtools-searchbox > .devtools-searchinput {
+  margin-left: 0;
+  margin-right: 0;
+}
+
+/* Don't add 'double spacing' for inputs that are at beginning / end
+   of a toolbar (since the toolbar has it's own spacing). */
+.devtools-toolbar > .devtools-textinput:first-child,
+.devtools-toolbar > .devtools-searchinput:first-child {
+  -moz-margin-start: 0;
+}
+.devtools-toolbar > .devtools-textinput:last-child,
+.devtools-toolbar > .devtools-searchinput:last-child {
+  -moz-margin-end: 0;
+}
+.devtools-toolbar > .devtools-searchbox:first-child {
+  -moz-padding-start: 0;
+}
+.devtools-toolbar > .devtools-searchbox:last-child {
+  -moz-padding-end: 0;
 }
 
 .devtools-rule-searchbox {
