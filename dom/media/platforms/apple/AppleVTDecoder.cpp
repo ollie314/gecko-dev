@@ -20,7 +20,7 @@
 #include "VideoUtils.h"
 #include "gfxPlatform.h"
 
-extern PRLogModuleInfo* GetPDMLog();
+extern mozilla::LogModule* GetPDMLog();
 #define LOG(...) MOZ_LOG(GetPDMLog(), mozilla::LogLevel::Debug, (__VA_ARGS__))
 //#define LOG_MEDIA_SHA1
 
@@ -107,7 +107,7 @@ AppleVTDecoder::Input(MediaRawData* aSample)
   mInputIncoming++;
 
   nsCOMPtr<nsIRunnable> runnable =
-      NS_NewRunnableMethodWithArg<RefPtr<MediaRawData>>(
+      NewRunnableMethod<RefPtr<MediaRawData>>(
           this, &AppleVTDecoder::SubmitFrame, aSample);
   mTaskQueue->Dispatch(runnable.forget());
   return NS_OK;
@@ -123,9 +123,6 @@ AppleVTDecoder::ProcessFlush()
         "with error:%d.", rv);
   }
   ClearReorderedFrames();
-  MonitorAutoLock mon(mMonitor);
-  mIsFlushing = false;
-  mon.NotifyAll();
 }
 
 void

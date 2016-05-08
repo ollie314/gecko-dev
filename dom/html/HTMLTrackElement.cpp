@@ -40,7 +40,7 @@
 #include "nsThreadUtils.h"
 #include "nsVideoFrame.h"
 
-static PRLogModuleInfo* gTrackElementLog;
+static mozilla::LazyLogModule gTrackElementLog("nsTrackElement");
 #define LOG(type, msg) MOZ_LOG(gTrackElementLog, type, msg)
 
 // Replace the usual NS_IMPL_NS_NEW_HTML_ELEMENT(Track) so
@@ -76,9 +76,6 @@ static MOZ_CONSTEXPR const char* kKindTableDefaultString = kKindTable[0].tag;
 HTMLTrackElement::HTMLTrackElement(already_AddRefed<mozilla::dom::NodeInfo>& aNodeInfo)
   : nsGenericHTMLElement(aNodeInfo)
 {
-  if (!gTrackElementLog) {
-    gTrackElementLog = PR_NewLogModule("nsTrackElement");
-  }
 }
 
 HTMLTrackElement::~HTMLTrackElement()
@@ -153,7 +150,7 @@ HTMLTrackElement::CreateTextTrack()
 
   NS_ENSURE_TRUE_VOID(parentObject);
 
-  nsCOMPtr<nsPIDOMWindow> window = do_QueryInterface(parentObject);
+  nsCOMPtr<nsPIDOMWindowInner> window = do_QueryInterface(parentObject);
   mTrack = new TextTrack(window, kind, label, srcLang,
                          TextTrackMode::Disabled,
                          TextTrackReadyState::NotLoaded,
@@ -263,8 +260,8 @@ HTMLTrackElement::BindToTree(nsIDocument* aDocument,
     media->NotifyAddedSource();
     LOG(LogLevel::Debug, ("Track element sent notification to parent."));
 
-    mMediaParent->RunInStableState(
-      NS_NewRunnableMethod(this, &HTMLTrackElement::LoadResource));
+    RefPtr<Runnable> r = NewRunnableMethod(this, &HTMLTrackElement::LoadResource);
+    mMediaParent->RunInStableState(r);
   }
 
   return NS_OK;
@@ -317,7 +314,7 @@ void
 HTMLTrackElement::DispatchTrackRunnable(const nsString& aEventName)
 {
   nsCOMPtr<nsIRunnable> runnable =
-    NS_NewRunnableMethodWithArg
+    NewRunnableMethod
       <const nsString>(this,
                        &HTMLTrackElement::DispatchTrustedEvent,
                        aEventName);

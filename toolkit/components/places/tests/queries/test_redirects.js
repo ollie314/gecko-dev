@@ -63,6 +63,7 @@ function check_results_callback(aSequence) {
       if (visits[i].uri == aEntry.uri)
         return i;
     }
+    return undefined;
   }
   function comparator(a, b) {
     if (sortingMode == Ci.nsINavHistoryQueryOptions.SORT_BY_DATE_DESCENDING)
@@ -185,7 +186,7 @@ function run_test()
  * We will generate visit-chains like:
  *   visit -> redirect_temp -> redirect_perm
  */
-add_task(function test_add_visits_to_database()
+add_task(function* test_add_visits_to_database()
 {
   yield PlacesUtils.bookmarks.eraseEverything();
 
@@ -280,7 +281,7 @@ add_task(function test_add_visits_to_database()
   yield task_populateDB(visits);
 });
 
-add_task(function test_redirects()
+add_task(function* test_redirects()
 {
   // Frecency and hidden are updated asynchronously, wait for them.
   yield PlacesTestUtils.promiseAsyncUpdates();

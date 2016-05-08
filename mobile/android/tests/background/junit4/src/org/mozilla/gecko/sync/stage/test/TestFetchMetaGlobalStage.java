@@ -3,18 +3,7 @@
 
 package org.mozilla.gecko.sync.stage.test;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-
-import java.io.IOException;
-import java.net.URI;
-import java.util.HashSet;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicBoolean;
-
 import org.json.simple.JSONArray;
-import org.json.simple.parser.ParseException;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -23,6 +12,7 @@ import org.mozilla.android.sync.test.helpers.HTTPServerTestHelper;
 import org.mozilla.android.sync.test.helpers.MockGlobalSessionCallback;
 import org.mozilla.android.sync.test.helpers.MockServer;
 import org.mozilla.gecko.background.testhelpers.MockGlobalSession;
+import org.mozilla.gecko.background.testhelpers.TestRunner;
 import org.mozilla.gecko.background.testhelpers.WaitHelper;
 import org.mozilla.gecko.sync.AlreadySyncingException;
 import org.mozilla.gecko.sync.CollectionKeys;
@@ -41,11 +31,20 @@ import org.mozilla.gecko.sync.delegates.WipeServerDelegate;
 import org.mozilla.gecko.sync.net.AuthHeaderProvider;
 import org.mozilla.gecko.sync.stage.FetchMetaGlobalStage;
 import org.mozilla.gecko.sync.stage.GlobalSyncStage.Stage;
-import org.robolectric.RobolectricGradleTestRunner;
 import org.simpleframework.http.Request;
 import org.simpleframework.http.Response;
 
-@RunWith(RobolectricGradleTestRunner.class)
+import java.io.IOException;
+import java.net.URI;
+import java.util.HashSet;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+
+@RunWith(TestRunner.class)
 public class TestFetchMetaGlobalStage {
   @SuppressWarnings("unused")
   private static final String  LOG_TAG          = "TestMetaGlobalStage";
@@ -53,7 +52,6 @@ public class TestFetchMetaGlobalStage {
   private static final int     TEST_PORT        = HTTPServerTestHelper.getTestPort();
   private static final String  TEST_SERVER      = "http://localhost:" + TEST_PORT + "/";
   private static final String  TEST_CLUSTER_URL = TEST_SERVER + "cluster/";
-  static String                TEST_NW_URL      = TEST_SERVER + "/1.0/c6o7dvmr2c4ud2fyv6woz2u4zi22bcyd/node/weave"; // GET https://server/pathname/version/username/node/weave
   private HTTPServerTestHelper data             = new HTTPServerTestHelper();
 
   private final String TEST_USERNAME            = "johndoe";
@@ -94,10 +92,10 @@ public class TestFetchMetaGlobalStage {
     calledResetAllStages = false;
 
     // Set info collections to not have crypto.
-    infoCollections = new InfoCollections(ExtendedJSONObject.parseJSONObject(TEST_INFO_COLLECTIONS_JSON));
+    infoCollections = new InfoCollections(new ExtendedJSONObject(TEST_INFO_COLLECTIONS_JSON));
 
     syncKeyBundle = new KeyBundle(TEST_USERNAME, TEST_SYNC_KEY);
-    callback = new MockGlobalSessionCallback(TEST_CLUSTER_URL);
+    callback = new MockGlobalSessionCallback();
     session = new MockGlobalSession(TEST_USERNAME, TEST_PASSWORD,
       syncKeyBundle, callback) {
       @Override
@@ -336,7 +334,7 @@ public class TestFetchMetaGlobalStage {
     doSession(server);
 
     assertEquals(true, callback.calledError);
-    assertEquals(ParseException.class, callback.calledErrorException.getClass());
+    assertEquals(NonObjectJSONException.class, callback.calledErrorException.getClass());
   }
 
   protected void doFreshStart(MockServer server) {
@@ -351,7 +349,7 @@ public class TestFetchMetaGlobalStage {
   }
 
   @Test
-  public void testFreshStart() throws SyncConfigurationException, IllegalArgumentException, NonObjectJSONException, IOException, ParseException, CryptoException {
+  public void testFreshStart() throws SyncConfigurationException, IllegalArgumentException, NonObjectJSONException, IOException, CryptoException {
     final AtomicBoolean mgUploaded = new AtomicBoolean(false);
     final AtomicBoolean mgDownloaded = new AtomicBoolean(false);
     final MetaGlobal uploadedMg = new MetaGlobal(null, null);
@@ -361,7 +359,7 @@ public class TestFetchMetaGlobalStage {
       public void handle(Request request, Response response) {
         if (request.getMethod().equals("PUT")) {
           try {
-            ExtendedJSONObject body = ExtendedJSONObject.parseJSONObject(request.getContent());
+            ExtendedJSONObject body = new ExtendedJSONObject(request.getContent());
             assertTrue(body.containsKey("payload"));
             assertFalse(body.containsKey("default"));
 

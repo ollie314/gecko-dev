@@ -6,10 +6,10 @@
 #ifndef GFX_DRAWABLE_H
 #define GFX_DRAWABLE_H
 
-#include "nsAutoPtr.h"
 #include "gfxRect.h"
 #include "gfxMatrix.h"
 #include "mozilla/gfx/2D.h"
+#include "mozilla/gfx/Types.h"
 
 class gfxContext;
 class gfxPattern;
@@ -22,6 +22,10 @@ class gfxPattern;
 class gfxDrawable {
     NS_INLINE_DECL_REFCOUNTING(gfxDrawable)
 public:
+    typedef mozilla::gfx::AntialiasMode AntialiasMode;
+    typedef mozilla::gfx::CompositionOp CompositionOp;
+    typedef mozilla::gfx::DrawTarget DrawTarget;
+
     explicit gfxDrawable(const mozilla::gfx::IntSize aSize)
      : mSize(aSize) {}
 
@@ -34,14 +38,17 @@ public:
      */
     virtual bool Draw(gfxContext* aContext,
                         const gfxRect& aFillRect,
-                        bool aRepeat,
+                        mozilla::gfx::ExtendMode aExtendMode,
                         const mozilla::gfx::Filter& aFilter,
                         gfxFloat aOpacity = 1.0,
                         const gfxMatrix& aTransform = gfxMatrix()) = 0;
-    virtual bool DrawWithSamplingRect(gfxContext* aContext,
+
+    virtual bool DrawWithSamplingRect(DrawTarget* aDrawTarget,
+                                      CompositionOp aOp,
+                                      AntialiasMode aAntialiasMode,
                                       const gfxRect& aFillRect,
                                       const gfxRect& aSamplingRect,
-                                      bool aRepeat,
+                                      mozilla::gfx::ExtendMode aExtendMode,
                                       const mozilla::gfx::Filter& aFilter,
                                       gfxFloat aOpacity = 1.0)
     {
@@ -69,22 +76,27 @@ public:
 
     virtual bool Draw(gfxContext* aContext,
                         const gfxRect& aFillRect,
-                        bool aRepeat,
+                        mozilla::gfx::ExtendMode aExtendMode,
                         const mozilla::gfx::Filter& aFilter,
                         gfxFloat aOpacity = 1.0,
                         const gfxMatrix& aTransform = gfxMatrix());
-    virtual bool DrawWithSamplingRect(gfxContext* aContext,
+
+    virtual bool DrawWithSamplingRect(DrawTarget* aDrawTarget,
+                                      CompositionOp aOp,
+                                      AntialiasMode aAntialiasMode,
                                       const gfxRect& aFillRect,
                                       const gfxRect& aSamplingRect,
-                                      bool aRepeat,
+                                      mozilla::gfx::ExtendMode aExtendMode,
                                       const mozilla::gfx::Filter& aFilter,
                                       gfxFloat aOpacity = 1.0);
-    
+
 protected:
-    void DrawInternal(gfxContext* aContext,
+    void DrawInternal(DrawTarget* aDrawTarget,
+                      CompositionOp aOp,
+                      AntialiasMode aAntialiasMode,
                       const gfxRect& aFillRect,
                       const mozilla::gfx::IntRect& aSamplingRect,
-                      bool aRepeat,
+                      mozilla::gfx::ExtendMode aExtendMode,
                       const mozilla::gfx::Filter& aFilter,
                       gfxFloat aOpacity,
                       const gfxMatrix& aTransform = gfxMatrix());
@@ -129,7 +141,7 @@ public:
 
     virtual bool Draw(gfxContext* aContext,
                       const gfxRect& aFillRect,
-                      bool aRepeat,
+                      mozilla::gfx::ExtendMode aExtendMode,
                       const mozilla::gfx::Filter& aFilter,
                       gfxFloat aOpacity = 1.0,
                       const gfxMatrix& aTransform = gfxMatrix());
@@ -153,10 +165,11 @@ public:
 
     virtual bool Draw(gfxContext* aContext,
                       const gfxRect& aFillRect,
-                      bool aRepeat,
+                      mozilla::gfx::ExtendMode aExtendMode,
                       const mozilla::gfx::Filter& aFilter,
                       gfxFloat aOpacity = 1.0,
                       const gfxMatrix& aTransform = gfxMatrix());
+
 
 protected:
     already_AddRefed<gfxCallbackDrawable> MakeCallbackDrawable();

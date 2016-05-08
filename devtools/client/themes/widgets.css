@@ -3,32 +3,44 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-%filter substitution
-%define smw_marginDark #000
-%define smw_marginLight #aaa
-%define smw_itemDarkTopBorder rgba(0,0,0,0.2)
-%define smw_itemDarkBottomBorder rgba(128,128,128,0.15)
-%define smw_itemLightTopBorder rgba(128,128,128,0.15)
-%define smw_itemLightBottomBorder transparent
 .theme-dark {
   --table-splitter-color: rgba(255,255,255,0.15);
   --table-zebra-background: rgba(255,255,255,0.05);
+  --sidemenu-selected-arrow: url(images/itemArrow-dark-ltr.svg);
+  --sidemenu-selected-arrow-rtl: url(images/itemArrow-dark-rtl.svg);
+  --delete-icon: url(chrome://devtools/skin/images/vview-delete.png);
+  --delete-icon-2x: url(chrome://devtools/skin/images/vview-delete@2x.png);
 }
+
 .theme-light {
   --table-splitter-color: rgba(0,0,0,0.15);
   --table-zebra-background: rgba(0,0,0,0.05);
+  --sidemenu-selected-arrow: url(images/itemArrow-ltr.svg);
+  --sidemenu-selected-arrow-rtl: url(images/itemArrow-rtl.svg);
+  --delete-icon: url(chrome://devtools/skin/images/vview-delete.png);
+  --delete-icon-2x: url(chrome://devtools/skin/images/vview-delete@2x.png);
 }
+
+.theme-firebug {
+  --table-splitter-color: rgba(0,0,0,0.15);
+  --table-zebra-background: rgba(0,0,0,0.05);
+  --sidemenu-selected-arrow: url(images/itemArrow-ltr.svg);
+  --sidemenu-selected-arrow-rtl: url(images/itemArrow-rtl.svg);
+  --delete-icon: url(chrome://devtools/skin/images/firebug/close.svg);
+  --delete-icon-2x: url(chrome://devtools/skin/images/firebug/close.svg);
+}
+
 
 /* Generic pane helpers */
 
-.generic-toggled-side-pane {
+.generic-toggled-pane {
   -moz-margin-start: 0 !important;
   /* Unfortunately, transitions don't work properly with locale-aware properties,
      so both the left and right margins are set via js, while the start margin
      is always overridden here. */
 }
 
-.generic-toggled-side-pane[animated] {
+.generic-toggled-pane[animated] {
   transition: margin 0.25s ease-in-out;
 }
 
@@ -48,6 +60,17 @@
   position: relative;
 }
 
+@media (min-width: 701px) {
+  .devtools-responsive-container .generic-toggled-pane {
+    /* To hide generic-toggled-pane, negative margins are applied dynamically.
+     * In the default horizontal layout, the pane is on the side and should be
+     * hidden using negative -moz-margin-end only.
+     */
+    margin-top: 0 !important;
+    margin-bottom: 0 !important;
+  }
+}
+
 @media (max-width: 700px) {
   .devtools-responsive-container {
     -moz-box-orient: vertical;
@@ -56,25 +79,37 @@
   .devtools-responsive-container > .devtools-side-splitter {
     /* This is a normally vertical splitter, but we have turned it horizontal
        due to the smaller resolution */
-    min-height: 3px;
-    height: 3px;
-    margin-top: -3px;
+    min-height: calc(var(--devtools-splitter-top-width) +
+    var(--devtools-splitter-bottom-width) + 1px);
+    border-top-width: var(--devtools-splitter-top-width);
+    border-bottom-width: var(--devtools-splitter-bottom-width);
+    margin-top: calc(-1 * var(--devtools-splitter-top-width) - 1px);
+    margin-bottom: calc(-1 * var(--devtools-splitter-bottom-width));
 
     /* Reset the vertical splitter styles */
-    border-width: 0;
-    border-bottom-width: 1px;
-    border-bottom-style: solid;
-    -moz-margin-start: 0;
-    width: auto;
     min-width: 0;
+    border-inline-end-width: 0;
+    border-inline-start-width: 0;
+    margin-inline-end: 0;
+    margin-inline-start: 0;
 
     /* In some edge case the cursor is not changed to n-resize */
     cursor: n-resize;
   }
 
-  .devtools-responsive-container > .devtools-sidebar-tabs {
+  .devtools-responsive-container > .devtools-sidebar-tabs:not([pane-collapsed]) {
+    /* When the panel is collapsed min/max height should not be applied because
+       collapsing relies on negative margins, which implies constant height. */
     min-height: 35vh;
     max-height: 75vh;
+  }
+
+  .devtools-responsive-container .generic-toggled-pane {
+    /* To hide generic-toggled-pane, negative margins are applied dynamically.
+     * If a vertical layout, the pane is on the bottom and should be hidden
+     * using negative bottom margin only.
+     */
+    -moz-margin-end: 0 !important;
   }
 }
 
@@ -214,17 +249,24 @@
   color: hsl(210,30%,85%);
 }
 
+.breadcrumbs-widget-item:-moz-focusring {
+  outline: none;
+}
+
+.breadcrumbs-widget-item[checked]:-moz-focusring > .button-box {
+  outline: var(--theme-focus-outline);
+  outline-offset: -1px;
+}
+
 .breadcrumbs-widget-item > .button-box {
   border: none;
   padding-top: 0;
   padding-bottom: 0;
 }
 
-%ifdef XP_WIN
-.breadcrumbs-widget-item:-moz-focusring > .button-box {
+:root[platform="win"] .breadcrumbs-widget-item:-moz-focusring > .button-box {
   border-width: 0;
 }
-%endif
 
 .breadcrumbs-widget-item:not([checked]) {
   background: -moz-element(#breadcrumb-separator-normal) no-repeat center left;
@@ -304,6 +346,102 @@
   color: black;
 }
 
+/* Firebug theme support for breadcrumbs widget. */
+
+.theme-firebug .breadcrumbs-widget-item {
+  margin-inline-start: 10px;
+  margin-inline-end: 1px;
+  border: 1px solid transparent;
+  color: #141414;
+  border-radius: 2px;
+  min-width: 0;
+  min-height: 0;
+  padding: 0;
+  font-size: var(--theme-toolbar-font-size);
+}
+
+.theme-firebug .breadcrumbs-widget-item:hover {
+  border-color: rgba(0, 0, 0, 0.2);
+  background: transparent linear-gradient(
+              rgba(255, 255, 255, 0.4),
+              rgba(255, 255, 255, 0.2)) no-repeat;
+  box-shadow: 1px 1px 1px rgba(255, 255, 255, 0.6) inset,
+              0 0 1px rgba(255, 255, 255, 0.6) inset,
+              0 0 2px rgba(0, 0, 0, 0.05);
+}
+
+.theme-firebug .breadcrumbs-widget-item > .button-box {
+  padding-left: 0;
+  padding-right: 0;
+}
+
+.theme-firebug .breadcrumbs-widget-item:first-child {
+  margin: 0;
+}
+
+.theme-firebug .breadcrumbs-widget-item:not(:first-child)::before {
+  content: url(chrome://devtools/skin/images/firebug/breadcrumbs-divider.svg);
+  position: relative;
+  left: -3px;
+  margin: 0 0 0 -5px;
+  padding: 0;
+  width: 5px;
+}
+
+/* Breadcrumbs Separators (reset selection styles) */
+.theme-firebug .breadcrumbs-widget-item[checked],
+.theme-firebug .breadcrumbs-widget-item[checked] .breadcrumbs-widget-item-id,
+.theme-firebug .breadcrumbs-widget-item[checked] .breadcrumbs-widget-item-tag,
+.theme-firebug .breadcrumbs-widget-item[checked] .breadcrumbs-widget-item-pseudo-classes,
+.theme-firebug .breadcrumbs-widget-item[checked] .breadcrumbs-widget-item-classes {
+  background: none;
+  font-weight: bold;
+  color: inherit;
+}
+
+/* The first rule is there only to make sure the default rule from
+widgets.css is overwritten. */
+.theme-firebug .breadcrumbs-widget-item[checked] + .breadcrumbs-widget-item {
+  background: none;
+}
+
+.theme-firebug .breadcrumbs-widget-item .breadcrumbs-widget-item-tag {
+  padding-left: 4px;
+  padding-right: 4px;
+}
+
+/* Breadcrumbs Scrolling Buttons */
+
+.theme-firebug .breadcrumbs-widget-container .scrollbutton-up,
+.theme-firebug .breadcrumbs-widget-container .scrollbutton-down {
+  padding: 0;
+  box-shadow: none;
+}
+
+.theme-firebug .breadcrumbs-widget-container .scrollbutton-up:hover,
+.theme-firebug .breadcrumbs-widget-container .scrollbutton-down:hover {
+  border: 1px transparent solid !important;
+  box-shadow: none !important;
+}
+
+.theme-firebug .breadcrumbs-widget-container .scrollbutton-up:active,
+.theme-firebug .breadcrumbs-widget-container .scrollbutton-down:active {
+  background: none !important;
+}
+
+.theme-firebug .breadcrumbs-widget-container .scrollbutton-up > .toolbarbutton-icon {
+  background-image: url(chrome://global/skin/arrow/arrow-lft-sharp.gif);
+}
+
+.theme-firebug .breadcrumbs-widget-container .scrollbutton-down > .toolbarbutton-icon {
+  background-image: url(chrome://global/skin/arrow/arrow-lft-sharp.gif);
+}
+
+.theme-firebug .breadcrumbs-widget-container .scrollbutton-up:not([disabled]):active:hover > .toolbarbutton-icon,
+.theme-firebug .breadcrumbs-widget-container .scrollbutton-down:not([disabled]):active:hover > .toolbarbutton-icon {
+  background-position: 0 center;
+}
+
 /* SimpleListWidget */
 
 .simple-list-widget-container {
@@ -358,78 +496,28 @@
 
 /* SideMenuWidget container */
 
-.theme-dark .side-menu-widget-container:-moz-locale-dir(ltr),
-.theme-dark .side-menu-widget-empty-text:-moz-locale-dir(ltr) {
-  box-shadow: inset -1px 0 0 @smw_marginDark@;
-}
-
-.theme-dark .side-menu-widget-container:-moz-locale-dir(rtl),
-.theme-dark .side-menu-widget-empty-text:-moz-locale-dir(rtl) {
-  box-shadow: inset 1px 0 0 @smw_marginDark@;
-}
-
-.side-menu-widget-container:-moz-locale-dir(ltr),
-.side-menu-widget-empty-text:-moz-locale-dir(ltr) {
-  box-shadow: inset -1px 0 0 @smw_marginLight@;
-}
-
-.side-menu-widget-container:-moz-locale-dir(rtl),
-.side-menu-widget-empty-text:-moz-locale-dir(rtl) {
-  box-shadow: inset 1px 0 0 @smw_marginLight@;
-}
-
-.side-menu-widget-group {
-  /* To allow visibility of the dark margin shadow. */
-  -moz-margin-end: 1px;
-}
-
 .side-menu-widget-container[with-arrows=true] .side-menu-widget-item {
   /* To compensate for the arrow image's dark margin. */
-  -moz-margin-end: -1px;
+  margin-inline-end: -1px;
 }
 
 /* SideMenuWidget groups */
 
 .side-menu-widget-group-title {
   padding: 4px;
-  background-color: var(--theme-tab-toolbar-background);
+  font-weight: 600;
+  border-bottom: 1px solid rgba(128,128,128,0.15);
 }
 
-.theme-dark .side-menu-widget-group-title {
-  color: var(--theme-content-color1);
-}
-
-.theme-light .side-menu-widget-group-title {
-  color: var(--theme-content-color3);
+.side-menu-widget-group-title + .side-menu-widget-group-list .side-menu-widget-item-contents {
+  padding-inline-start: 20px;
 }
 
 /* SideMenuWidget items */
 
 .side-menu-widget-item {
-  /* To compensate for the top and bottom borders */
-  margin-top: -1px;
-  margin-bottom: -1px;
+  border-bottom: 1px solid rgba(128,128,128,0.15);
   background-clip: padding-box;
-}
-
-.theme-dark .side-menu-widget-item {
-  border-top: 1px solid @smw_itemDarkTopBorder@;
-  border-bottom: 1px solid @smw_itemDarkBottomBorder@;
-  color: var(--theme-selection-color);
-}
-
-.theme-dark .side-menu-widget-item:last-of-type {
-  box-shadow: inset 0 -1px 0 @smw_itemDarkTopBorder@;
-}
-
-.theme-light .side-menu-widget-item {
-  border-top: 1px solid @smw_itemLightTopBorder@;
-  border-bottom: 1px solid @smw_itemLightBottomBorder@;
-  color: var(--theme-body-color);
-}
-
-.theme-light .side-menu-widget-item:last-of-type {
-  box-shadow: inset 0 -1px 0 @smw_itemLightTopBorder@;
 }
 
 .side-menu-widget-item.selected {
@@ -440,38 +528,18 @@
 .side-menu-widget-item-arrow {
   -moz-margin-start: -7px;
   width: 7px; /* The image's width is 7 pixels */
-  /* Cover the border of the side-menu-widget-item */
-  margin-top: -1px;
-  margin-bottom: -1px;
 }
 
 .side-menu-widget-item.selected > .side-menu-widget-item-arrow {
-  background-size: auto, 1px 100%;
+  background-image: var(--sidemenu-selected-arrow);
+  background-size: auto;
   background-repeat: no-repeat;
-}
-
-.side-menu-widget-item.selected > .side-menu-widget-item-arrow:-moz-locale-dir(ltr) {
-  background-position: center right, top right;
+  background-position: center right;
 }
 
 .side-menu-widget-item.selected > .side-menu-widget-item-arrow:-moz-locale-dir(rtl) {
-  background-position: center left, top left;
-}
-
-.theme-dark .side-menu-widget-item.selected > .side-menu-widget-item-arrow:-moz-locale-dir(ltr) {
-  background-image: url(images/itemArrow-dark-ltr.svg), linear-gradient(to right, @smw_marginDark@, @smw_marginDark@);
-}
-
-.theme-dark .side-menu-widget-item.selected > .side-menu-widget-item-arrow:-moz-locale-dir(rtl) {
-  background-image: url(images/itemArrow-dark-rtl.svg), linear-gradient(to right, @smw_marginDark@, @smw_marginDark@);
-}
-
-.theme-light .side-menu-widget-item.selected > .side-menu-widget-item-arrow:-moz-locale-dir(ltr) {
-  background-image: url(images/itemArrow-ltr.svg), linear-gradient(to right, @smw_marginLight@, @smw_marginLight@);
-}
-
-.theme-light .side-menu-widget-item.selected > .side-menu-widget-item-arrow:-moz-locale-dir(rtl) {
-  background-image: url(images/itemArrow-rtl.svg), linear-gradient(to right, @smw_marginLight@, @smw_marginLight@);
+  background-image: var(--sidemenu-selected-arrow-rtl);
+  background-position: center left;
 }
 
 /* SideMenuWidget items contents */
@@ -479,15 +547,30 @@
 .side-menu-widget-item-contents {
   padding: 4px;
   /* To avoid having content overlapping the arrow image. */
-  -moz-padding-end: 8px;
+  padding-inline-end: 8px;
 }
 
 .side-menu-widget-item-other {
   /* To avoid having content overlapping the arrow image. */
-  -moz-padding-end: 8px;
+  padding-inline-end: 8px;
   /* To compensate for the .side-menu-widget-item-contents padding. */
-  -moz-margin-start: -4px;
-  -moz-margin-end: -8px;
+  margin-inline-start: -4px;
+  margin-inline-end: -8px;
+}
+
+.side-menu-widget-group-title + .side-menu-widget-group-list .side-menu-widget-item-other {
+  /* To compensate for the .side-menu-widget-item-contents padding. */
+  margin-inline-start: -20px;
+}
+
+.side-menu-widget-item.selected .side-menu-widget-item-other:not(.selected) {
+  background-color: var(--theme-sidebar-background);
+  box-shadow: inset 2px 0 0 var(--theme-selection-background);
+  color: var(--theme-body-color);
+}
+
+.side-menu-widget-item.selected .side-menu-widget-item-other.selected {
+  background-color: var(--theme-selection-background);
 }
 
 .side-menu-widget-item-other:first-of-type {
@@ -496,29 +579,6 @@
 
 .side-menu-widget-item-other:last-of-type {
   margin-bottom: -4px;
-}
-
-.theme-dark .side-menu-widget-item-other {
-  background-color: rgba(0,0,0,.1);
-}
-
-.theme-light .side-menu-widget-item-other {
-  background-color: rgba(128,128,128,.1);
-}
-
-.theme-dark .side-menu-widget-item.selected .side-menu-widget-item-other {
-  background-color: rgba(0,0,0,.2); /* Darken the selection by 20% */
-  color: var(--theme-selection-color);
-}
-
-.theme-light .side-menu-widget-item.selected .side-menu-widget-item-other {
-  background-color: rgba(255,255,255,.8); /* Lighten the selection by 20% */
-  color: var(--theme-body-color);
-}
-
-.side-menu-widget-item.selected .side-menu-widget-item-other.selected {
-  background-color: transparent;
-  color: var(--theme-selection-color);
 }
 
 /* SideMenuWidget checkboxes */
@@ -535,13 +595,9 @@
 
 /* SideMenuWidget misc */
 
-.theme-dark .side-menu-widget-container,
-.theme-dark .side-menu-widget-empty-text {
-  background-color: var(--theme-toolbar-background);
-}
-
 .side-menu-widget-empty-text {
   padding: 4px 8px;
+  background-color: var(--theme-sidebar-background);
 }
 
 /* VariablesView */
@@ -571,10 +627,23 @@
   margin-top: -1px;
 }
 
+.theme-firebug .variables-view-scope > .title {
+  height: auto;
+  border: none;
+}
+
+.theme-firebug .variables-view-scope > .title > .theme-twisty {
+  display: none;
+}
+
 /* Generic variables traits */
 
 .variables-view-variable:not(:last-child) {
   border-bottom: 1px solid rgba(128, 128, 128, .15);
+}
+
+.theme-firebug .variables-view-variable {
+  border-bottom: 1px solid transparent;
 }
 
 .variables-view-variable > .title > .name {
@@ -641,7 +710,7 @@
 }
 
 .variable-or-property-non-writable-icon {
-  background: url("chrome://devtools/skin/themes/images/vview-lock.png") no-repeat;
+  background: url("chrome://devtools/skin/images/vview-lock.png") no-repeat;
   background-size: cover;
   width: 16px;
   height: 16px;
@@ -649,7 +718,7 @@
 
 @media (min-resolution: 1.1dppx) {
   .variable-or-property-non-writable-icon {
-    background-image: url("chrome://devtools/skin/themes/images/vview-lock@2x.png");
+    background-image: url("chrome://devtools/skin/images/vview-lock@2x.png");
   }
 }
 
@@ -739,82 +808,61 @@
 }
 
 /* Variables and properties editing */
-
-.variables-view-delete {
-  background: url("chrome://devtools/skin/themes/images/vview-delete.png");
-  background-size: cover;
+.variables-view-delete,
+.variables-view-edit,
+.variables-view-open-inspector {
   width: 16px;
   height: 16px;
+  background-size: cover;
+  cursor: pointer;
+}
+
+.variables-view-delete:hover,
+.variables-view-edit:hover,
+.variables-view-open-inspector:hover {
+  filter: url(images/filters.svg#checked-icon-state);
+}
+
+.variables-view-delete:active,
+.variables-view-edit:active,
+.variables-view-open-inspector:active {
+  filter: url(images/filters.svg#checked-icon-state) brightness(0.9);
+}
+
+.variable-or-property:focus > .title > .variables-view-delete,
+.variable-or-property:focus > .title > .variables-view-edit,
+.variable-or-property:focus > .title > .variables-view-open-inspector {
+  filter: none;
+}
+
+.variables-view-delete {
+  background-image: var(--delete-icon);
 }
 
 @media (min-resolution: 1.1dppx) {
   .variables-view-delete {
-    background-image: url("chrome://devtools/skin/themes/images/vview-delete@2x.png");
+    background-image: var(--delete-icon-2x);
   }
 }
 
-.variables-view-delete:hover {
-  background-position: 16px;
-}
-
-.variables-view-delete:active {
-  background-position: 32px;
-}
-
-.variable-or-property:focus > .title > .variables-view-delete {
-  background-position: 0px;
-}
-
 .variables-view-edit {
-  background: url("chrome://devtools/skin/themes/images/vview-edit.png");
-  background-size: cover;
-  width: 16px;
-  height: 16px;
-  cursor: pointer;
+  background-image: url("chrome://devtools/skin/images/vview-edit.png");
 }
 
 @media (min-resolution: 1.1dppx) {
   .variables-view-edit {
-    background-image: url("chrome://devtools/skin/themes/images/vview-edit@2x.png");
+    background-image: url("chrome://devtools/skin/images/vview-edit@2x.png");
   }
 }
 
-.variables-view-edit:hover {
-  background-position: 16px;
-}
-
-.variables-view-edit:active {
-  background-position: 32px;
-}
-
-.variable-or-property:focus > .title > .variables-view-edit {
-  background-position: 0px;
-}
-
 .variables-view-open-inspector {
-  background: url("chrome://devtools/skin/themes/images/vview-open-inspector.png");
-  background-size: cover;
-  width: 16px;
-  height: 16px;
-  cursor: pointer;
+  background-image: url("chrome://devtools/skin/images/vview-open-inspector.png");
 }
 
 @media (min-resolution: 1.1dppx) {
   .variables-view-open-inspector {
-    background-image: url("chrome://devtools/skin/themes/images/vview-open-inspector@2x.png");
+    background-image: url("chrome://devtools/skin/images/vview-open-inspector@2x.png");
   }
-}
-
-.variables-view-open-inspector:hover {
-  background-position: 16px;
-}
-
-.variables-view-open-inspector:active {
-  background-position: 32px;
-}
-
-.variable-or-property:focus > .title > .variables-view-open-inspector {
-  background-position: 0px;
 }
 
 /* Variables and properties input boxes */
@@ -1209,7 +1257,7 @@
 /* Table body */
 
 .table-widget-body > .devtools-side-splitter {
-  border: none;
+  background-color: transparent;
 }
 
 .table-widget-body {
@@ -1225,50 +1273,99 @@
 
 .table-widget-column-header,
 .table-widget-cell {
-  -moz-border-end: 1px solid var(--table-splitter-color) !important;
+  border-inline-end: 1px solid var(--table-splitter-color) !important;
 }
 
 /* Table widget column header colors are taken from netmonitor.inc.css to match
-   the look of both the tables. This needs to be updated along with netmonitor
-   header colors in bug 951714 */
+   the look of both the tables. */
 
 .table-widget-column-header {
-  background: rgba(0,0,0,0);
   position: sticky;
   top: 0;
   width: 100%;
+  margin: 0;
   padding: 5px 0 0 !important;
   color: inherit;
   text-align: center;
   font-weight: inherit !important;
-  transition: background-color 0.1s ease-in-out;
+  border-image: linear-gradient(transparent 15%,
+                                var(--theme-splitter-color) 15%,
+                                var(--theme-splitter-color) 85%,
+                                transparent 85%,
+                                transparent calc(100% - 1px),
+                                var(--theme-splitter-color) calc(100% - 1px)) 1 1;
+  background-repeat: no-repeat;
 }
 
-.table-widget-column-header:hover {
-  background-image: linear-gradient(rgba(0,0,0,0.10), rgba(0,0,0,0.10));
+.table-widget-column-header:not([sorted]):hover {
+  background-image: linear-gradient(rgba(0,0,0,0.1),rgba(0,0,0,0.1));
 }
 
-.table-widget-column-header:hover:active {
-  background-image: linear-gradient(rgba(0,0,0,0.25), rgba(0,0,0,0.25));
+.table-widget-column-header[sorted] {
+  background-color: var(--theme-selection-background);
+  color: var(--theme-selection-color);
+  border-image: linear-gradient(var(--theme-splitter-color), var(--theme-splitter-color)) 1 1;
+  box-shadow: -0.5px -0.5px 0 0.5px var(--theme-splitter-color);
+  background-position: right 6px center;
 }
 
-.table-widget-column-header:not(:active)[sorted] {
-  background-image: linear-gradient(rgba(0,0,0,0.15), rgba(0,0,0,0.15));
+.table-widget-column-header[sorted]:-moz-locale-dir(rtl) {
+  background-position: 6px center;
 }
 
-.table-widget-column-header:not(:active)[sorted=ascending] {
-  background-image: radial-gradient(farthest-side at center top, hsla(200,100%,70%,.7), hsla(200,100%,70%,0.3)),
-                    linear-gradient(rgba(0,0,0,0.15), rgba(0,0,0,0.15));
-  background-size: 100% 1px, auto;
-  background-repeat: no-repeat, repeat;
+.table-widget-column-header[sorted=ascending] {
+  background-image: url("chrome://devtools/skin/images/sort-arrows.svg#ascending");
 }
 
-.table-widget-column-header:not(:active)[sorted=descending] {
-  background-image: radial-gradient(farthest-side at center bottom, hsla(200,100%,70%,.7), hsla(200,100%,70%,0.3)),
-                    linear-gradient(rgba(0,0,0,0.15), rgba(0,0,0,0.15));
-  background-size: 100% 1px, auto;
-  background-repeat: no-repeat, repeat;
-  background-position: bottom;
+.table-widget-column-header[sorted=descending] {
+  background-image: url("chrome://devtools/skin/images/sort-arrows.svg#descending");
+}
+
+.theme-dark .table-widget-column[readonly] {
+  background-color: rgba(255,255,255,0.1);
+}
+
+.theme-light .table-widget-column[readonly] {
+  background-color: rgba(0,0,0,0.1);
+}
+
+.table-widget-body .devtools-side-splitter:last-of-type {
+  display: none;
+}
+
+/* Firebug theme support for table widget */
+
+.theme-firebug .devtools-toolbar.table-widget-column-header {
+  font-family: var(--proportional-font-family);
+  color: var(--theme-body-color);
+
+  /* Make sure to override the default Firebug devtools-toolbar height */
+  height: 19px !important;
+
+  /* Make sure to override the dafault .table-widget-column-header font-weight and background */
+  font-weight: bold !important;
+  background-image: linear-gradient(rgba(255, 255, 255, 0.05), rgba(0, 0, 0, 0.05));
+  background-color: #C8D2DC !important;
+
+  /* Vertically center header label */
+  padding-top: 2px !important;
+}
+
+.theme-firebug .devtools-toolbar.table-widget-column-header[sorted] {
+  background-color: #AAC3DC !important;
+}
+
+.theme-firebug .devtools-toolbar.table-widget-column-header:hover:active {
+  background-image: linear-gradient(rgba(0, 0, 0, 0.1),
+                                    transparent);
+}
+
+.theme-firebug .devtools-toolbar.table-widget-column-header[sorted=descending]:not(:active) {
+  background-image: url(chrome://devtools/skin/images/firebug/arrow-down.svg);
+}
+
+.theme-firebug .devtools-toolbar.table-widget-column-header[sorted=ascending]:not(:active) {
+  background-image: url(chrome://devtools/skin/images/firebug/arrow-up.svg);
 }
 
 /* Cells */
@@ -1276,24 +1373,20 @@
 .table-widget-cell {
   width: 100%;
   padding: 3px 4px;
-  background-clip: padding-box;
   min-width: 100px;
   -moz-user-focus: normal;
-  margin-bottom: -1px !important;
-  border-bottom: 1px solid transparent;
   color: var(--theme-body-color);
 }
 
-.table-widget-cell:last-child {
-  border-bottom: 1px solid var(--table-splitter-color);
+.table-widget-cell[hidden] {
+  display: none;
 }
 
-:root:not(.filtering) .table-widget-cell:nth-child(odd):not(.theme-selected),
-.table-widget-cell:not(.theme-selected)[odd] {
-  background: var(--table-zebra-background);
+.table-widget-cell.even:not(.theme-selected) {
+  background-color: var(--table-zebra-background);
 }
 
-.table-widget-cell.flash-out {
+:root:not(.no-animate) .table-widget-cell.flash-out {
   animation: flash-out 0.5s ease-in;
 }
 
@@ -1374,7 +1467,7 @@
   float: left;
   margin: 3px 2px -3px;
   background-repeat: no-repeat;
-  background-image: url("chrome://devtools/skin/themes/images/controls.png");
+  background-image: url("chrome://devtools/skin/images/controls.png");
   background-size: 56px 28px;
   cursor: pointer;
   background-position: -28px -14px;
@@ -1432,7 +1525,7 @@
 
 @media (min-resolution: 1.1dppx) {
   .tree-widget-item:before {
-    background-image: url("chrome://devtools/skin/themes/images/controls@2x.png");
+    background-image: url("chrome://devtools/skin/images/controls@2x.png");
   }
 }
 
@@ -1502,18 +1595,18 @@
 }
 
 .tree-widget-item[type="dir"]::after {
-  background-image: url(chrome://devtools/skin/themes/images/filetypes/dir-close.svg);
+  background-image: url(chrome://devtools/skin/images/filetypes/dir-close.svg);
   background-position: 2px 0;
   background-size: auto 16px;
   width: 20px;
 }
 
 .tree-widget-item[type="dir"][expanded]:not([empty])::after {
-  background-image: url(chrome://devtools/skin/themes/images/filetypes/dir-open.svg);
+  background-image: url(chrome://devtools/skin/images/filetypes/dir-open.svg);
 }
 
 .tree-widget-item[type="url"]::after {
-  background-image: url(chrome://devtools/skin/themes/images/filetypes/globe.svg);
+  background-image: url(chrome://devtools/skin/images/filetypes/globe.svg);
   background-size: auto 18px;
   width: 18px;
 }

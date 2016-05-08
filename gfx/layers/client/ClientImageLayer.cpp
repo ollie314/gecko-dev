@@ -46,7 +46,7 @@ protected:
     mImageClientTypeContainer = CompositableType::UNKNOWN;
   }
 
-  virtual void SetVisibleRegion(const nsIntRegion& aRegion) override
+  virtual void SetVisibleRegion(const LayerIntRegion& aRegion) override
   {
     NS_ASSERTION(ClientManager()->InConstruction(),
                  "Can only set properties in construction phase");
@@ -58,6 +58,13 @@ protected:
   virtual void ClearCachedResources() override
   {
     DestroyBackBuffer();
+  }
+
+  virtual void HandleMemoryPressure() override
+  {
+    if (mImageClient) {
+      mImageClient->HandleMemoryPressure();
+    }
   }
 
   virtual void FillSpecificAttributes(SpecificLayerAttributes& aAttrs) override
@@ -106,14 +113,6 @@ protected:
     }
 
     AutoLockImage autoLock(mContainer);
-
-#ifdef MOZ_WIDGET_GONK
-    if (autoLock.HasImage() &&
-        autoLock.GetImage()->GetFormat() == ImageFormat::OVERLAY_IMAGE) {
-      mImageClientTypeContainer = CompositableType::IMAGE_OVERLAY;
-      return mImageClientTypeContainer;
-    }
-#endif
 
     mImageClientTypeContainer = autoLock.HasImage()
         ? CompositableType::IMAGE : CompositableType::UNKNOWN;

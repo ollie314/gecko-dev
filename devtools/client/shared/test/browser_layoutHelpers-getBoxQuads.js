@@ -4,33 +4,32 @@
 // Tests getAdjustedQuads works properly in a variety of use cases including
 // iframes, scroll and zoom
 
-var {utils: Cu} = Components;
+"use strict";
+
 var {getAdjustedQuads} = require("devtools/shared/layout/utils");
 
 const TEST_URI = TEST_URI_ROOT + "browser_layoutHelpers-getBoxQuads.html";
 
-function test() {
-  addTab(TEST_URI, function(browser, tab) {
-    let doc = browser.contentDocument;
+add_task(function* () {
+  let tab = yield addTab(TEST_URI);
+  let doc = tab.linkedBrowser.contentDocument;
 
-    ok(typeof getAdjustedQuads === "function", "getAdjustedQuads is defined");
+  ok(typeof getAdjustedQuads === "function", "getAdjustedQuads is defined");
 
-    info("Running tests");
+  info("Running tests");
 
-    returnsTheRightDataStructure(doc);
-    isEmptyForMissingNode(doc);
-    isEmptyForHiddenNodes(doc);
-    defaultsToBorderBoxIfNoneProvided(doc);
-    returnsLikeGetBoxQuadsInSimpleCase(doc);
-    takesIframesOffsetsIntoAccount(doc);
-    takesScrollingIntoAccount(doc);
-    takesZoomIntoAccount(doc);
-    returnsMultipleItemsForWrappingInlineElements(doc);
+  returnsTheRightDataStructure(doc);
+  isEmptyForMissingNode(doc);
+  isEmptyForHiddenNodes(doc);
+  defaultsToBorderBoxIfNoneProvided(doc);
+  returnsLikeGetBoxQuadsInSimpleCase(doc);
+  takesIframesOffsetsIntoAccount(doc);
+  takesScrollingIntoAccount(doc);
+  yield takesZoomIntoAccount(doc);
+  returnsMultipleItemsForWrappingInlineElements(doc);
 
-    gBrowser.removeCurrentTab();
-    finish();
-  });
-}
+  gBrowser.removeCurrentTab();
+});
 
 function returnsTheRightDataStructure(doc) {
   info("Checks that the returned data contains bounds and 4 points");
@@ -174,7 +173,7 @@ function takesScrollingIntoAccount(doc) {
   is(quad.p1.y, 0, "p1.y of the scrolled node is correct after scrolling up");
 }
 
-function takesZoomIntoAccount(doc) {
+function* takesZoomIntoAccount(doc) {
   info("Checks that if the page is zoomed in/out, the quad returned is correct");
 
   // Hard-coding coordinates in this zoom test is a bad idea as it can vary
@@ -194,7 +193,7 @@ function takesZoomIntoAccount(doc) {
     "The zoomed in quad is bigger than the default one");
 
   info("Zoom out");
-  window.FullZoom.reset();
+  yield window.FullZoom.reset();
   window.FullZoom.reduce();
   let [zoomedOutQuad] = getAdjustedQuads(doc.defaultView, node);
 
@@ -203,7 +202,7 @@ function takesZoomIntoAccount(doc) {
   ok(zoomedOutQuad.bounds.height < defaultQuad.bounds.height,
     "The zoomed out quad is smaller than the default one");
 
-  window.FullZoom.reset();
+  yield window.FullZoom.reset();
 }
 
 function returnsMultipleItemsForWrappingInlineElements(doc) {

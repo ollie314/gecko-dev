@@ -34,6 +34,7 @@ RequestExecutionLevel user
 Var TmpVal
 Var InstallType
 Var AddStartMenuSC
+Var AddTaskbarSC
 Var AddQuickLaunchSC
 Var AddDesktopSC
 Var InstallMaintenanceService
@@ -395,10 +396,12 @@ Section "-Application" APP_IDX
 
     ; If we are writing to HKLM and create either the desktop or start menu
     ; shortcuts set IconsVisible to 1 otherwise to 0.
+    ; Taskbar shortcuts imply having a start menu shortcut.
     ${StrFilter} "${FileMainEXE}" "+" "" "" $R9
     StrCpy $0 "Software\Clients\StartMenuInternet\$R9\InstallInfo"
     ${If} $AddDesktopSC == 1
     ${OrIf} $AddStartMenuSC == 1
+    ${OrIf} $AddTaskbarSC == 1
       WriteRegDWORD HKLM "$0" "IconsVisible" 1
     ${Else}
       WriteRegDWORD HKLM "$0" "IconsVisible" 0
@@ -412,10 +415,12 @@ Section "-Application" APP_IDX
 
     ; If we create either the desktop or start menu shortcuts, then
     ; set IconsVisible to 1 otherwise to 0.
+    ; Taskbar shortcuts imply having a start menu shortcut.
     ${StrFilter} "${FileMainEXE}" "+" "" "" $R9
     StrCpy $0 "Software\Clients\StartMenuInternet\$R9\InstallInfo"
     ${If} $AddDesktopSC == 1
     ${OrIf} $AddStartMenuSC == 1
+    ${OrIf} $AddTaskbarSC == 1
       WriteRegDWORD HKCU "$0" "IconsVisible" 1
     ${Else}
       WriteRegDWORD HKCU "$0" "IconsVisible" 0
@@ -440,12 +445,16 @@ Section "-Application" APP_IDX
     ${If} $R0 == "true"
     ; Only proceed if we have HKLM write access
     ${AndIf} $TmpVal == "HKLM"
-    ; On Windows 2000 we do not install the maintenance service.
-    ${AndIf} ${AtLeastWinXP}
-      ; The user is an admin so we should default to install service yes
-      StrCpy $InstallMaintenanceService "1"
+      ; On Windows < XP SP3 we do not install the maintenance service.
+      ${If} ${IsWinXP}
+      ${AndIf} ${AtMostServicePack} 2
+        StrCpy $InstallMaintenanceService "0"
+      ${Else}
+        ; The user is an admin, so we should default to installing the service.
+        StrCpy $InstallMaintenanceService "1"
+      ${EndIf}
     ${Else}
-      ; The user is not admin so we should default to install service no
+      ; The user is not admin, so we can't install the service.
       StrCpy $InstallMaintenanceService "0"
     ${EndIf}
   ${EndIf}
@@ -596,13 +605,17 @@ Section "-InstallEndCleanup"
         GetFunctionAddress $0 SetAsDefaultAppUserHKCU
         UAC::ExecCodeSegment $0
       ${EndIf}
+    ${Else}
+      ${LogHeader} "Writing default-browser opt-out"
+      WriteRegStr HKCU "Software\Mozilla\Firefox" "DefaultBrowserOptOut" "True"
+      ${If} ${Errors}
+        ${LogHeader} "Error writing default-browser opt-out"
+      ${EndIf}
     ${EndIf}
-    ; Adds a pinned Task Bar shortcut (see MigrateTaskBarShortcut for details).
-    ${MigrateTaskBarShortcut}
   ${EndUnless}
 
-  ${GetShortcutsLogPath} $0
-  WriteIniStr "$0" "TASKBAR" "Migrated" "true"
+  ; Adds a pinned Task Bar shortcut (see MigrateTaskBarShortcut for details).
+  ${MigrateTaskBarShortcut}
 
   ; Add the Firewall entries during install
   Call AddFirewallEntries
@@ -916,10 +929,11 @@ Function preComponents
     Abort
   ${EndIf}
 
-  ; On Windows 2000 we do not install the maintenance service.
-  ${Unless} ${AtLeastWinXP}
+  ; On Windows < XP SP3 we do not install the maintenance service.
+  ${If} ${IsWinXP}
+  ${AndIf} ${AtMostServicePack} 2
     Abort
-  ${EndUnless}
+  ${EndIf}
 
   ; Don't show the custom components page if the
   ; user is not an admin

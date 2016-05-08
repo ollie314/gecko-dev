@@ -142,7 +142,7 @@ nsColumnSetFrame::PaintColumnRule(nsRenderingContext* aCtx,
     // couldn't ignore the DrawResult that PaintBorderWithStyleBorder returns.
     MOZ_ASSERT(border.mBorderImageSource.GetType() == eStyleImageType_Null);
 
-    unused <<
+    Unused <<
       nsCSSRendering::PaintBorderWithStyleBorder(presContext, *aCtx, this,
                                                  aDirtyRect, lineRect, border,
                                                  StyleContext(),
@@ -1140,9 +1140,8 @@ void
 nsColumnSetFrame::SetInitialChildList(ChildListID     aListID,
                                       nsFrameList&    aChildList)
 {
-  MOZ_ASSERT(aListID == kPrincipalList, "unexpected child list");
-  MOZ_ASSERT(aChildList.OnlyChild(),
-             "initial child list must have exactly one child");
+  MOZ_ASSERT(aListID != kPrincipalList || aChildList.OnlyChild(),
+             "initial principal child list must have exactly one child");
   nsContainerFrame::SetInitialChildList(kPrincipalList, aChildList);
 }
 

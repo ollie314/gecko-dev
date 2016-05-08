@@ -1,5 +1,7 @@
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
+/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* Any copyright is dedicated to the Public Domain.
-   http://creativecommons.org/publicdomain/zero/1.0/ */
+ * http://creativecommons.org/publicdomain/zero/1.0/ */
 
 // Ensure that the sources listed when debugging an addon are either from the
 // addon itself, or the SDK, with proper groups and labels.
@@ -12,7 +14,8 @@ function test() {
     let addon = yield addAddon(ADDON_URL);
     let addonDebugger = yield initAddonDebugger(ADDON_URL);
 
-    is(addonDebugger.title, "Debugger - browser_dbg_addon3", "Saw the right toolbox title.");
+    is(addonDebugger.title, `Developer Tools - browser_dbg_addon3 - ${ADDON_URL}`,
+       "Saw the right toolbox title.");
 
     // Check the inital list of sources is correct
     let groups = yield addonDebugger.getSourceGroups();

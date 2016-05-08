@@ -28,7 +28,7 @@ TraceArray(JSTracer* trc, void* data)
 {
   ArrayT* array = static_cast<ArrayT *>(data);
   for (unsigned i = 0; i < array->Length(); ++i)
-    JS_CallObjectTracer(trc, &array->ElementAt(i), "array-element");
+    JS::TraceEdge(trc, &array->ElementAt(i), "array-element");
 }
 
 /*
@@ -84,16 +84,20 @@ RunTest(JSRuntime* rt, JSContext* cx, ArrayT* array)
 static void
 CreateGlobalAndRunTest(JSRuntime* rt, JSContext* cx)
 {
-  static const JSClass GlobalClass = {
-    "global", JSCLASS_GLOBAL_FLAGS,
+  static const JSClassOps GlobalClassOps = {
     nullptr, nullptr, nullptr, nullptr,
     nullptr, nullptr, nullptr, nullptr,
     nullptr, nullptr, nullptr,
     JS_GlobalObjectTraceHook
   };
 
+  static const JSClass GlobalClass = {
+    "global", JSCLASS_GLOBAL_FLAGS,
+    &GlobalClassOps
+  };
+
   JS::CompartmentOptions options;
-  options.setVersion(JSVERSION_LATEST);
+  options.behaviors().setVersion(JSVERSION_LATEST);
   JS::PersistentRootedObject global(cx);
   global = JS_NewGlobalObject(cx, &GlobalClass, nullptr, JS::FireOnNewGlobalHook, options);
   ASSERT_TRUE(global != nullptr);
@@ -115,12 +119,7 @@ CreateGlobalAndRunTest(JSRuntime* rt, JSContext* cx)
   }
 
   {
-    nsAutoTArray<ElementT, InitialElements> array;
-    RunTest(rt, cx, &array);
-  }
-
-  {
-    AutoFallibleTArray<ElementT, InitialElements> array;
+    AutoTArray<ElementT, InitialElements> array;
     RunTest(rt, cx, &array);
   }
 

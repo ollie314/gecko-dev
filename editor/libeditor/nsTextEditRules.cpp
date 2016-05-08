@@ -57,6 +57,15 @@ using namespace mozilla::dom;
  ********************************************************/
 
 nsTextEditRules::nsTextEditRules()
+  : mEditor(nullptr)
+  , mPasswordIMEIndex(0)
+  , mCachedSelectionOffset(0)
+  , mActionNesting(0)
+  , mLockRulesSniffing(false)
+  , mDidExplicitlySetInterline(false)
+  , mDeleteBidiImmediately(false)
+  , mLastStart(0)
+  , mLastLength(0)
 {
   InitFields();
 }
@@ -276,7 +285,8 @@ nsTextEditRules::WillDoAction(Selection* aSelection,
     case EditAction::insertElement:
       // i had thought this would be html rules only.  but we put pre elements
       // into plaintext mail when doing quoting for reply!  doh!
-      return WillInsert(aSelection, aCancel);
+      WillInsert(*aSelection, aCancel);
+      return NS_OK;
     default:
       return NS_ERROR_FAILURE;
   }
@@ -336,25 +346,25 @@ nsTextEditRules::DocumentIsEmpty(bool *aDocumentIsEmpty)
  ********************************************************/
 
 
-nsresult
-nsTextEditRules::WillInsert(Selection* aSelection, bool* aCancel)
+void
+nsTextEditRules::WillInsert(Selection& aSelection, bool* aCancel)
 {
-  NS_ENSURE_TRUE(aSelection && aCancel, NS_ERROR_NULL_POINTER);
+  MOZ_ASSERT(aCancel);
 
-  CANCEL_OPERATION_IF_READONLY_OR_DISABLED
+  if (IsReadonly() || IsDisabled()) {
+    *aCancel = true;
+    return;
+  }
 
   // initialize out param
   *aCancel = false;
 
   // check for the magic content node and delete it if it exists
-  if (mBogusNode)
-  {
-    NS_ENSURE_STATE(mEditor);
+  if (mBogusNode) {
+    NS_ENSURE_TRUE_VOID(mEditor);
     mEditor->DeleteNode(mBogusNode);
     mBogusNode = nullptr;
   }
-
-  return NS_OK;
 }
 
 nsresult
@@ -403,8 +413,7 @@ nsTextEditRules::WillInsertBreak(Selection* aSelection,
       NS_ENSURE_SUCCESS(res, res);
     }
 
-    res = WillInsert(aSelection, aCancel);
-    NS_ENSURE_SUCCESS(res, res);
+    WillInsert(*aSelection, aCancel);
     // initialize out param
     // we want to ignore result of WillInsert()
     *aCancel = false;
@@ -642,8 +651,7 @@ nsTextEditRules::WillInsertText(EditAction aAction,
     NS_ENSURE_SUCCESS(res, res);
   }
 
-  res = WillInsert(aSelection, aCancel);
-  NS_ENSURE_SUCCESS(res, res);
+  WillInsert(*aSelection, aCancel);
   // initialize out param
   // we want to ignore result of WillInsert()
   *aCancel = false;

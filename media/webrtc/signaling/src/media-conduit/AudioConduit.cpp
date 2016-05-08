@@ -23,9 +23,11 @@
 #include "mozilla/Telemetry.h"
 #endif
 
+#include "webrtc/common.h"
+#include "webrtc/modules/audio_processing/include/audio_processing.h"
+#include "webrtc/modules/rtp_rtcp/interface/rtp_rtcp.h"
 #include "webrtc/voice_engine/include/voe_errors.h"
 #include "webrtc/system_wrappers/interface/clock.h"
-#include "browser_logging/WebRtcLog.h"
 
 #ifdef MOZ_WIDGET_ANDROID
 #include "AndroidJNIWrapper.h"
@@ -203,16 +205,20 @@ bool WebrtcAudioConduit::GetRTCPReceiverReport(DOMHighResTimeStamp* timestamp,
 bool WebrtcAudioConduit::GetRTCPSenderReport(DOMHighResTimeStamp* timestamp,
                                              unsigned int* packetsSent,
                                              uint64_t* bytesSent) {
-  struct webrtc::SenderInfo senderInfo;
-  bool result = !mPtrRTP->GetRemoteRTCPSenderInfo(mChannel, &senderInfo);
-  if (result) {
-    *timestamp = NTPtoDOMHighResTimeStamp(senderInfo.NTP_timestamp_high,
-                                          senderInfo.NTP_timestamp_low);
-    *packetsSent = senderInfo.sender_packet_count;
-    *bytesSent = senderInfo.sender_octet_count;
-  }
-  return result;
-}
+  webrtc::RTCPSenderInfo senderInfo;
+  webrtc::RtpRtcp * rtpRtcpModule;
+  webrtc::RtpReceiver * rtp_receiver;
+  bool result =
+    !mPtrVoEVideoSync->GetRtpRtcp(mChannel,&rtpRtcpModule,&rtp_receiver) &&
+    !rtpRtcpModule->RemoteRTCPStat(&senderInfo);
+  if (result){
+    *timestamp = NTPtoDOMHighResTimeStamp(senderInfo.NTPseconds,
+                                          senderInfo.NTPfraction);
+    *packetsSent = senderInfo.sendPacketCount;
+    *bytesSent = senderInfo.sendOctetCount;
+   }
+   return result;
+ }
 
 /*
  * WebRTCAudioConduit Implementation
@@ -223,12 +229,10 @@ MediaConduitErrorCode WebrtcAudioConduit::Init()
 
 #ifdef MOZ_WIDGET_ANDROID
     jobject context = jsjni_GetGlobalContextRef();
-
     // get the JVM
     JavaVM *jvm = jsjni_GetVM();
-    JNIEnv* jenv = jsjni_GetJNIForThread();
 
-    if (webrtc::VoiceEngine::SetAndroidObjects(jvm, jenv, (void*)context) != 0) {
+    if (webrtc::VoiceEngine::SetAndroidObjects(jvm, (void*)context) != 0) {
       CSFLogError(logTag, "%s Unable to set Android objects", __FUNCTION__);
       return kMediaConduitSessionNotInited;
     }
@@ -240,8 +244,6 @@ MediaConduitErrorCode WebrtcAudioConduit::Init()
     CSFLogError(logTag, "%s Unable to create voice engine", __FUNCTION__);
     return kMediaConduitSessionNotInited;
   }
-
-  EnableWebRtcLog();
 
   if(!(mPtrVoEBase = VoEBase::GetInterface(mVoiceEngine)))
   {
@@ -392,6 +394,16 @@ WebrtcAudioConduit::ConfigureSendMediaCodec(const AudioCodecConfig* codecConfig)
     CSFLogError(logTag, "%s SetSendCodec Failed %d ", __FUNCTION__,
                                          mPtrVoEBase->LastError());
     return kMediaConduitUnknownError;
+  }
+
+  if (codecConfig->mName == "opus" && codecConfig->mMaxPlaybackRate) {
+    if (mPtrVoECodec->SetOpusMaxPlaybackRate(
+          mChannel,
+          codecConfig->mMaxPlaybackRate) == -1) {
+      CSFLogError(logTag, "%s SetOpusMaxPlaybackRate Failed %d ", __FUNCTION__,
+                  mPtrVoEBase->LastError());
+      return kMediaConduitUnknownError;
+    }
   }
 
 #if !defined(MOZILLA_EXTERNAL_LINKAGE)
@@ -839,7 +851,7 @@ WebrtcAudioConduit::StartReceiving()
 
 //WebRTC::RTP Callback Implementation
 // Called on AudioGUM or MSG thread
-int WebrtcAudioConduit::SendPacket(int channel, const void* data, int len)
+int WebrtcAudioConduit::SendPacket(int channel, const void* data, size_t len)
 {
   CSFLogDebug(logTag,  "%s : channel %d", __FUNCTION__, channel);
 
@@ -868,12 +880,12 @@ int WebrtcAudioConduit::SendPacket(int channel, const void* data, int len)
 }
 
 // Called on WebRTC Process thread and perhaps others
-int WebrtcAudioConduit::SendRTCPPacket(int channel, const void* data, int len)
+int WebrtcAudioConduit::SendRTCPPacket(int channel, const void* data, size_t len)
 {
-  CSFLogDebug(logTag,  "%s : channel %d , len %d, first rtcp = %u ",
+  CSFLogDebug(logTag,  "%s : channel %d , len %lu, first rtcp = %u ",
               __FUNCTION__,
               channel,
-              len,
+              (unsigned long) len,
               static_cast<unsigned>(((uint8_t *) data)[1]));
 
   // We come here if we have only one pipeline/conduit setup,

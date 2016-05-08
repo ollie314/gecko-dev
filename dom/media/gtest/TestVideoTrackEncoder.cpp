@@ -55,7 +55,7 @@ public:
 private:
   Image *CreateI420Image()
   {
-    PlanarYCbCrImage *image = new PlanarYCbCrImage(new BufferRecycleBin());
+    PlanarYCbCrImage *image = new RecyclingPlanarYCbCrImage(new BufferRecycleBin());
     PlanarYCbCrData data;
     data.mPicSize = mImageSize;
 
@@ -87,13 +87,13 @@ private:
     data.mCbCrSize.width = halfWidth;
     data.mCbCrSize.height = halfHeight;
 
-    image->SetData(data);
+    image->CopyData(data);
     return image;
   }
 
   Image *CreateNV12Image()
   {
-    PlanarYCbCrImage *image = new PlanarYCbCrImage(new BufferRecycleBin());
+    PlanarYCbCrImage *image = new RecyclingPlanarYCbCrImage(new BufferRecycleBin());
     PlanarYCbCrData data;
     data.mPicSize = mImageSize;
 
@@ -124,13 +124,13 @@ private:
     data.mCbCrSize.width = halfWidth;
     data.mCbCrSize.height = halfHeight;
 
-    image->SetData(data);
+    image->CopyData(data);
     return image;
   }
 
   Image *CreateNV21Image()
   {
-    PlanarYCbCrImage *image = new PlanarYCbCrImage(new BufferRecycleBin());
+    PlanarYCbCrImage *image = new RecyclingPlanarYCbCrImage(new BufferRecycleBin());
     PlanarYCbCrData data;
     data.mPicSize = mImageSize;
 
@@ -161,7 +161,7 @@ private:
     data.mCbCrSize.width = halfWidth;
     data.mCbCrSize.height = halfHeight;
 
-    image->SetData(data);
+    image->CopyData(data);
     return image;
   }
 
@@ -271,7 +271,10 @@ TEST(VP8VideoTrackEncoder, FrameEncode)
   for (nsTArray<RefPtr<Image>>::size_type i = 0; i < images.Length(); i++)
   {
     RefPtr<Image> image = images[i];
-    segment.AppendFrame(image.forget(), mozilla::StreamTime(90000), generator.GetSize());
+    segment.AppendFrame(image.forget(),
+                        mozilla::StreamTime(90000),
+                        generator.GetSize(),
+                        PRINCIPAL_HANDLE_NONE);
   }
 
   // track change notification.

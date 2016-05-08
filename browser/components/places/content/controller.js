@@ -188,20 +188,23 @@ PlacesController.prototype = {
              !PlacesUtils.asQuery(this._view.result.root).queryOptions.excludeItems &&
              this._view.result.sortingMode ==
                  Ci.nsINavHistoryQueryOptions.SORT_BY_NONE;
-    case "placesCmd_show:info":
-      var selectedNode = this._view.selectedNode;
+    case "placesCmd_show:info": {
+      let selectedNode = this._view.selectedNode;
       return selectedNode && PlacesUtils.getConcreteItemId(selectedNode) != -1
-    case "placesCmd_reload":
+    }
+    case "placesCmd_reload": {
       // Livemark containers
-      var selectedNode = this._view.selectedNode;
+      let selectedNode = this._view.selectedNode;
       return selectedNode && this.hasCachedLivemarkInfo(selectedNode);
-    case "placesCmd_sortBy:name":
-      var selectedNode = this._view.selectedNode;
+    }
+    case "placesCmd_sortBy:name": {
+      let selectedNode = this._view.selectedNode;
       return selectedNode &&
              PlacesUtils.nodeIsFolder(selectedNode) &&
              !PlacesUIUtils.isContentsReadOnly(selectedNode) &&
              this._view.result.sortingMode ==
                  Ci.nsINavHistoryQueryOptions.SORT_BY_NONE;
+    }
     case "placesCmd_createBookmark":
       var node = this._view.selectedNode;
       return node && PlacesUtils.nodeIsURI(node) && node.itemId == -1;
@@ -557,6 +560,8 @@ PlacesController.prototype = {
    * Detects information (meta-data rules) about the current selection in the
    * view (see _buildSelectionMetadata) and sets the visibility state for each
    * of the menu-items in the given popup with the following rules applied:
+   *  0) The "ignoreitem" attribute may be set to "true" for this code not to
+   *     handle that menuitem.
    *  1) The "selectiontype" attribute may be set on a menu-item to "single"
    *     if the menu-item should be visible only if there is a single node
    *     selected, or to "multiple" if the menu-item should be visible only if
@@ -598,6 +603,9 @@ PlacesController.prototype = {
     var usableItemCount = 0;
     for (var i = 0; i < aPopup.childNodes.length; ++i) {
       var item = aPopup.childNodes[i];
+      if (item.getAttribute("ignoreitem") == "true") {
+        continue;
+      }
       if (item.localName != "menuseparator") {
         // We allow pasting into tag containers, so special case that.
         var hideIfNoIP = item.getAttribute("hideifnoinsertionpoint") == "true" &&
@@ -963,15 +971,12 @@ PlacesController.prototype = {
     }
 
     // Do removal in chunks to give some breath to main-thread.
-    function pagesChunkGenerator(aURIs) {
+    function* pagesChunkGenerator(aURIs) {
       while (aURIs.length) {
         let URIslice = aURIs.splice(0, REMOVE_PAGES_CHUNKLEN);
         PlacesUtils.bhistory.removePages(URIslice, URIslice.length);
-        Services.tm.mainThread.dispatch(function() {
-          try {
-            gen.next();
-          } catch (ex if ex instanceof StopIteration) {}
-        }, Ci.nsIThread.DISPATCH_NORMAL);
+        Services.tm.mainThread.dispatch(() => gen.next(),
+                                        Ci.nsIThread.DISPATCH_NORMAL);
         yield undefined;
       }
     }
@@ -1293,8 +1298,7 @@ PlacesController.prototype = {
     let itemsToSelect = [];
     if (PlacesUIUtils.useAsyncTransactions) {
       if (ip.isTag) {
-        let uris = [for (item of items) if ("uri" in item)
-                    NetUtil.newURI(item.uri)];
+        let uris = items.filter(item => "uri" in item).map(item => NetUtil.newURI(item.uri));
         yield PlacesTransactions.Tag({ uris: uris, tag: ip.tagName }).transact();
       }
       else {

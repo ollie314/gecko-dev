@@ -7,6 +7,7 @@
 #include "jit/PerfSpewer.h"
 
 #include "mozilla/IntegerPrintfMacros.h"
+#include "mozilla/SizePrintfMacros.h"
 
 #if defined(__linux__)
 # include <unistd.h>
@@ -332,21 +333,6 @@ js::jit::writePerfSpewerAsmJSFunctionMap(uintptr_t base, uintptr_t size,
 
     fprintf(PerfFilePtr, "%" PRIxPTR " %" PRIxPTR " %s:%u:%u: Function %s\n",
             base, size, filename, lineno, colIndex, funcName);
-
-    unlockPerfMap();
-}
-
-void
-js::jit::writePerfSpewerAsmJSEntriesAndExits(uintptr_t base, size_t size)
-{
-    if (size == 0)
-        return;
-
-    if (!lockPerfMap())
-        return;
-
-    fprintf(PerfFilePtr, "%" PRIxPTR " %" PRIxSIZE " AsmJS Entries and Exits (0x%" PRIxPTR " 0x%" PRIxSIZE ")\n",
-            base, size, base, size);
 
     unlockPerfMap();
 }

@@ -172,17 +172,13 @@ nsObserverService::~nsObserverService(void)
 void
 nsObserverService::RegisterReporter()
 {
-#if !defined(MOZILLA_XPCOMRT_API)
   RegisterWeakMemoryReporter(this);
-#endif // !defined(MOZILLA_XPCOMRT_API)
 }
 
 void
 nsObserverService::Shutdown()
 {
-#if !defined(MOZILLA_XPCOMRT_API)
   UnregisterWeakMemoryReporter(this);
-#endif // !defined(MOZILLA_XPCOMRT_API)
 
   mShuttingDown = true;
 
@@ -204,9 +200,7 @@ nsObserverService::Create(nsISupports* aOuter, const nsIID& aIID,
   // The memory reporter can not be immediately registered here because
   // the nsMemoryReporterManager may attempt to get the nsObserverService
   // during initialization, causing a recursive GetService.
-  RefPtr<nsRunnableMethod<nsObserverService>> registerRunnable =
-    NS_NewRunnableMethod(os, &nsObserverService::RegisterReporter);
-  NS_DispatchToCurrentThread(registerRunnable);
+  NS_DispatchToCurrentThread(NewRunnableMethod(os, &nsObserverService::RegisterReporter));
 
   return os->QueryInterface(aIID, aInstancePtr);
 }
@@ -287,7 +281,8 @@ nsObserverService::EnumerateObservers(const char* aTopic,
     return NS_NewEmptyEnumerator(anEnumerator);
   }
 
-  return observerList->GetObserverList(anEnumerator);
+  observerList->GetObserverList(anEnumerator);
+  return NS_OK;
 }
 
 // Enumerate observers of aTopic and call Observe on each.
@@ -322,7 +317,6 @@ nsObserverService::UnmarkGrayStrongObservers()
 {
   NS_ENSURE_VALIDCALL
 
-#if !defined(MOZILLA_XPCOMRT_API)
   nsCOMArray<nsIObserver> strongObservers;
   for (auto iter = mObserverTopicTable.Iter(); !iter.Done(); iter.Next()) {
     nsObserverList* aObserverList = iter.Get();
@@ -334,7 +328,6 @@ nsObserverService::UnmarkGrayStrongObservers()
   for (uint32_t i = 0; i < strongObservers.Length(); ++i) {
     xpc_TryUnmarkWrappedGrayObject(strongObservers[i]);
   }
-#endif // !defined(MOZILLA_XPCOMRT_API)
 
   return NS_OK;
 }

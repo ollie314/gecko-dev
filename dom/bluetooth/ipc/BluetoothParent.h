@@ -7,14 +7,11 @@
 #ifndef mozilla_dom_bluetooth_ipc_BluetoothParent_h
 #define mozilla_dom_bluetooth_ipc_BluetoothParent_h
 
+#include "mozilla/Attributes.h"
 #include "mozilla/dom/bluetooth/BluetoothCommon.h"
-
 #include "mozilla/dom/bluetooth/PBluetoothParent.h"
 #include "mozilla/dom/bluetooth/PBluetoothRequestParent.h"
-
-#include "mozilla/Attributes.h"
 #include "mozilla/Observer.h"
-#include "nsAutoPtr.h"
 #include "nsTArray.h"
 #include "nsThreadUtils.h"
 
@@ -153,6 +150,12 @@ protected:
   DoRequest(const StopLeScanRequest& aRequest);
 
   bool
+  DoRequest(const StartAdvertisingRequest& aRequest);
+
+  bool
+  DoRequest(const StopAdvertisingRequest& aRequest);
+
+  bool
   DoRequest(const PairRequest& aRequest);
 
   bool
@@ -211,6 +214,12 @@ protected:
 
   bool
   DoRequest(const IsScoConnectedRequest& aRequest);
+
+  bool
+  DoRequest(const SetObexPasswordRequest& aRequest);
+
+  bool
+  DoRequest(const RejectObexAuthRequest& aRequest);
 
   bool
   DoRequest(const ReplyTovCardPullingRequest& aRequest);
@@ -288,6 +297,9 @@ protected:
 
   bool
   DoRequest(const GattClientWriteDescriptorValueRequest& aRequest);
+
+  bool
+  DoRequest(const GattServerRegisterRequest& aRequest);
 
   bool
   DoRequest(const GattServerConnectPeripheralRequest& aRequest);

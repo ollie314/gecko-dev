@@ -8,6 +8,7 @@
 
 #include "MediaStreamGraph.h"
 #include "mozilla/dom/AudioNodeBinding.h"
+#include "AlignedTArray.h"
 #include "AudioBlock.h"
 
 namespace mozilla {
@@ -41,7 +42,7 @@ public:
 
   enum { AUDIO_TRACK = 1 };
 
-  typedef nsAutoTArray<AudioBlock, 1> OutputChunks;
+  typedef AutoTArray<AudioBlock, 1> OutputChunks;
 
   // Flags re main thread updates and stream output.
   typedef unsigned Flags;
@@ -114,9 +115,9 @@ public:
    */
   void AdvanceAndResume(StreamTime aAdvance);
 
-  virtual AudioNodeStream* AsAudioNodeStream() override { return this; }
-  virtual void AddInput(MediaInputPort* aPort) override;
-  virtual void RemoveInput(MediaInputPort* aPort) override;
+  AudioNodeStream* AsAudioNodeStream() override { return this; }
+  void AddInput(MediaInputPort* aPort) override;
+  void RemoveInput(MediaInputPort* aPort) override;
 
   // Graph thread only
   void SetStreamTimeParameterImpl(uint32_t aIndex, MediaStream* aRelativeToStream,
@@ -124,7 +125,7 @@ public:
   void SetChannelMixingParametersImpl(uint32_t aNumberOfChannels,
                                       ChannelCountMode aChannelCountMoe,
                                       ChannelInterpretation aChannelInterpretation);
-  virtual void ProcessInput(GraphTime aFrom, GraphTime aTo, uint32_t aFlags) override;
+  void ProcessInput(GraphTime aFrom, GraphTime aTo, uint32_t aFlags) override;
   /**
    * Produce the next block of output, before input is provided.
    * ProcessInput() will be called later, and it then should not change
@@ -140,7 +141,7 @@ public:
   {
     return mLastChunks;
   }
-  virtual bool MainThreadNeedsUpdates() const override
+  bool MainThreadNeedsUpdates() const override
   {
     return ((mFlags & NEED_MAIN_THREAD_FINISHED) && mFinished) ||
       (mFlags & NEED_MAIN_THREAD_CURRENT_TIME);
@@ -165,6 +166,19 @@ public:
    */
   void SetActive();
   /*
+   * ScheduleCheckForInactive() is called during stream processing when the
+   * engine transitions from active to inactive, or the stream finishes.  It
+   * schedules a call to CheckForInactive() after stream processing.
+   */
+  void ScheduleCheckForInactive();
+
+protected:
+  class AdvanceAndResumeMessage;
+  class CheckForInactiveMessage;
+
+  void DestroyImpl() override;
+
+  /*
    * CheckForInactive() is called when the engine transitions from active to
    * inactive, or an active input is removed, or the stream finishes.  If the
    * stream is now inactive, then mInputChunks will be cleared and mLastChunks
@@ -173,19 +187,14 @@ public:
    */
   void CheckForInactive();
 
-protected:
-  class AdvanceAndResumeMessage;
-
-  virtual void DestroyImpl() override;
-
   void AdvanceOutputSegment();
   void FinishOutput();
   void AccumulateInputChunk(uint32_t aInputIndex, const AudioBlock& aChunk,
                             AudioBlock* aBlock,
-                            nsTArray<float>* aDownmixBuffer);
+                            AlignedTArray<float, 16>* aDownmixBuffer);
   void UpMixDownMixChunk(const AudioBlock* aChunk, uint32_t aOutputChannelCount,
                          nsTArray<const float*>& aOutputChannels,
-                         nsTArray<float>& aDownmixBuffer);
+                         AlignedTArray<float, 16>& aDownmixBuffer);
 
   uint32_t ComputedNumberOfChannels(uint32_t aInputChannelCount);
   void ObtainInputBlock(AudioBlock& aTmpChunk, uint32_t aPortIndex);

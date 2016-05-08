@@ -46,12 +46,10 @@ namespace mozilla {
 #undef LOG
 #endif
 
-PRLogModuleInfo*
+LogModule*
 GetGMPLog()
 {
-  static PRLogModuleInfo *sLog;
-  if (!sLog)
-    sLog = PR_NewLogModule("GMP");
+  static LazyLogModule sLog("GMP");
   return sLog;
 }
 
@@ -67,7 +65,7 @@ namespace gmp {
 
 static StaticRefPtr<GeckoMediaPluginService> sSingletonService;
 
-class GMPServiceCreateHelper final : public nsRunnable
+class GMPServiceCreateHelper final : public mozilla::Runnable
 {
   RefPtr<GeckoMediaPluginService> mService;
 
@@ -173,7 +171,7 @@ GeckoMediaPluginService::RemoveObsoletePluginCrashCallbacks()
 }
 
 GeckoMediaPluginService::GMPCrashCallback::GMPCrashCallback(const uint32_t aPluginId,
-                                                            nsPIDOMWindow* aParentWindow,
+                                                            nsPIDOMWindowInner* aParentWindow,
                                                             nsIDocument* aDocument)
   : mPluginId(aPluginId)
   , mParentWindowWeakPtr(do_GetWeakReference(aParentWindow))
@@ -198,7 +196,7 @@ GeckoMediaPluginService::GMPCrashCallback::Run(const nsACString& aPluginName)
   // init.mPluginFilename
   // TODO: Can/should we fill them?
 
-  nsCOMPtr<nsPIDOMWindow> parentWindow;
+  nsCOMPtr<nsPIDOMWindowInner> parentWindow;
   nsCOMPtr<nsIDocument> document;
   if (!GetParentWindowAndDocumentIfValid(parentWindow, document)) {
     return;
@@ -207,7 +205,7 @@ GeckoMediaPluginService::GMPCrashCallback::Run(const nsACString& aPluginName)
   RefPtr<dom::PluginCrashedEvent> event =
     dom::PluginCrashedEvent::Constructor(document, NS_LITERAL_STRING("PluginCrashed"), init);
   event->SetTrusted(true);
-  event->GetInternalNSEvent()->mFlags.mOnlyChromeDispatch = true;
+  event->WidgetEventPtr()->mFlags.mOnlyChromeDispatch = true;
 
   EventDispatcher::DispatchDOMEvent(parentWindow, nullptr, event, nullptr, nullptr);
 }
@@ -215,14 +213,14 @@ GeckoMediaPluginService::GMPCrashCallback::Run(const nsACString& aPluginName)
 bool
 GeckoMediaPluginService::GMPCrashCallback::IsStillValid()
 {
-  nsCOMPtr<nsPIDOMWindow> parentWindow;
+  nsCOMPtr<nsPIDOMWindowInner> parentWindow;
   nsCOMPtr<nsIDocument> document;
   return GetParentWindowAndDocumentIfValid(parentWindow, document);
 }
 
 bool
 GeckoMediaPluginService::GMPCrashCallback::GetParentWindowAndDocumentIfValid(
-  nsCOMPtr<nsPIDOMWindow>& parentWindow,
+  nsCOMPtr<nsPIDOMWindowInner>& parentWindow,
   nsCOMPtr<nsIDocument>& document)
 {
   parentWindow = do_QueryReferent(mParentWindowWeakPtr);
@@ -242,7 +240,7 @@ GeckoMediaPluginService::GMPCrashCallback::GetParentWindowAndDocumentIfValid(
 
 void
 GeckoMediaPluginService::AddPluginCrashedEventTarget(const uint32_t aPluginId,
-                                                     nsPIDOMWindow* aParentWindow)
+                                                     nsPIDOMWindowInner* aParentWindow)
 {
   LOGD(("%s::%s(%i)", __CLASS__, __FUNCTION__, aPluginId));
 
@@ -274,8 +272,8 @@ GeckoMediaPluginService::AddPluginCrashedEventTarget(const uint32_t aPluginId,
   mPluginCrashCallbacks.AppendElement(callback);
 }
 
-void
-GeckoMediaPluginService::RunPluginCrashCallbacks(const uint32_t aPluginId,
+NS_IMETHODIMP
+GeckoMediaPluginService::RunPluginCrashCallbacks(uint32_t aPluginId,
                                                  const nsACString& aPluginName)
 {
   MOZ_ASSERT(NS_IsMainThread());
@@ -295,6 +293,8 @@ GeckoMediaPluginService::RunPluginCrashCallbacks(const uint32_t aPluginId,
   if (mPluginCrashes.Length() > MAX_PLUGIN_CRASHES) {
     mPluginCrashes.RemoveElementAt(0);
   }
+
+  return NS_OK;
 }
 
 nsresult
@@ -304,7 +304,7 @@ GeckoMediaPluginService::Init()
 
   nsCOMPtr<nsIObserverService> obsService = mozilla::services::GetObserverService();
   MOZ_ASSERT(obsService);
-  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(obsService->AddObserver(this, NS_XPCOM_SHUTDOWN_THREADS_OBSERVER_ID, false)));
+  MOZ_ALWAYS_SUCCEEDS(obsService->AddObserver(this, NS_XPCOM_SHUTDOWN_THREADS_OBSERVER_ID, false));
 
   // Kick off scanning for plugins
   nsCOMPtr<nsIThread> thread;
@@ -328,7 +328,16 @@ GeckoMediaPluginService::ShutdownGMPThread()
 }
 
 nsresult
-GeckoMediaPluginService::GMPDispatch(nsIRunnable* event, uint32_t flags)
+GeckoMediaPluginService::GMPDispatch(nsIRunnable* event,
+                                     uint32_t flags)
+{
+  nsCOMPtr<nsIRunnable> r(event);
+  return GMPDispatch(r.forget());
+}
+
+nsresult
+GeckoMediaPluginService::GMPDispatch(already_AddRefed<nsIRunnable> event,
+                                     uint32_t flags)
 {
   nsCOMPtr<nsIRunnable> r(event);
   nsCOMPtr<nsIThread> thread;
@@ -359,6 +368,8 @@ GeckoMediaPluginService::GetThread(nsIThread** aThread)
       return rv;
     }
 
+    mAbstractGMPThread = AbstractThread::CreateXPCOMThreadWrapper(mGMPThread, false);
+
     // Tell the thread to initialize plugins
     InitializePlugins();
   }
@@ -369,6 +380,12 @@ GeckoMediaPluginService::GetThread(nsIThread** aThread)
   return NS_OK;
 }
 
+RefPtr<AbstractThread>
+GeckoMediaPluginService::GetAbstractGMPThread()
+{
+  return mAbstractGMPThread;
+}
+
 class GetGMPContentParentForAudioDecoderDone : public GetGMPContentParentCallback
 {
 public:
@@ -377,7 +394,7 @@ public:
   {
   }
 
-  virtual void Done(GMPContentParent* aGMPParent) override
+  void Done(GMPContentParent* aGMPParent) override
   {
     GMPAudioDecoderParent* gmpADP = nullptr;
     if (aGMPParent) {
@@ -421,7 +438,7 @@ public:
   {
   }
 
-  virtual void Done(GMPContentParent* aGMPParent) override
+  void Done(GMPContentParent* aGMPParent) override
   {
     GMPVideoDecoderParent* gmpVDP = nullptr;
     GMPVideoHostImpl* videoHost = nullptr;
@@ -466,7 +483,7 @@ public:
   {
   }
 
-  virtual void Done(GMPContentParent* aGMPParent) override
+  void Done(GMPContentParent* aGMPParent) override
   {
     GMPVideoEncoderParent* gmpVEP = nullptr;
     GMPVideoHostImpl* videoHost = nullptr;
@@ -511,7 +528,7 @@ public:
   {
   }
 
-  virtual void Done(GMPContentParent* aGMPParent) override
+  void Done(GMPContentParent* aGMPParent) override
   {
     GMPDecryptorParent* ksp = nullptr;
     if (aGMPParent) {

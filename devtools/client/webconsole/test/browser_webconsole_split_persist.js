@@ -1,7 +1,7 @@
-/*
- * Any copyright is dedicated to the Public Domain.
- * http://creativecommons.org/publicdomain/zero/1.0/
- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
+/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
+/* Any copyright is dedicated to the Public Domain.
+ * http://creativecommons.org/publicdomain/zero/1.0/ */
 
  "use strict";
 
@@ -104,7 +104,7 @@ function test() {
 
   function toggleSplitConsoleWithEscape() {
     let onceSplitConsole = toolbox.once("split-console");
-    let contentWindow = toolbox.frame.contentWindow;
+    let contentWindow = toolbox.win;
     contentWindow.focus();
     EventUtils.sendKey("ESCAPE", contentWindow);
     return onceSplitConsole;

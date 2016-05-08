@@ -143,12 +143,6 @@ SVGImageElement::AfterSetAttr(int32_t aNamespaceID, nsIAtom* aName,
     // If there is a frame then it should deal with loading as the image
     // url may be animated
     if (!GetPrimaryFrame()) {
-
-      // Prevent setting image.src by exiting early
-      if (nsContentUtils::IsImageSrcSetDisabled()) {
-        return NS_OK;
-      }
-
       if (aValue) {
         LoadSVGImage(true, aNotify);
       } else {
@@ -189,7 +183,7 @@ SVGImageElement::BindToTree(nsIDocument* aDocument, nsIContent* aParent,
     ClearBrokenState();
     RemoveStatesSilently(NS_EVENT_STATE_BROKEN);
     nsContentUtils::AddScriptRunner(
-      NS_NewRunnableMethod(this, &SVGImageElement::MaybeLoadSVGImage));
+      NewRunnableMethod(this, &SVGImageElement::MaybeLoadSVGImage));
   }
 
   return rv;

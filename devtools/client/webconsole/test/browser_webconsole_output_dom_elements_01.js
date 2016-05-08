@@ -1,7 +1,7 @@
-/*
- * Any copyright is dedicated to the Public Domain.
- * http://creativecommons.org/publicdomain/zero/1.0/
- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
+/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
+/* Any copyright is dedicated to the Public Domain.
+ * http://creativecommons.org/publicdomain/zero/1.0/ */
 
 // Whitelisting this test.
 // As part of bug 1077403, the leaking uncaught rejections should be fixed.
@@ -19,7 +19,7 @@ const TEST_URI = "http://example.com/browser/devtools/client/webconsole/" +
 var inputTests = [
   {
     input: "testBodyNode()",
-    output: '<body id="body-id" class="body-class">',
+    output: '<body class="body-class" id="body-id">',
     printOutput: "[object HTMLBodyElement]",
     inspectable: true,
     noClick: true,
@@ -28,7 +28,7 @@ var inputTests = [
 
   {
     input: "testDocumentElement()",
-    output: '<html lang="en-US" dir="ltr">',
+    output: '<html dir="ltr" lang="en-US">',
     printOutput: "[object HTMLHtmlElement]",
     inspectable: true,
     noClick: true,
@@ -56,7 +56,7 @@ var inputTests = [
   {
     input: "testNodeList()",
     output: "NodeList [ <html>, <head>, <meta>, <title>, " +
-            "<body#body-id.body-class>, <p>, <iframe>, " +
+            "<body#body-id.body-class>, <p>, <p#lots-of-attributes>, <iframe>, " +
             "<div.some.classname.here.with.more.classnames.here>, <script> ]",
     printOutput: "[object NodeList]",
     inspectable: true,
@@ -67,6 +67,15 @@ var inputTests = [
   {
     input: "testNodeInIframe()",
     output: "<p>",
+    printOutput: "[object HTMLParagraphElement]",
+    inspectable: true,
+    noClick: true,
+    inspectorIcon: true
+  },
+
+  {
+    input: "testLotsOfAttributes()",
+    output: '<p id="lots-of-attributes" a="" b="" c="" d="" e="" f="" g="" h="" i="" j="" k="" l="" m="" n="">',
     printOutput: "[object HTMLParagraphElement]",
     inspectable: true,
     noClick: true,
@@ -98,7 +107,7 @@ var inputTests = [
     inspectable: true,
     noClick: true,
     inspectorIcon: false
-  }
+  },
 ];
 
 function test() {

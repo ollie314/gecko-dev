@@ -254,7 +254,7 @@ function preference_exists(aURI)
 //// Test Functions
 
 // History
-function test_history_cleared_with_direct_match()
+function* test_history_cleared_with_direct_match()
 {
   const TEST_URI = uri("http://mozilla.org/foo");
   do_check_false(yield promiseIsURIVisited(TEST_URI));
@@ -264,7 +264,7 @@ function test_history_cleared_with_direct_match()
   do_check_false(yield promiseIsURIVisited(TEST_URI));
 }
 
-function test_history_cleared_with_subdomain()
+function* test_history_cleared_with_subdomain()
 {
   const TEST_URI = uri("http://www.mozilla.org/foo");
   do_check_false(yield promiseIsURIVisited(TEST_URI));
@@ -274,7 +274,7 @@ function test_history_cleared_with_subdomain()
   do_check_false(yield promiseIsURIVisited(TEST_URI));
 }
 
-function test_history_not_cleared_with_uri_contains_domain()
+function* test_history_not_cleared_with_uri_contains_domain()
 {
   const TEST_URI = uri("http://ilovemozilla.org/foo");
   do_check_false(yield promiseIsURIVisited(TEST_URI));
@@ -424,7 +424,7 @@ function waitForPurgeNotification() {
 }
 
 // Content Preferences
-function test_content_preferences_cleared_with_direct_match()
+function* test_content_preferences_cleared_with_direct_match()
 {
   const TEST_URI = uri("http://mozilla.org");
   do_check_false(yield preference_exists(TEST_URI));
@@ -435,7 +435,7 @@ function test_content_preferences_cleared_with_direct_match()
   do_check_false(yield preference_exists(TEST_URI));
 }
 
-function test_content_preferences_cleared_with_subdomain()
+function* test_content_preferences_cleared_with_subdomain()
 {
   const TEST_URI = uri("http://www.mozilla.org");
   do_check_false(yield preference_exists(TEST_URI));
@@ -446,7 +446,7 @@ function test_content_preferences_cleared_with_subdomain()
   do_check_false(yield preference_exists(TEST_URI));
 }
 
-function test_content_preferences_not_cleared_with_uri_contains_domain()
+function* test_content_preferences_not_cleared_with_uri_contains_domain()
 {
   const TEST_URI = uri("http://ilovemozilla.org");
   do_check_false(yield preference_exists(TEST_URI));
@@ -463,12 +463,12 @@ function test_content_preferences_not_cleared_with_uri_contains_domain()
 }
 
 // Push
-function test_push_cleared()
+function* test_push_cleared()
 {
   let ps;
   try {
-    ps = Cc["@mozilla.org/push/NotificationService;1"].
-           getService(Ci.nsIPushNotificationService);
+    ps = Cc["@mozilla.org/push/Service;1"].
+           getService(Ci.nsIPushService);
   } catch(e) {
     // No push service, skip test.
     return;
@@ -481,46 +481,60 @@ function test_push_cleared()
   const channelID = '0ef2ad4a-6c49-41ad-af6e-95d2425276bf';
 
   let db = PushServiceWebSocket.newPushDB();
-  do_register_cleanup(() => {return db.drop().then(_ => db.close());});
-
-  PushService.init({
-    serverURI: "wss://push.example.org/",
-    networkInfo: new MockDesktopNetworkInfo(),
-    db,
-    makeWebSocket(uri) {
-      return new MockWebSocket(uri, {
-        onHello(request) {
-          this.serverSendMsg(JSON.stringify({
-            messageType: 'hello',
-            status: 200,
-            uaid: userAgentID,
-          }));
-        },
-      });
-    }
-  });
 
   function push_registration_exists(aURL, ps)
   {
-    return ps.registration(aURL, ChromeUtils.originAttributesToSuffix({ appId: Ci.nsIScriptSecurityManager.NO_APP_ID, inBrowser: false }))
-      .then(record => !!record)
-      .catch(_ => false);
+    return new Promise(resolve => {
+      let ssm = Cc["@mozilla.org/scriptsecuritymanager;1"]
+                  .getService(Ci.nsIScriptSecurityManager);
+      let principal = ssm.createCodebasePrincipalFromOrigin(aURL);
+      return ps.getSubscription(aURL, principal, (status, record) => {
+        if (!Components.isSuccessCode(status)) {
+          resolve(false);
+        } else {
+          resolve(!!record);
+        }
+      });
+    });
   }
 
-  const TEST_URL = "https://www.mozilla.org/scope/";
-  do_check_false(yield push_registration_exists(TEST_URL, ps));
-  yield db.put({
-    channelID,
-    pushEndpoint: 'https://example.org/update/clear-success',
-    scope: TEST_URL,
-    version: 1,
-    originAttributes: '',
-    quota: Infinity,
-  });
-  do_check_true(yield push_registration_exists(TEST_URL, ps));
-  ForgetAboutSite.removeDataFromDomain("mozilla.org");
-  yield waitForPurgeNotification();
-  do_check_false(yield push_registration_exists(TEST_URL, ps));
+  try {
+    PushService.init({
+      serverURI: "wss://push.example.org/",
+      db,
+      makeWebSocket(uri) {
+        return new MockWebSocket(uri, {
+          onHello(request) {
+            this.serverSendMsg(JSON.stringify({
+              messageType: 'hello',
+              status: 200,
+              uaid: userAgentID,
+            }));
+          },
+        });
+      }
+    });
+
+    const TEST_URL = "https://www.mozilla.org/scope/";
+    do_check_false(yield push_registration_exists(TEST_URL, ps));
+    yield db.put({
+      channelID,
+      pushEndpoint: 'https://example.org/update/clear-success',
+      scope: TEST_URL,
+      version: 1,
+      originAttributes: '',
+      quota: Infinity,
+    });
+    do_check_true(yield push_registration_exists(TEST_URL, ps));
+
+    let promisePurgeNotification = waitForPurgeNotification();
+    yield ForgetAboutSite.removeDataFromDomain("mozilla.org");
+    yield promisePurgeNotification;
+
+    do_check_false(yield push_registration_exists(TEST_URL, ps));
+  } finally {
+    yield PushService._shutdownService();
+  }
 }
 
 // Cache
@@ -550,7 +564,7 @@ function test_cache_cleared()
   do_test_pending();
 }
 
-function test_storage_cleared()
+function* test_storage_cleared()
 {
   function getStorageForURI(aURI)
   {

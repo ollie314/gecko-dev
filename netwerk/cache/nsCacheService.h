@@ -38,7 +38,7 @@ class mozIStorageService;
  * nsNotifyDoomListener
  *****************************************************************************/
 
-class nsNotifyDoomListener : public nsRunnable {
+class nsNotifyDoomListener : public mozilla::Runnable {
 public:
     nsNotifyDoomListener(nsICacheListener *listener,
                          nsresult status)
@@ -311,10 +311,6 @@ private:
     void             CloseAllStreams();
     void             FireClearNetworkCacheStoredAnywhereNotification();
 
-    static
-    PLDHashOperator  ShutdownCustomCacheDeviceEnum(const nsAString& aProfileDir,
-                                                   RefPtr<nsOfflineCacheDevice>& aDevice,
-                                                   void* aUserArg);
     void LogCacheStatistics();
 
     nsresult         SetDiskSmartSize_Locked();

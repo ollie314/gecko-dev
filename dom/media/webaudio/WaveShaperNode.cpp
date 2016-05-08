@@ -6,6 +6,7 @@
 
 #include "WaveShaperNode.h"
 #include "mozilla/dom/WaveShaperNodeBinding.h"
+#include "AlignmentUtils.h"
 #include "AudioNode.h"
 #include "AudioNodeEngine.h"
 #include "AudioNodeStream.h"
@@ -174,12 +175,12 @@ public:
     TYPE
   };
 
-  virtual void SetRawArrayData(nsTArray<float>& aCurve) override
+  void SetRawArrayData(nsTArray<float>& aCurve) override
   {
     mCurve.SwapElements(aCurve);
   }
 
-  virtual void SetInt32Parameter(uint32_t aIndex, int32_t aValue) override
+  void SetInt32Parameter(uint32_t aIndex, int32_t aValue) override
   {
     switch (aIndex) {
     case TYPE:
@@ -214,11 +215,11 @@ public:
     }
   }
 
-  virtual void ProcessBlock(AudioNodeStream* aStream,
-                            GraphTime aFrom,
-                            const AudioBlock& aInput,
-                            AudioBlock* aOutput,
-                            bool* aFinished) override
+  void ProcessBlock(AudioNodeStream* aStream,
+                    GraphTime aFrom,
+                    const AudioBlock& aInput,
+                    AudioBlock* aOutput,
+                    bool* aFinished) override
   {
     uint32_t channelCount = aInput.ChannelCount();
     if (!mCurve.Length() || !channelCount) {
@@ -231,13 +232,15 @@ public:
     aOutput->AllocateChannels(channelCount);
     for (uint32_t i = 0; i < channelCount; ++i) {
       const float* inputSamples;
-      float scaledInput[WEBAUDIO_BLOCK_SIZE];
+      float scaledInput[WEBAUDIO_BLOCK_SIZE + 4];
+      float* alignedScaledInput = ALIGNED16(scaledInput);
+      ASSERT_ALIGNED16(alignedScaledInput);
       if (aInput.mVolume != 1.0f) {
         AudioBlockCopyChannelWithScale(
             static_cast<const float*>(aInput.mChannelData[i]),
                                       aInput.mVolume,
-                                      scaledInput);
-        inputSamples = scaledInput;
+                                      alignedScaledInput);
+        inputSamples = alignedScaledInput;
       } else {
         inputSamples = static_cast<const float*>(aInput.mChannelData[i]);
       }
@@ -267,7 +270,7 @@ public:
     }
   }
 
-  virtual size_t SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const override
+  size_t SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const override
   {
     size_t amount = AudioNodeEngine::SizeOfExcludingThis(aMallocSizeOf);
     amount += mCurve.ShallowSizeOfExcludingThis(aMallocSizeOf);
@@ -275,7 +278,7 @@ public:
     return amount;
   }
 
-  virtual size_t SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const override
+  size_t SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const override
   {
     return aMallocSizeOf(this) + SizeOfExcludingThis(aMallocSizeOf);
   }
@@ -327,6 +330,11 @@ WaveShaperNode::SetCurve(const Nullable<Float32Array>& aCurve, ErrorResult& aRv)
     const Float32Array& floats = aCurve.Value();
 
     floats.ComputeLengthAndData();
+    if (floats.IsShared()) {
+      // Throw if the object is mapping shared memory (must opt in).
+      aRv.ThrowTypeError<MSG_TYPEDARRAY_IS_SHARED>(NS_LITERAL_STRING("Argument of WaveShaperNode.setCurve"));
+      return;
+    }
 
     uint32_t argLength = floats.Length();
     if (argLength < 2) {

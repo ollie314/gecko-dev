@@ -44,7 +44,7 @@ protected:
   virtual ~ClientCanvasLayer();
 
 public:
-  virtual void SetVisibleRegion(const nsIntRegion& aRegion) override
+  virtual void SetVisibleRegion(const LayerIntRegion& aRegion) override
   {
     NS_ASSERTION(ClientManager()->InConstruction(),
                  "Can only set properties in construction phase");
@@ -59,6 +59,13 @@ public:
   {
     if (mCanvasClient) {
       mCanvasClient->Clear();
+    }
+  }
+
+  virtual void HandleMemoryPressure() override
+  {
+    if (mCanvasClient) {
+      mCanvasClient->HandleMemoryPressure();
     }
   }
 

@@ -3,13 +3,7 @@
 
 package org.mozilla.android.sync.test;
 
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-
-import java.io.IOException;
-import java.util.HashMap;
-
-import org.json.simple.parser.ParseException;
+import android.content.SharedPreferences;
 import org.junit.Before;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -17,6 +11,7 @@ import org.mozilla.gecko.background.testhelpers.DefaultGlobalSessionCallback;
 import org.mozilla.gecko.background.testhelpers.MockPrefsGlobalSession;
 import org.mozilla.gecko.background.testhelpers.MockServerSyncStage;
 import org.mozilla.gecko.background.testhelpers.MockSharedPreferences;
+import org.mozilla.gecko.background.testhelpers.TestRunner;
 import org.mozilla.gecko.background.testhelpers.WaitHelper;
 import org.mozilla.gecko.sync.CommandProcessor;
 import org.mozilla.gecko.sync.EngineSettings;
@@ -33,13 +28,16 @@ import org.mozilla.gecko.sync.net.BasicAuthHeaderProvider;
 import org.mozilla.gecko.sync.stage.GlobalSyncStage;
 import org.mozilla.gecko.sync.stage.GlobalSyncStage.Stage;
 
-import android.content.SharedPreferences;
-import org.robolectric.RobolectricGradleTestRunner;
+import java.io.IOException;
+import java.util.HashMap;
+
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 /**
  * Test that reset commands properly invoke the reset methods on the correct stage.
  */
-@RunWith(RobolectricGradleTestRunner.class)
+@RunWith(TestRunner.class)
 public class TestResetCommands {
   private static final String TEST_USERNAME    = "johndoe";
   private static final String TEST_PASSWORD    = "password";
@@ -63,7 +61,7 @@ public class TestResetCommands {
   }
 
   @Test
-  public void testHandleResetCommand() throws SyncConfigurationException, IllegalArgumentException, NonObjectJSONException, IOException, ParseException, CryptoException {
+  public void testHandleResetCommand() throws SyncConfigurationException, IllegalArgumentException, NonObjectJSONException, IOException, CryptoException {
     // Create a global session.
     // Set up stage mappings for a real stage name (because they're looked up by name
     // in an enumeration) pointing to our fake stage.

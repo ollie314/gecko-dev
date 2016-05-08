@@ -59,7 +59,7 @@ public:
   {
   }
 
-  virtual void Done(GMPServiceChild* aGMPServiceChild)
+  void Done(GMPServiceChild* aGMPServiceChild) override
   {
     if (!aGMPServiceChild) {
       mCallback->Done(nullptr);
@@ -72,10 +72,11 @@ public:
     base::ProcessId otherProcess;
     nsCString displayName;
     uint32_t pluginId;
+    nsresult rv;
     bool ok = aGMPServiceChild->SendLoadGMP(mNodeId, mAPI, mTags,
                                             alreadyBridgedTo, &otherProcess,
-                                            &displayName, &pluginId);
-    if (!ok) {
+                                            &displayName, &pluginId, &rv);
+    if (!ok || rv == NS_ERROR_ILLEGAL_DURING_SHUTDOWN) {
       mCallback->Done(nullptr);
       return;
     }
@@ -137,15 +138,17 @@ class GetNodeIdDone : public GetServiceChildCallback
 {
 public:
   GetNodeIdDone(const nsAString& aOrigin, const nsAString& aTopLevelOrigin,
+                const nsAString& aGMPName,
                 bool aInPrivateBrowsing, UniquePtr<GetNodeIdCallback>&& aCallback)
     : mOrigin(aOrigin),
       mTopLevelOrigin(aTopLevelOrigin),
+      mGMPName(aGMPName),
       mInPrivateBrowsing(aInPrivateBrowsing),
       mCallback(Move(aCallback))
   {
   }
 
-  virtual void Done(GMPServiceChild* aGMPServiceChild)
+  void Done(GMPServiceChild* aGMPServiceChild) override
   {
     if (!aGMPServiceChild) {
       mCallback->Done(NS_ERROR_FAILURE, EmptyCString());
@@ -154,6 +157,7 @@ public:
 
     nsCString outId;
     if (!aGMPServiceChild->SendGetGMPNodeId(mOrigin, mTopLevelOrigin,
+                                            mGMPName,
                                             mInPrivateBrowsing, &outId)) {
       mCallback->Done(NS_ERROR_FAILURE, EmptyCString());
       return;
@@ -165,6 +169,7 @@ public:
 private:
   nsString mOrigin;
   nsString mTopLevelOrigin;
+  nsString mGMPName;
   bool mInPrivateBrowsing;
   UniquePtr<GetNodeIdCallback> mCallback;
 };
@@ -172,45 +177,12 @@ private:
 NS_IMETHODIMP
 GeckoMediaPluginServiceChild::GetNodeId(const nsAString& aOrigin,
                                         const nsAString& aTopLevelOrigin,
+                                        const nsAString& aGMPName,
                                         bool aInPrivateBrowsing,
                                         UniquePtr<GetNodeIdCallback>&& aCallback)
 {
   UniquePtr<GetServiceChildCallback> callback(
-    new GetNodeIdDone(aOrigin, aTopLevelOrigin, aInPrivateBrowsing, Move(aCallback)));
-  GetServiceChild(Move(callback));
-  return NS_OK;
-}
-
-NS_IMETHODIMP
-GeckoMediaPluginServiceChild::UpdateTrialCreateState(const nsAString& aKeySystem,
-                                                     uint32_t aState)
-{
-  if (NS_GetCurrentThread() != mGMPThread) {
-    mGMPThread->Dispatch(NS_NewRunnableMethodWithArgs<nsString, uint32_t>(
-      this, &GeckoMediaPluginServiceChild::UpdateTrialCreateState,
-      aKeySystem, aState), NS_DISPATCH_NORMAL);
-    return NS_OK;
-  }
-
-  class Callback : public GetServiceChildCallback
-  {
-  public:
-    Callback(const nsAString& aKeySystem, uint32_t aState)
-      : mKeySystem(aKeySystem)
-      , mState(aState)
-    { }
-
-    virtual void Done(GMPServiceChild* aService) override
-    {
-      aService->SendUpdateGMPTrialCreateState(mKeySystem, mState);
-    }
-
-  private:
-    nsString mKeySystem;
-    uint32_t mState;
-  };
-
-  UniquePtr<GetServiceChildCallback> callback(new Callback(aKeySystem, aState));
+    new GetNodeIdDone(aOrigin, aTopLevelOrigin, aGMPName, aInPrivateBrowsing, Move(aCallback)));
   GetServiceChild(Move(callback));
   return NS_OK;
 }
@@ -280,8 +252,8 @@ GMPServiceChild::GMPServiceChild()
 
 GMPServiceChild::~GMPServiceChild()
 {
-  XRE_GetIOMessageLoop()->PostTask(FROM_HERE,
-                                   new DeleteTask<Transport>(GetTransport()));
+  RefPtr<DeleteTask<Transport>> task = new DeleteTask<Transport>(GetTransport());
+  XRE_GetIOMessageLoop()->PostTask(task.forget());
 }
 
 PGMPContentParent*
@@ -333,7 +305,7 @@ GMPServiceChild::GetAlreadyBridgedTo(nsTArray<base::ProcessId>& aAlreadyBridgedT
   }
 }
 
-class OpenPGMPServiceChild : public nsRunnable
+class OpenPGMPServiceChild : public mozilla::Runnable
 {
 public:
   OpenPGMPServiceChild(UniquePtr<GMPServiceChild>&& aGMPServiceChild,

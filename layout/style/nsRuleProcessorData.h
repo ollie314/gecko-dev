@@ -22,6 +22,7 @@
 #include "mozilla/BloomFilter.h"
 #include "mozilla/EventStates.h"
 #include "mozilla/GuardObjects.h"
+#include "mozilla/dom/Element.h"
 
 class nsIAtom;
 class nsIContent;
@@ -335,7 +336,7 @@ struct MOZ_STACK_CLASS TreeMatchContext {
   nsRuleWalker::VisitedHandlingType mVisitedHandling;
 
   // For matching :scope
-  nsAutoTArray<mozilla::dom::Element*, 1> mScopes;
+  AutoTArray<mozilla::dom::Element*, 1> mScopes;
  public:
   // The document we're working with.
   nsIDocument* const mDocument;
@@ -379,7 +380,7 @@ struct MOZ_STACK_CLASS TreeMatchContext {
 
   // List of ancestor elements that define a style scope (due to having a
   // <style scoped> child).
-  nsAutoTArray<mozilla::dom::Element*, 1> mStyleScopes;
+  AutoTArray<mozilla::dom::Element*, 1> mStyleScopes;
 
   // The current style scope element for selector matching.
   mozilla::dom::Element* mCurrentStyleScope;
@@ -469,7 +470,7 @@ struct MOZ_STACK_CLASS PseudoElementRuleProcessorData :
   PseudoElementRuleProcessorData(nsPresContext* aPresContext,
                                  mozilla::dom::Element* aParentElement,
                                  nsRuleWalker* aRuleWalker,
-                                 nsCSSPseudoElements::Type aPseudoType,
+                                 mozilla::CSSPseudoElementType aPseudoType,
                                  TreeMatchContext& aTreeMatchContext,
                                  mozilla::dom::Element* aPseudoElement)
     : ElementDependentRuleProcessorData(aPresContext, aParentElement, aRuleWalker,
@@ -477,14 +478,13 @@ struct MOZ_STACK_CLASS PseudoElementRuleProcessorData :
       mPseudoType(aPseudoType),
       mPseudoElement(aPseudoElement)
   {
-    NS_PRECONDITION(aPseudoType <
-                      nsCSSPseudoElements::ePseudo_PseudoElementCount,
+    NS_PRECONDITION(aPseudoType < mozilla::CSSPseudoElementType::Count,
                     "invalid aPseudoType value");
     NS_PRECONDITION(aTreeMatchContext.mForStyling, "Styling here!");
     NS_PRECONDITION(aRuleWalker, "Must have rule walker");
   }
 
-  nsCSSPseudoElements::Type mPseudoType;
+  mozilla::CSSPseudoElementType mPseudoType;
   mozilla::dom::Element* const mPseudoElement; // weak ref
 };
 
@@ -549,7 +549,7 @@ struct MOZ_STACK_CLASS PseudoElementStateRuleProcessorData :
   PseudoElementStateRuleProcessorData(nsPresContext* aPresContext,
                                       mozilla::dom::Element* aElement,
                                       mozilla::EventStates aStateMask,
-                                      nsCSSPseudoElements::Type aPseudoType,
+                                      mozilla::CSSPseudoElementType aPseudoType,
                                       TreeMatchContext& aTreeMatchContext,
                                       mozilla::dom::Element* aPseudoElement)
     : StateRuleProcessorData(aPresContext, aElement, aStateMask,
@@ -563,7 +563,7 @@ struct MOZ_STACK_CLASS PseudoElementStateRuleProcessorData :
   // We kind of want to inherit from both StateRuleProcessorData and
   // PseudoElementRuleProcessorData.  Instead we've just copied those
   // members from PseudoElementRuleProcessorData to this struct.
-  nsCSSPseudoElements::Type mPseudoType;
+  mozilla::CSSPseudoElementType mPseudoType;
   mozilla::dom::Element* const mPseudoElement; // weak ref
 };
 
@@ -571,6 +571,7 @@ struct MOZ_STACK_CLASS AttributeRuleProcessorData :
                           public ElementDependentRuleProcessorData {
   AttributeRuleProcessorData(nsPresContext* aPresContext,
                              mozilla::dom::Element* aElement,
+                             int32_t aNameSpaceID,
                              nsIAtom* aAttribute,
                              int32_t aModType,
                              bool aAttrHasChanged,
@@ -578,6 +579,7 @@ struct MOZ_STACK_CLASS AttributeRuleProcessorData :
                              TreeMatchContext& aTreeMatchContext)
     : ElementDependentRuleProcessorData(aPresContext, aElement, nullptr,
                                         aTreeMatchContext),
+      mNameSpaceID(aNameSpaceID),
       mAttribute(aAttribute),
       mOtherValue(aOtherValue),
       mModType(aModType),
@@ -585,6 +587,7 @@ struct MOZ_STACK_CLASS AttributeRuleProcessorData :
   {
     NS_PRECONDITION(!aTreeMatchContext.mForStyling, "Not styling here!");
   }
+  int32_t mNameSpaceID; // Namespace of the attribute involved.
   nsIAtom* mAttribute; // |HasAttributeDependentStyle| for which attribute?
   // non-null if we have the value.
   const nsAttrValue* mOtherValue;

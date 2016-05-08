@@ -11,7 +11,7 @@ namespace mozilla {
 using namespace mozilla::gfx;
 using namespace mozilla::dom;
 
-extern PRLogModuleInfo* GetMediaManagerLog();
+extern LogModule* GetMediaManagerLog();
 #define LOG(msg) MOZ_LOG(GetMediaManagerLog(), mozilla::LogLevel::Debug, msg)
 #define LOGFRAME(msg) MOZ_LOG(GetMediaManagerLog(), mozilla::LogLevel::Verbose, msg)
 
@@ -19,14 +19,15 @@ extern PRLogModuleInfo* GetMediaManagerLog();
 bool MediaEngineCameraVideoSource::AppendToTrack(SourceMediaStream* aSource,
                                                  layers::Image* aImage,
                                                  TrackID aID,
-                                                 StreamTime delta)
+                                                 StreamTime delta,
+                                                 const PrincipalHandle& aPrincipalHandle)
 {
   MOZ_ASSERT(aSource);
 
   VideoSegment segment;
   RefPtr<layers::Image> image = aImage;
   IntSize size(image ? mWidth : 0, image ? mHeight : 0);
-  segment.AppendFrame(image.forget(), delta, size);
+  segment.AppendFrame(image.forget(), delta, size, aPrincipalHandle);
 
   // This is safe from any thread, and is safe if the track is Finished
   // or Destroyed.

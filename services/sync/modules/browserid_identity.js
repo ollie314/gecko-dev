@@ -245,22 +245,11 @@ this.BrowserIDManager.prototype = {
           Services.obs.notifyObservers(null, "weave:service:setup-complete", null);
           Weave.Utils.nextTick(Weave.Service.sync, Weave.Service);
         }
-      }).catch(err => {
-        let authErr = err; // note that we must reject with this error and not a
-                           // subsequent one
+      }).catch(authErr => {
         // report what failed...
         this._log.error("Background fetch for key bundle failed", authErr);
-        // check if the account still exists
-        this._fxaService.accountStatus().then(exists => {
-          if (!exists) {
-            return fxAccounts.signOut(true);
-          }
-        }).catch(err => {
-          this._log.error("Error while trying to determine FXA existence", err);
-        }).then(() => {
-          this._shouldHaveSyncKeyBundle = true; // but we probably don't have one...
-          this.whenReadyToAuthenticate.reject(authErr)
-        });
+        this._shouldHaveSyncKeyBundle = true; // but we probably don't have one...
+        this.whenReadyToAuthenticate.reject(authErr);
       });
       // and we are done - the fetch continues on in the background...
     }).catch(err => {
@@ -475,7 +464,6 @@ this.BrowserIDManager.prototype = {
   unlockAndVerifyAuthState: function() {
     if (this._canFetchKeys()) {
       log.debug("unlockAndVerifyAuthState already has (or can fetch) sync keys");
-      Services.telemetry.getHistogramById("WEAVE_CAN_FETCH_KEYS").add(1);
       return Promise.resolve(STATUS_OK);
     }
     // so no keys - ensure MP unlocked.
@@ -494,10 +482,6 @@ this.BrowserIDManager.prototype = {
         // lost them - the user will need to reauth before continuing.
         let result;
         if (this._canFetchKeys()) {
-          // A ternary would be more compact, but adding 0 to a flag histogram
-          // crashes the process with a C++ assertion error. See
-          // FlagHistogram::Accumulate in ipc/chromium/src/base/histogram.cc.
-          Services.telemetry.getHistogramById("WEAVE_CAN_FETCH_KEYS").add(1);
           result = STATUS_OK;
         } else {
           result = LOGIN_FAILED_LOGIN_REJECTED;
@@ -631,8 +615,10 @@ this.BrowserIDManager.prototype = {
         // A hawkclient error.
         } else if (err.code && err.code === 401) {
           err = new AuthenticationError(err);
+        // An FxAccounts.jsm error.
+        } else if (err.message == fxAccountsCommon.ERROR_AUTH_ERROR) {
+          err = new AuthenticationError(err);
         }
-        Services.telemetry.getHistogramById("WEAVE_FXA_KEY_FETCH_ERRORS").add();
 
         // TODO: write tests to make sure that different auth error cases are handled here
         // properly: auth error getting assertion, auth error getting token (invalid generation
@@ -698,7 +684,10 @@ this.BrowserIDManager.prototype = {
     // expected.
     try {
       cb.wait();
-    } catch (ex if !Async.isShutdownException(ex)) {
+    } catch (ex) {
+      if (Async.isShutdownException(ex)) {
+        throw ex;
+      }
       this._log.error("Failed to fetch a token for authentication", ex);
       return null;
     }

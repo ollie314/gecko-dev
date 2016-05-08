@@ -57,7 +57,7 @@ Segment::Segment(unsigned int numchars, const Face* face, uint32 script, int tex
   m_passBits(m_silf->aPassBits() ? -1 : 0),
   m_defaultOriginal(0),
   m_dir(textDir),
-  m_flags(0)
+  m_flags(((m_silf->flags() & 0x20) != 0) << 1)
 {
     freeSlot(newSlot());
     m_bufSize = log_binary(numchars)+1;
@@ -72,6 +72,7 @@ Segment::~Segment()
     for (JustifyRope::iterator i = m_justifies.begin(); i != m_justifies.end(); ++i)
         free(*i);
     delete[] m_charinfo;
+    free(m_collisions);
 }
 
 #ifndef GRAPHITE2_NSEGCACHE
@@ -176,8 +177,13 @@ Slot *Segment::newSlot()
         if (m_face->logger()) ++numUser;
 #endif
         Slot *newSlots = grzeroalloc<Slot>(m_bufSize);
-        int16 *newAttrs = grzeroalloc<int16>(numUser * m_bufSize);
-        if (!newSlots || !newAttrs) return NULL;
+        int16 *newAttrs = grzeroalloc<int16>(m_bufSize * numUser);
+        if (!newSlots || !newAttrs)
+        {
+            free(newSlots);
+            free(newAttrs);
+            return NULL;
+        }
         for (size_t i = 0; i < m_bufSize; i++)
         {
             ::new (newSlots + i) Slot(newAttrs + i * numUser);
@@ -204,8 +210,13 @@ void Segment::freeSlot(Slot *aSlot)
         aSlot->attachedTo()->removeChild(aSlot);
     while (aSlot->firstChild())
     {
-        aSlot->firstChild()->attachTo(NULL);
-        aSlot->removeChild(aSlot->firstChild());
+        if (aSlot->firstChild()->attachedTo() == aSlot)
+        {
+            aSlot->firstChild()->attachTo(NULL);
+            aSlot->removeChild(aSlot->firstChild());
+        }
+        else
+            aSlot->firstChild(NULL);
     }
     // reset the slot incase it is reused
     ::new (aSlot) Slot(aSlot->userAttrs());
@@ -413,6 +424,9 @@ Position Segment::positionSlots(const Font *font, Slot * iStart, Slot * iEnd, bo
     if (!iStart)    iStart = m_first;
     if (!iEnd)      iEnd   = m_last;
 
+    if (!iStart || !iEnd)   // only true for empty segments
+        return currpos;
+
     if (isRtl)
     {
         for (Slot * s = iEnd, * const end = iStart->prev(); s && s != end; s = s->prev())
@@ -516,14 +530,13 @@ void Segment::doMirror(uint16 aMirror)
 
 bool Segment::initCollisions()
 {
-    if (m_collisions) free(m_collisions);
-    Slot *p = m_first;
-    m_collisions = gralloc<SlotCollision>(slotCount());
+    m_collisions = grzeroalloc<SlotCollision>(slotCount());
     if (!m_collisions) return false;
-    for (unsigned short i = 0; i < slotCount(); ++i)
-    {
-        ::new (m_collisions + p->index()) SlotCollision(this, p);
-        p = p->next();
-    }
+
+    for (Slot *p = m_first; p; p = p->next())
+        if (p->index() < slotCount())
+            ::new (collisionInfo(p)) SlotCollision(this, p);
+        else
+            return false;
     return true;
 }

@@ -3,9 +3,9 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 "use strict";
 
-const { Cu, Ci, Cc } = require("chrome");
-const { defer, all, resolve } = require("promise");
-const { Services } = Cu.import("resource://gre/modules/Services.jsm", {});
+const { Ci, Cc } = require("chrome");
+const { defer, all } = require("promise");
+const { LocalizationHelper } = require("devtools/client/shared/l10n");
 
 loader.lazyImporter(this, "ViewHelpers", "resource://devtools/client/shared/widgets/ViewHelpers.jsm");
 loader.lazyRequireGetter(this, "NetworkHelper", "devtools/shared/webconsole/network-helper");
@@ -15,7 +15,7 @@ loader.lazyGetter(this, "appInfo", () => {
 });
 
 loader.lazyGetter(this, "L10N", () => {
-  return new ViewHelpers.L10N("chrome://browser/locale/devtools/har.properties");
+  return new LocalizationHelper("chrome://devtools/locale/har.properties");
 });
 
 const HAR_VERSION = "1.1";
@@ -39,10 +39,10 @@ const HAR_VERSION = "1.1";
  * - includeResponseBodies {Boolean}: Set to true to include HTTP response
  *   bodies in the result data structure.
  */
-var HarBuilder = function(options) {
+var HarBuilder = function (options) {
   this._options = options;
   this._pageMap = [];
-}
+};
 
 HarBuilder.prototype = {
   // Public API
@@ -55,7 +55,7 @@ HarBuilder.prototype = {
    * @returns {Promise} A promise that resolves to the HAR object when
    * the entire build process is done.
    */
-  build: function() {
+  build: function () {
     this.promises = [];
 
     // Build basic structure for data.
@@ -63,7 +63,7 @@ HarBuilder.prototype = {
 
     // Build entries.
     let items = this._options.items;
-    for (let i=0; i<items.length; i++) {
+    for (let i = 0; i < items.length; i++) {
       let file = items[i].attachment;
       log.entries.push(this.buildEntry(log, file));
     }
@@ -78,7 +78,7 @@ HarBuilder.prototype = {
 
   // Helpers
 
-  buildLog: function() {
+  buildLog: function () {
     return {
       version: HAR_VERSION,
       creator: {
@@ -91,10 +91,10 @@ HarBuilder.prototype = {
       },
       pages: [],
       entries: [],
-    }
+    };
   },
 
-  buildPage: function(file) {
+  buildPage: function (file) {
     let page = {};
 
     // Page start time is set when the first request is processed
@@ -106,7 +106,7 @@ HarBuilder.prototype = {
     return page;
   },
 
-  getPage: function(log, file) {
+  getPage: function (log, file) {
     let id = this._options.id;
     let page = this._pageMap[id];
     if (page) {
@@ -119,7 +119,7 @@ HarBuilder.prototype = {
     return page;
   },
 
-  buildEntry: function(log, file) {
+  buildEntry: function (log, file) {
     let page = this.getPage(log, file);
 
     let entry = {};
@@ -149,7 +149,7 @@ HarBuilder.prototype = {
     return entry;
   },
 
-  buildPageTimings: function(page, file) {
+  buildPageTimings: function (page, file) {
     // Event timing info isn't available
     let timings = {
       onContentLoad: -1,
@@ -159,7 +159,7 @@ HarBuilder.prototype = {
     return timings;
   },
 
-  buildRequest: function(file) {
+  buildRequest: function (file) {
     let request = {
       bodySize: 0
     };
@@ -195,7 +195,7 @@ HarBuilder.prototype = {
    *
    * @param {Object} input Request or response header object.
    */
-  buildHeaders: function(input) {
+  buildHeaders: function (input) {
     if (!input) {
       return [];
     }
@@ -203,7 +203,7 @@ HarBuilder.prototype = {
     return this.buildNameValuePairs(input.headers);
   },
 
-  buildCookies: function(input) {
+  buildCookies: function (input) {
     if (!input) {
       return [];
     }
@@ -211,7 +211,7 @@ HarBuilder.prototype = {
     return this.buildNameValuePairs(input.cookies);
   },
 
-  buildNameValuePairs: function(entries) {
+  buildNameValuePairs: function (entries) {
     let result = [];
 
     // HAR requires headers array to be presented, so always
@@ -228,12 +228,12 @@ HarBuilder.prototype = {
           value: value
         });
       });
-    })
+    });
 
     return result;
   },
 
-  buildPostData: function(file) {
+  buildPostData: function (file) {
     let postData = {
       mimeType: findValue(file.requestHeaders.headers, "content-type"),
       params: [],
@@ -274,14 +274,14 @@ HarBuilder.prototype = {
     return postData;
   },
 
-  buildResponse: function(file) {
+  buildResponse: function (file) {
     let response = {
       status: 0
     };
 
     // Arbitrary value if it's aborted to make sure status has a number
     if (file.status) {
-      response.status = parseInt(file.status);
+      response.status = parseInt(file.status, 10);
     }
 
     let responseHeaders = file.responseHeaders;
@@ -298,12 +298,20 @@ HarBuilder.prototype = {
 
     response.redirectURL = findValue(headers, "Location");
     response.headersSize = headersSize;
-    response.bodySize = file.transferredSize || -1;
+
+    // 'bodySize' is size of the received response body in bytes.
+    // Set to zero in case of responses coming from the cache (304).
+    // Set to -1 if the info is not available.
+    if (typeof file.transferredSize != "number") {
+      response.bodySize = (response.status == 304) ? 0 : -1;
+    } else {
+      response.bodySize = file.transferredSize;
+    }
 
     return response;
   },
 
-  buildContent: function(file) {
+  buildContent: function (file) {
     let content = {
       mimeType: file.mimeType,
       size: -1
@@ -312,6 +320,7 @@ HarBuilder.prototype = {
     let responseContent = file.responseContent;
     if (responseContent && responseContent.content) {
       content.size = responseContent.content.size;
+      content.encoding = responseContent.content.encoding;
     }
 
     let includeBodies = this._options.includeResponseBodies;
@@ -327,7 +336,7 @@ HarBuilder.prototype = {
 
     if (responseContent) {
       let text = responseContent.content.text;
-      let promise = this.fetchData(text).then(value => {
+      this.fetchData(text).then(value => {
         content.text = value;
       });
     }
@@ -335,7 +344,7 @@ HarBuilder.prototype = {
     return content;
   },
 
-  buildCache: function(file) {
+  buildCache: function (file) {
     let cache = {};
 
     if (!file.fromCache) {
@@ -354,7 +363,7 @@ HarBuilder.prototype = {
     return cache;
   },
 
-  buildCacheEntry: function(cacheEntry) {
+  buildCacheEntry: function (cacheEntry) {
     let cache = {};
 
     cache.expires = findValue(cacheEntry, "Expires");
@@ -365,7 +374,7 @@ HarBuilder.prototype = {
     return cache;
   },
 
-  getBlockingEndTime: function(file) {
+  getBlockingEndTime: function (file) {
     if (file.resolveStarted && file.connectStarted) {
       return file.resolvingTime;
     }
@@ -384,7 +393,7 @@ HarBuilder.prototype = {
 
   // RDP Helpers
 
-  fetchData: function(string) {
+  fetchData: function (string) {
     let promise = this._options.getString(string).then(value => {
       return value;
     });
@@ -395,7 +404,7 @@ HarBuilder.prototype = {
 
     return promise;
   }
-}
+};
 
 // Helpers
 
@@ -403,7 +412,7 @@ HarBuilder.prototype = {
  * Returns true if specified request body is URL encoded.
  */
 function isURLEncodedFile(file, text) {
-  let contentType = "content-type: application/x-www-form-urlencoded"
+  let contentType = "content-type: application/x-www-form-urlencoded";
   if (text && text.toLowerCase().indexOf(contentType) != -1) {
     return true;
   }
@@ -460,12 +469,12 @@ function dateToJSON(date) {
     return s;
   }
 
-  let result = date.getFullYear() + '-' +
-    f(date.getMonth() + 1) + '-' +
-    f(date.getDate()) + 'T' +
-    f(date.getHours()) + ':' +
-    f(date.getMinutes()) + ':' +
-    f(date.getSeconds()) + '.' +
+  let result = date.getFullYear() + "-" +
+    f(date.getMonth() + 1) + "-" +
+    f(date.getDate()) + "T" +
+    f(date.getHours()) + ":" +
+    f(date.getMinutes()) + ":" +
+    f(date.getSeconds()) + "." +
     f(date.getMilliseconds(), 3);
 
   let offset = date.getTimezoneOffset();

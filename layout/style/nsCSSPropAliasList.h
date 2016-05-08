@@ -220,6 +220,10 @@ CSS_PROP_ALIAS(-webkit-animation-timing-function,
                WebkitAnimationTimingFunction,
                WEBKIT_PREFIX_PREF)
 
+CSS_PROP_ALIAS(-webkit-filter,
+               filter,
+               WebkitFilter,
+               WEBKIT_PREFIX_PREF)
 CSS_PROP_ALIAS(-webkit-text-size-adjust,
                text_size_adjust,
                WebkitTextSizeAdjust,
@@ -236,6 +240,18 @@ CSS_PROP_ALIAS(-webkit-transform-origin,
 CSS_PROP_ALIAS(-webkit-transform-style,
                transform_style,
                WebkitTransformStyle,
+               WEBKIT_PREFIX_PREF)
+CSS_PROP_ALIAS(-webkit-backface-visibility,
+               backface_visibility,
+               WebkitBackfaceVisibility,
+               WEBKIT_PREFIX_PREF)
+CSS_PROP_ALIAS(-webkit-perspective,
+               perspective,
+               WebkitPerspective,
+               WEBKIT_PREFIX_PREF)
+CSS_PROP_ALIAS(-webkit-perspective-origin,
+               perspective_origin,
+               WebkitPerspectiveOrigin,
                WEBKIT_PREFIX_PREF)
 
 CSS_PROP_ALIAS(-webkit-transition,
@@ -280,10 +296,6 @@ CSS_PROP_ALIAS(-webkit-border-bottom-right-radius,
                WebkitBorderBottomRightRadius, // really no dom property
                WEBKIT_PREFIX_PREF)
 
-CSS_PROP_ALIAS(-webkit-appearance,
-               appearance,
-               WebkitAppearance,
-               WEBKIT_PREFIX_PREF)
 CSS_PROP_ALIAS(-webkit-background-clip,
                background_clip,
                WebkitBackgroundClip,
@@ -296,10 +308,12 @@ CSS_PROP_ALIAS(-webkit-background-size,
                background_size,
                WebkitBackgroundSize,
                WEBKIT_PREFIX_PREF)
+
 CSS_PROP_ALIAS(-webkit-border-image,
                border_image,
                WebkitBorderImage,
                WEBKIT_PREFIX_PREF)
+
 CSS_PROP_ALIAS(-webkit-box-shadow,
                box_shadow,
                WebkitBoxShadow,
@@ -308,9 +322,82 @@ CSS_PROP_ALIAS(-webkit-box-sizing,
                box_sizing,
                WebkitBoxSizing,
                WEBKIT_PREFIX_PREF)
+
+// Alias -webkit-box properties to their -moz-box equivalents.
+// (NOTE: Even though they're aliases, in practice these -webkit properties
+// will behave a bit differently from their -moz versions, if they're
+// accompanied by "display:-webkit-box", because we generate a different frame
+// for those two display values.)
+CSS_PROP_ALIAS(-webkit-box-flex,
+               box_flex,
+               WebkitBoxFlex,
+               WEBKIT_PREFIX_PREF)
+CSS_PROP_ALIAS(-webkit-box-ordinal-group,
+               box_ordinal_group,
+               WebkitBoxOrdinalGroup,
+               WEBKIT_PREFIX_PREF)
+CSS_PROP_ALIAS(-webkit-box-orient,
+               box_orient,
+               WebkitBoxOrient,
+               WEBKIT_PREFIX_PREF)
+CSS_PROP_ALIAS(-webkit-box-direction,
+               box_direction,
+               WebkitBoxDirection,
+               WEBKIT_PREFIX_PREF)
+CSS_PROP_ALIAS(-webkit-box-align,
+               box_align,
+               WebkitBoxAlign,
+               WEBKIT_PREFIX_PREF)
+CSS_PROP_ALIAS(-webkit-box-pack,
+               box_pack,
+               WebkitBoxPack,
+               WEBKIT_PREFIX_PREF)
+
 CSS_PROP_ALIAS(-webkit-user-select,
                user_select,
                WebkitUserSelect,
                WEBKIT_PREFIX_PREF)
 
+#ifdef MOZ_ENABLE_MASK_AS_SHORTHAND
+CSS_PROP_ALIAS(-webkit-mask,
+               mask,
+               WebkitMask,
+               WEBKIT_PREFIX_PREF)
+CSS_PROP_ALIAS(-webkit-mask-clip,
+               mask_clip,
+               WebkitMaskClip,
+               WEBKIT_PREFIX_PREF)
+CSS_PROP_ALIAS(-webkit-mask-composite,
+               mask_composite,
+               WebkitMaskComposite,
+               WEBKIT_PREFIX_PREF)
+CSS_PROP_ALIAS(-webkit-mask-image,
+               mask_image,
+               WebkitMaskImage,
+               WEBKIT_PREFIX_PREF)
+CSS_PROP_ALIAS(-webkit-mask-origin,
+               mask_origin,
+               WebkitMaskOrigin,
+               WEBKIT_PREFIX_PREF)
+CSS_PROP_ALIAS(-webkit-mask-position,
+               mask_position,
+               WebkitMaskPosition,
+               WEBKIT_PREFIX_PREF)
+CSS_PROP_ALIAS(-webkit-mask-position-x,
+               mask_position_x,
+               WebkitMaskPositionX,
+               WEBKIT_PREFIX_PREF)
+CSS_PROP_ALIAS(-webkit-mask-position-y,
+               mask_position_y,
+               WebkitMaskPositionY,
+               WEBKIT_PREFIX_PREF)
+CSS_PROP_ALIAS(-webkit-mask-repeat,
+               mask_repeat,
+               WebkitMaskRepeat,
+               WEBKIT_PREFIX_PREF)
+CSS_PROP_ALIAS(-webkit-mask-size,
+               mask_size,
+               WebkitMaskSize,
+               WEBKIT_PREFIX_PREF)
+#endif
 #undef WEBKIT_PREFIX_PREF

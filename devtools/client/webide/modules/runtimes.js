@@ -3,8 +3,8 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 const {Cu, Ci} = require("chrome");
+const Services = require("Services");
 const {Devices} = Cu.import("resource://devtools/shared/apps/Devices.jsm");
-const {Services} = Cu.import("resource://gre/modules/Services.jsm");
 const {Connection} = require("devtools/shared/client/connection-manager");
 const {DebuggerServer} = require("devtools/server/main");
 const {Simulators} = require("devtools/client/webide/modules/simulators");
@@ -16,7 +16,7 @@ loader.lazyRequireGetter(this, "AuthenticationResult",
 loader.lazyRequireGetter(this, "DevToolsUtils",
   "devtools/shared/DevToolsUtils");
 
-const Strings = Services.strings.createBundle("chrome://browser/locale/devtools/webide.properties");
+const Strings = Services.strings.createBundle("chrome://devtools/locale/webide.properties");
 
 /**
  * Runtime and Scanner API

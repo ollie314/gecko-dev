@@ -1,11 +1,12 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+
+#include "mozilla/RefPtr.h"
 #include "nsDeviceContextAndroid.h"
 #include "nsString.h"
 #include "nsIFile.h"
 #include "nsIFileStreams.h"
-#include "nsAutoPtr.h"
 #include "gfxPDFSurface.h"
 #include "nsIPrintSettings.h"
 #include "nsDirectoryServiceDefs.h"
@@ -52,7 +53,7 @@ nsDeviceContextSpecAndroid::Init(nsIWidget* aWidget,
 
 NS_IMETHODIMP
 nsDeviceContextSpecAndroid::BeginDocument(const nsAString& aTitle,
-                                          char16_t* aPrintToFileName,
+                                          const nsAString& aPrintToFileName,
                                           int32_t aStartPage,
                                           int32_t aEndPage)
 {

@@ -46,9 +46,7 @@ nsNativeTheme::GetPresShell(nsIFrame* aFrame)
   if (!aFrame)
     return nullptr;
 
-  // this is a workaround for the egcs 1.1.2 not inlining
-  // aFrame->PresContext(), which causes an undefined symbol
-  nsPresContext *context = aFrame->StyleContext()->RuleNode()->PresContext();
+  nsPresContext* context = aFrame->PresContext();
   return context ? context->GetPresShell() : nullptr;
 }
 
@@ -121,7 +119,7 @@ nsNativeTheme::GetContentState(nsIFrame* aFrame, uint8_t aWidgetType)
 #endif    
 #if defined(XP_MACOSX) || defined(XP_WIN)
   nsIDocument* doc = aFrame->GetContent()->OwnerDoc();
-  nsPIDOMWindow* window = doc->GetWindow();
+  nsPIDOMWindowOuter* window = doc->GetWindow();
   if (window && !window->ShouldShowFocusRing())
     flags &= ~NS_EVENT_STATE_FOCUS;
 #endif
@@ -488,12 +486,10 @@ nsNativeTheme::IsFirstTab(nsIFrame* aFrame)
   if (!aFrame)
     return false;
 
-  nsIFrame* first = aFrame->GetParent()->GetFirstPrincipalChild();
-  while (first) {
+  for (nsIFrame* first : aFrame->GetParent()->PrincipalChildList()) {
     if (first->GetRect().width > 0 &&
         first->GetContent()->IsXULElement(nsGkAtoms::tab))
       return (first == aFrame);
-    first = first->GetNextSibling();
   }
   return false;
 }
@@ -520,7 +516,7 @@ nsNativeTheme::IsNextToSelectedTab(nsIFrame* aFrame, int32_t aOffset)
 
   int32_t thisTabIndex = -1, selectedTabIndex = -1;
 
-  nsIFrame* currentTab = aFrame->GetParent()->GetFirstPrincipalChild();
+  nsIFrame* currentTab = aFrame->GetParent()->PrincipalChildList().FirstChild();
   for (int32_t i = 0; currentTab; currentTab = currentTab->GetNextSibling()) {
     if (currentTab->GetRect().width == 0)
       continue;
@@ -596,7 +592,7 @@ nsNativeTheme::IsSubmenu(nsIFrame* aFrame, bool* aLeftOfParent)
   while ((parent = parent->GetParent())) {
     if (parent->GetContent() == parentContent) {
       if (aLeftOfParent) {
-        nsIntRect selfBounds, parentBounds;
+        LayoutDeviceIntRect selfBounds, parentBounds;
         aFrame->GetNearestWidget()->GetScreenBounds(selfBounds);
         parent->GetNearestWidget()->GetScreenBounds(parentBounds);
         *aLeftOfParent = selfBounds.x < parentBounds.x;

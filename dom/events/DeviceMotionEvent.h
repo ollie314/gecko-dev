@@ -128,8 +128,17 @@ public:
          const DeviceAccelerationInit& aAcceleration,
          const DeviceAccelerationInit& aAccelerationIncludingGravity,
          const DeviceRotationRateInit& aRotationRate,
+         Nullable<double> aInterval);
+
+  void InitDeviceMotionEvent(
+         const nsAString& aType,
+         bool aCanBubble,
+         bool aCancelable,
+         const DeviceAccelerationInit& aAcceleration,
+         const DeviceAccelerationInit& aAccelerationIncludingGravity,
+         const DeviceRotationRateInit& aRotationRate,
          Nullable<double> aInterval,
-         ErrorResult& aRv);
+         Nullable<uint64_t> aTimeStamp);
 
   static already_AddRefed<DeviceMotionEvent>
   Constructor(const GlobalObject& aGlobal,

@@ -26,6 +26,7 @@ class nsDisplayListBuilder;
 namespace mozilla {
 namespace layers {
 class CanvasLayer;
+class Layer;
 class LayerManager;
 } // namespace layers
 namespace gfx {
@@ -39,6 +40,7 @@ class nsICanvasRenderingContextInternal :
 {
 public:
   typedef mozilla::layers::CanvasLayer CanvasLayer;
+  typedef mozilla::layers::Layer Layer;
   typedef mozilla::layers::LayerManager LayerManager;
 
   NS_DECLARE_STATIC_IID_ACCESSOR(NS_ICANVASRENDERINGCONTEXTINTERNAL_IID)
@@ -94,7 +96,10 @@ public:
   // whenever the size of the element changes.
   NS_IMETHOD SetDimensions(int32_t width, int32_t height) = 0;
 
-  NS_IMETHOD InitializeWithSurface(nsIDocShell *docShell, gfxASurface *surface, int32_t width, int32_t height) = 0;
+  // Initializes with an nsIDocShell and DrawTarget. The size is taken from the
+  // DrawTarget.
+  NS_IMETHOD InitializeWithDrawTarget(nsIDocShell *aDocShell,
+                                      mozilla::gfx::DrawTarget* aTarget) = 0;
 
   // Creates an image buffer. Returns null on failure.
   virtual mozilla::UniquePtr<uint8_t[]> GetImageBuffer(int32_t* format) = 0;
@@ -129,9 +134,9 @@ public:
 
   // Return the CanvasLayer for this context, creating
   // one for the given layer manager if not available.
-  virtual already_AddRefed<CanvasLayer> GetCanvasLayer(nsDisplayListBuilder* builder,
-                                                       CanvasLayer *oldLayer,
-                                                       LayerManager *manager) = 0;
+  virtual already_AddRefed<Layer> GetCanvasLayer(nsDisplayListBuilder* builder,
+                                                 Layer *oldLayer,
+                                                 LayerManager *manager) = 0;
 
   // Return true if the canvas should be forced to be "inactive" to ensure
   // it can be drawn to the screen even if it's too large to be blitted by

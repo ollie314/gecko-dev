@@ -26,6 +26,8 @@ dictionary CSP {
   sequence<DOMString> referrer;
   sequence<DOMString> manifest-src;
   sequence<DOMString> upgrade-insecure-requests;
+  sequence<DOMString> child-src;
+  sequence<DOMString> block-all-mixed-content;
 };
 
 dictionary CSPPolicies {

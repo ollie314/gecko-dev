@@ -7,7 +7,6 @@
 #ifndef gc_Marking_h
 #define gc_Marking_h
 
-#include "mozilla/DebugOnly.h"
 #include "mozilla/HashFunctions.h"
 #include "mozilla/Move.h"
 
@@ -32,7 +31,7 @@ class NativeObject;
 class ObjectGroup;
 class WeakMapBase;
 namespace gc {
-struct ArenaHeader;
+class Arena;
 } // namespace gc
 namespace jit {
 class JitCode;
@@ -214,9 +213,9 @@ class GCMarker : public JSTracer
         linearWeakMarkingDisabled_ = true;
     }
 
-    void delayMarkingArena(gc::ArenaHeader* aheader);
+    void delayMarkingArena(gc::Arena* arena);
     void delayMarkingChildren(const void* thing);
-    void markDelayedChildren(gc::ArenaHeader* aheader);
+    void markDelayedChildren(gc::Arena* arena);
     bool markDelayedChildren(SliceBudget& budget);
     bool hasDelayedChildren() const {
         return !!unmarkedArenaStackTop;
@@ -283,7 +282,7 @@ class GCMarker : public JSTracer
     void eagerlyMarkChildren(Shape* shape);
     void lazilyMarkChildren(ObjectGroup* group);
 
-    // We may not have concrete types yet, so this has to be out of the header.
+    // We may not have concrete types yet, so this has to be outside the header.
     template <typename T>
     void dispatchToTraceChildren(T* thing);
 
@@ -331,7 +330,7 @@ class GCMarker : public JSTracer
     uint32_t color;
 
     /* Pointer to the top of the stack of arenas we are delaying marking on. */
-    js::gc::ArenaHeader* unmarkedArenaStackTop;
+    js::gc::Arena* unmarkedArenaStackTop;
 
     /*
      * If the weakKeys table OOMs, disable the linear algorithm and fall back
@@ -339,17 +338,19 @@ class GCMarker : public JSTracer
      */
     bool linearWeakMarkingDisabled_;
 
+#ifdef DEBUG
     /* Count of arenas that are currently in the stack. */
-    mozilla::DebugOnly<size_t> markLaterArenas;
+    size_t markLaterArenas;
 
     /* Assert that start and stop are called with correct ordering. */
-    mozilla::DebugOnly<bool> started;
+    bool started;
 
     /*
      * If this is true, all marked objects must belong to a compartment being
      * GCed. This is used to look for compartment bugs.
      */
-    mozilla::DebugOnly<bool> strictCompartmentChecking;
+    bool strictCompartmentChecking;
+#endif // DEBUG
 };
 
 #ifdef DEBUG
@@ -364,7 +365,7 @@ namespace gc {
 /*** Special Cases ***/
 
 void
-PushArena(GCMarker* gcmarker, ArenaHeader* aheader);
+PushArena(GCMarker* gcmarker, Arena* arena);
 
 /*** Liveness ***/
 
@@ -413,41 +414,40 @@ IsNullTaggedPointer(void* p)
     return uintptr_t(p) <= LargestTaggedNullCellPointer;
 }
 
-// HashKeyRef represents a reference to a HashMap key. This should normally
-// be used through the HashTableWriteBarrierPost function.
-template <typename Map, typename Key>
-class HashKeyRef : public BufferableRef
-{
-    Map* map;
-    Key key;
-
-  public:
-    HashKeyRef(Map* m, const Key& k) : map(m), key(k) {}
-
-    void trace(JSTracer* trc) override {
-        Key prior = key;
-        typename Map::Ptr p = map->lookup(key);
-        if (!p)
-            return;
-        TraceManuallyBarrieredEdge(trc, &key, "HashKeyRef");
-        map->rekeyIfMoved(prior, key);
-    }
-};
-
 // Wrap a GC thing pointer into a new Value or jsid. The type system enforces
 // that the thing pointer is a wrappable type.
 template <typename S, typename T>
 struct RewrapTaggedPointer{};
 #define DECLARE_REWRAP(S, T, method, prefix) \
     template <> struct RewrapTaggedPointer<S, T> { \
-        static S wrap(T thing) { return method ( prefix thing ); } \
+        static S wrap(T* thing) { return method ( prefix thing ); } \
     }
-DECLARE_REWRAP(JS::Value, JSObject*, JS::ObjectOrNullValue, );
-DECLARE_REWRAP(JS::Value, JSString*, JS::StringValue, );
-DECLARE_REWRAP(JS::Value, JS::Symbol*, JS::SymbolValue, );
-DECLARE_REWRAP(jsid, JSString*, NON_INTEGER_ATOM_TO_JSID, (JSAtom*));
-DECLARE_REWRAP(jsid, JS::Symbol*, SYMBOL_TO_JSID, );
-DECLARE_REWRAP(js::TaggedProto, JSObject*, js::TaggedProto, );
+DECLARE_REWRAP(JS::Value, JSObject, JS::ObjectOrNullValue, );
+DECLARE_REWRAP(JS::Value, JSString, JS::StringValue, );
+DECLARE_REWRAP(JS::Value, JS::Symbol, JS::SymbolValue, );
+DECLARE_REWRAP(jsid, JSString, NON_INTEGER_ATOM_TO_JSID, (JSAtom*));
+DECLARE_REWRAP(jsid, JS::Symbol, SYMBOL_TO_JSID, );
+DECLARE_REWRAP(js::TaggedProto, JSObject, js::TaggedProto, );
+#undef DECLARE_REWRAP
+
+template <typename T>
+struct IsPrivateGCThingInValue
+  : public mozilla::EnableIf<mozilla::IsBaseOf<Cell, T>::value &&
+                             !mozilla::IsBaseOf<JSObject, T>::value &&
+                             !mozilla::IsBaseOf<JSString, T>::value &&
+                             !mozilla::IsBaseOf<JS::Symbol, T>::value, T>
+{
+    static_assert(!mozilla::IsSame<Cell, T>::value && !mozilla::IsSame<TenuredCell, T>::value,
+                  "T must not be Cell or TenuredCell");
+};
+
+template <typename T>
+struct RewrapTaggedPointer<Value, T>
+{
+    static Value wrap(typename IsPrivateGCThingInValue<T>::Type* thing) {
+        return JS::PrivateGCThingValue(thing);
+    }
+};
 
 } /* namespace gc */
 

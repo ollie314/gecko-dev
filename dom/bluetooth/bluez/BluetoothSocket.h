@@ -10,7 +10,7 @@
 #include "BluetoothCommon.h"
 #include "mozilla/ipc/DataSocket.h"
 #include "mozilla/ipc/UnixSocketWatcher.h"
-#include "nsAutoPtr.h"
+#include "mozilla/UniquePtr.h"
 #include "nsString.h"
 
 class MessageLoop;
@@ -26,7 +26,7 @@ public:
   BluetoothSocket(BluetoothSocketObserver* aObserver);
   ~BluetoothSocket();
 
-  nsresult Connect(const nsAString& aDeviceAddress,
+  nsresult Connect(const BluetoothAddress& aDeviceAddress,
                    const BluetoothUuid& aServiceUuid,
                    BluetoothSocketType aType,
                    int aChannel,
@@ -44,7 +44,7 @@ public:
    *
    * @param aBuffer Data received from the socket.
    */
-  void ReceiveSocketData(nsAutoPtr<mozilla::ipc::UnixSocketBuffer>& aBuffer);
+  void ReceiveSocketData(UniquePtr<mozilla::ipc::UnixSocketBuffer>& aBuffer);
 
   /**
    * Convenience function for sending strings to the socket (common in bluetooth
@@ -105,9 +105,9 @@ public:
   /**
    * Get the current socket address.
    *
-   * @param[out] aDeviceAddress Returns the address string.
+   * @param[out] aDeviceAddress Returns the address.
    */
-  void GetAddress(nsAString& aDeviceAddress);
+  void GetAddress(BluetoothAddress& aDeviceAddress);
 
   // Methods for |DataSocket|
   //

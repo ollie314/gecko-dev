@@ -20,6 +20,7 @@
 
 #include "mozilla/BasePrincipal.h"
 
+class nsIDocShell;
 class nsIURI;
 
 #define NS_NULLPRINCIPAL_CID \
@@ -47,14 +48,14 @@ public:
   NS_IMETHOD GetBaseDomain(nsACString& aBaseDomain) override;
   nsresult GetOriginInternal(nsACString& aOrigin) override;
 
-  // Returns null on failure.
-  static already_AddRefed<nsNullPrincipal> CreateWithInheritedAttributes(nsIPrincipal *aInheritFrom);
+  static already_AddRefed<nsNullPrincipal> CreateWithInheritedAttributes(nsIPrincipal* aInheritFrom);
 
-  // Returns null on failure.
+  static already_AddRefed<nsNullPrincipal> CreateWithInheritedAttributes(nsIDocShell* aDocShell);
+
   static already_AddRefed<nsNullPrincipal>
-    Create(const mozilla::OriginAttributes& aOriginAttributes = mozilla::OriginAttributes());
+  Create(const mozilla::PrincipalOriginAttributes& aOriginAttributes = mozilla::PrincipalOriginAttributes());
 
-  nsresult Init(const mozilla::OriginAttributes& aOriginAttributes = mozilla::OriginAttributes());
+  nsresult Init(const mozilla::PrincipalOriginAttributes& aOriginAttributes = mozilla::PrincipalOriginAttributes());
 
   virtual void GetScriptLocation(nsACString &aStr) override;
 
@@ -71,7 +72,6 @@ public:
   bool MayLoadInternal(nsIURI* aURI) override;
 
   nsCOMPtr<nsIURI> mURI;
-  nsCOMPtr<nsIContentSecurityPolicy> mCSP;
 };
 
 #endif // nsNullPrincipal_h__

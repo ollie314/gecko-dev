@@ -1,6 +1,12 @@
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
+/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+/* import-globals-from ../debugger-controller.js */
+/* import-globals-from ../debugger-view.js */
+/* import-globals-from ../utils.js */
+/* globals document, window */
 "use strict";
 
 /**
@@ -20,6 +26,17 @@ function VariableBubbleView(DebuggerController, DebuggerView) {
 
 VariableBubbleView.prototype = {
   /**
+   * Delay before showing the variables bubble tooltip when hovering a valid
+   * target.
+   */
+  TOOLTIP_SHOW_DELAY: 750,
+
+  /**
+   * Tooltip position for the variables bubble tooltip.
+   */
+  TOOLTIP_POSITION: "topcenter bottomleft",
+
+  /**
    * Initialization function, called when the debugger is started.
    */
   initialize: function() {
@@ -38,10 +55,12 @@ VariableBubbleView.prototype = {
         emitter: this._editorContainer,
         event: "scroll",
         useCapture: true
+      }, {
+        emitter: document,
+        event: "keydown"
       }]
     });
-    this._tooltip.defaultPosition = EDITOR_VARIABLE_POPUP_POSITION;
-    this._tooltip.defaultShowDelay = EDITOR_VARIABLE_HOVER_DELAY;
+    this._tooltip.defaultPosition = this.TOOLTIP_POSITION;
     this._tooltip.panel.addEventListener("popuphiding", this._onPopupHiding);
   },
 
@@ -266,7 +285,7 @@ VariableBubbleView.prototype = {
     // Allow events to settle down first. If the mouse hovers over
     // a certain point in the editor long enough, try showing a variable bubble.
     setNamedTimeout("editor-mouse-move",
-      EDITOR_VARIABLE_HOVER_DELAY, () => this._findIdentifier(e.clientX, e.clientY));
+      this.TOOLTIP_SHOW_DELAY, () => this._findIdentifier(e.clientX, e.clientY));
   },
 
   /**

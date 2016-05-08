@@ -40,6 +40,13 @@ NS_EVENT_MESSAGE(eKeyPress)
 NS_EVENT_MESSAGE(eKeyUp)
 NS_EVENT_MESSAGE(eKeyDown)
 
+// These messages are dispatched when PluginInstaceChild receives native
+// keyboard events directly and it posts the information to the widget.
+// These messages shouldn't be handled by content and non-reserved chrome
+// event handlers.
+NS_EVENT_MESSAGE(eKeyDownOnPlugin)
+NS_EVENT_MESSAGE(eKeyUpOnPlugin)
+
 NS_EVENT_MESSAGE(eBeforeKeyDown)
 NS_EVENT_MESSAGE(eAfterKeyDown)
 NS_EVENT_MESSAGE(eBeforeKeyUp)
@@ -98,6 +105,7 @@ NS_EVENT_MESSAGE(eHashChange)
 NS_EVENT_MESSAGE(eImageAbort)
 NS_EVENT_MESSAGE(eLoadError)
 NS_EVENT_MESSAGE(ePopState)
+NS_EVENT_MESSAGE(eStorage)
 NS_EVENT_MESSAGE(eBeforeUnload)
 NS_EVENT_MESSAGE(eReadyStateChange)
  
@@ -234,9 +242,9 @@ NS_EVENT_MESSAGE(eQueryContentState)
 NS_EVENT_MESSAGE(eQuerySelectionAsTransferable)
 // Query for character at a point.  This returns the character offset, its
 // rect and also tentative caret point if the point is clicked.  The point is
-// specified by Event::refPoint.
+// specified by Event::mRefPoint.
 NS_EVENT_MESSAGE(eQueryCharacterAtPoint)
-// Query if the DOM element under Event::refPoint belongs to our widget
+// Query if the DOM element under Event::mRefPoint belongs to our widget
 // or not.
 NS_EVENT_MESSAGE(eQueryDOMWidgetHittest)
 
@@ -311,11 +319,17 @@ NS_EVENT_MESSAGE(eGestureNotify)
 
 NS_EVENT_MESSAGE(eScrolledAreaChanged)
 
+// CSS Transition & Animation events:
 NS_EVENT_MESSAGE(eTransitionEnd)
-
 NS_EVENT_MESSAGE(eAnimationStart)
 NS_EVENT_MESSAGE(eAnimationEnd)
 NS_EVENT_MESSAGE(eAnimationIteration)
+
+// Webkit-prefixed versions of Transition & Animation events, for web compat:
+NS_EVENT_MESSAGE(eWebkitTransitionEnd)
+NS_EVENT_MESSAGE(eWebkitAnimationStart)
+NS_EVENT_MESSAGE(eWebkitAnimationEnd)
+NS_EVENT_MESSAGE(eWebkitAnimationIteration)
 
 NS_EVENT_MESSAGE(eSMILBeginEvent)
 NS_EVENT_MESSAGE(eSMILEndEvent)
@@ -338,6 +352,7 @@ NS_EVENT_MESSAGE(eOpen)
 
 // Device motion and orientation
 NS_EVENT_MESSAGE(eDeviceOrientation)
+NS_EVENT_MESSAGE(eAbsoluteDeviceOrientation)
 NS_EVENT_MESSAGE(eDeviceMotion)
 NS_EVENT_MESSAGE(eDeviceProximity)
 NS_EVENT_MESSAGE(eUserProximity)
@@ -351,6 +366,8 @@ NS_EVENT_MESSAGE(eShow)
 // Fullscreen DOM API
 NS_EVENT_MESSAGE(eFullscreenChange)
 NS_EVENT_MESSAGE(eFullscreenError)
+NS_EVENT_MESSAGE(eMozFullscreenChange)
+NS_EVENT_MESSAGE(eMozFullscreenError)
 
 NS_EVENT_MESSAGE(eTouchStart)
 NS_EVENT_MESSAGE(eTouchMove)
@@ -404,6 +421,9 @@ NS_EVENT_MESSAGE(eEditorInput)
 // selection events
 NS_EVENT_MESSAGE(eSelectStart)
 NS_EVENT_MESSAGE(eSelectionChange)
+
+// Details element events.
+NS_EVENT_MESSAGE(eToggle)
 
 #ifdef UNDEF_NS_EVENT_MESSAGE_FIRST_LAST
 #undef UNDEF_NS_EVENT_MESSAGE_FIRST_LAST

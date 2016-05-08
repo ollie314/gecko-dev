@@ -18,6 +18,7 @@
 #include "nsIMozBrowserFrame.h"
 
 using namespace mozilla;
+typedef nsAbsoluteContainingBlock::AbsPosReflowFlags AbsPosReflowFlags;
 
 ViewportFrame*
 NS_NewViewportFrame(nsIPresShell* aPresShell, nsStyleContext* aContext)
@@ -35,7 +36,7 @@ ViewportFrame::Init(nsIContent*       aContent,
                     nsContainerFrame* aParent,
                     nsIFrame*         aPrevInFlow)
 {
-  Super::Init(aContent, aParent, aPrevInFlow);
+  nsContainerFrame::Init(aContent, aParent, aPrevInFlow);
 
   nsIFrame* parent = nsLayoutUtils::GetCrossDocParentFrame(this);
   if (parent) {
@@ -98,10 +99,15 @@ BuildDisplayListForTopLayerFrame(nsDisplayListBuilder* aBuilder,
                                  nsDisplayList* aList)
 {
   nsRect dirty;
+  DisplayListClipState::AutoClipMultiple clipState(aBuilder);
   nsDisplayListBuilder::OutOfFlowDisplayData*
     savedOutOfFlowData = nsDisplayListBuilder::GetOutOfFlowData(aFrame);
   if (savedOutOfFlowData) {
     dirty = savedOutOfFlowData->mDirtyRect;
+    clipState.SetClipForContainingBlockDescendants(
+      &savedOutOfFlowData->mContainingBlockClip);
+    clipState.SetScrollClipForContainingBlockDescendants(
+      savedOutOfFlowData->mContainingBlockScrollClip);
   }
   nsDisplayList list;
   aFrame->BuildDisplayListForStackingContext(aBuilder, dirty, &list);
@@ -139,7 +145,14 @@ ViewportFrame::BuildDisplayListForTopLayer(nsDisplayListBuilder* aBuilder,
                    "should always be out-of-flow if in the top layer");
         continue;
       }
-      MOZ_ASSERT(frame->GetParent() == this);
+      if (nsIFrame* backdropPh =
+          frame->GetChildList(kBackdropList).FirstChild()) {
+        MOZ_ASSERT(backdropPh->GetType() == nsGkAtoms::placeholderFrame);
+        nsIFrame* backdropFrame =
+          static_cast<nsPlaceholderFrame*>(backdropPh)->GetOutOfFlowFrame();
+        MOZ_ASSERT(backdropFrame);
+        BuildDisplayListForTopLayerFrame(aBuilder, backdropFrame, aList);
+      }
       BuildDisplayListForTopLayerFrame(aBuilder, frame, aList);
     }
   }
@@ -155,14 +168,6 @@ ViewportFrame::BuildDisplayListForTopLayer(nsDisplayListBuilder* aBuilder,
 }
 
 #ifdef DEBUG
-void
-ViewportFrame::SetInitialChildList(ChildListID     aListID,
-                                   nsFrameList&    aChildList)
-{
-  nsFrame::VerifyDirtyBitSet(aChildList);
-  nsContainerFrame::SetInitialChildList(aListID, aChildList);
-}
-
 void
 ViewportFrame::AppendFrames(ChildListID     aListID,
                             nsFrameList&    aFrameList)
@@ -350,10 +355,10 @@ ViewportFrame::Reflow(nsPresContext*           aPresContext,
     if (rootScrollFrame && !rootScrollFrame->IsIgnoringViewportClipping()) {
       overflowAreas = nullptr;
     }
+    AbsPosReflowFlags flags =
+      AbsPosReflowFlags::eCBWidthAndHeightChanged; // XXX could be optimized
     GetAbsoluteContainingBlock()->Reflow(this, aPresContext, reflowState, aStatus,
-                                         rect,
-                                         false, true, true, // XXX could be optimized
-                                         overflowAreas);
+                                         rect, flags, overflowAreas);
   }
 
   if (mFrames.NotEmpty()) {
@@ -384,7 +389,7 @@ ViewportFrame::Reflow(nsPresContext*           aPresContext,
 }
 
 bool
-ViewportFrame::UpdateOverflow()
+ViewportFrame::ComputeCustomOverflow(nsOverflowAreas& aOverflowAreas)
 {
   nsIScrollableFrame* rootScrollFrame =
     PresContext()->PresShell()->GetRootScrollFrameAsScrollable();
@@ -392,7 +397,7 @@ ViewportFrame::UpdateOverflow()
     return false;
   }
 
-  return nsFrame::UpdateOverflow();
+  return nsContainerFrame::ComputeCustomOverflow(aOverflowAreas);
 }
 
 nsIAtom*

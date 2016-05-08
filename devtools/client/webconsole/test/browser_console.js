@@ -1,7 +1,7 @@
-/*
- * Any copyright is dedicated to the Public Domain.
- * http://creativecommons.org/publicdomain/zero/1.0/
- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
+/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
+/* Any copyright is dedicated to the Public Domain.
+ * http://creativecommons.org/publicdomain/zero/1.0/ */
 
 // Test the basic features of the Browser Console, bug 587757.
 
@@ -9,12 +9,17 @@
 
 const TEST_URI = "http://example.com/browser/devtools/client/webconsole/" +
                  "test/test-console.html?" + Date.now();
+const TEST_FILE = "chrome://mochitests/content/browser/devtools/client/" +
+                  "webconsole/test/test-cu-reporterror.js";
 
 const TEST_XHR_ERROR_URI = `http://example.com/404.html?${Date.now()}`;
 
+const TEST_IMAGE = "http://example.com/browser/devtools/client/webconsole/" +
+                   "test/test-image.png";
+
 "use strict";
 
-var test = asyncTest(function*() {
+add_task(function*() {
   yield loadTab(TEST_URI);
 
   let opened = waitForConsole();
@@ -41,6 +46,10 @@ function consoleOpened(hud) {
   // Add a message from a chrome window.
   hud.iframeWindow.console.log("bug587757a");
 
+  // Check Cu.reportError stack.
+  // Use another js script to not depend on the test file line numbers.
+  Services.scriptloader.loadSubScript(TEST_FILE, hud.iframeWindow);
+
   // Add a message from a content window.
   content.console.log("bug587757b");
 
@@ -61,6 +70,9 @@ function consoleOpened(hud) {
   xhrErr.open("get", TEST_XHR_ERROR_URI, true);
   xhrErr.send();
 
+  // Check that Fetch requests are categorized as "XHR".
+  fetch(TEST_IMAGE).then(() => { console.log("fetch loaded"); });
+
   return waitForMessages({
     webconsole: hud,
     messages: [
@@ -69,6 +81,23 @@ function consoleOpened(hud) {
         text: "bug587757a",
         category: CATEGORY_WEBDEV,
         severity: SEVERITY_LOG,
+      },
+      {
+        name: "Cu.reportError is displayed",
+        text: "bug1141222",
+        category: CATEGORY_JS,
+        severity: SEVERITY_ERROR,
+        stacktrace: [{
+          file: TEST_FILE,
+          line: 2,
+        }, {
+          file: TEST_FILE,
+          line: 4,
+        },
+        // Ignore the rest of the stack,
+        // just assert Cu.reportError call site
+        // and consoleOpened call
+        ]
       },
       {
         name: "content window console.log() is displayed",
@@ -100,6 +129,13 @@ function consoleOpened(hud) {
         text: "404.html",
         category: CATEGORY_NETWORK,
         severity: SEVERITY_ERROR,
+        isXhr: true,
+      },
+      {
+        name: "network message",
+        text: "test-image.png",
+        category: CATEGORY_NETWORK,
+        severity: SEVERITY_INFO,
         isXhr: true,
       },
     ],

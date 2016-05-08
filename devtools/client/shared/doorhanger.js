@@ -5,11 +5,10 @@
 "use strict";
 
 const { Ci, Cc } = require("chrome");
-const { Services } = require("resource://gre/modules/Services.jsm");
+const Services = require("Services");
 const { DOMHelpers } = require("resource://devtools/client/shared/DOMHelpers.jsm");
 const { Task } = require("resource://gre/modules/Task.jsm");
 const { Promise } = require("resource://gre/modules/Promise.jsm");
-const { setTimeout } = require("sdk/timers");
 const { getMostRecentBrowserWindow } = require("sdk/window/utils");
 
 const XULNS = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";

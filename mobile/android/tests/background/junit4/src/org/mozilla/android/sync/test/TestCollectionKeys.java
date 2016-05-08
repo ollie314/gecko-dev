@@ -3,6 +3,22 @@
 
 package org.mozilla.android.sync.test;
 
+import org.json.simple.JSONArray;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.mozilla.apache.commons.codec.binary.Base64;
+import org.mozilla.gecko.background.testhelpers.TestRunner;
+import org.mozilla.gecko.sync.CollectionKeys;
+import org.mozilla.gecko.sync.CryptoRecord;
+import org.mozilla.gecko.sync.NoCollectionKeysSetException;
+import org.mozilla.gecko.sync.NonObjectJSONException;
+import org.mozilla.gecko.sync.crypto.CryptoException;
+import org.mozilla.gecko.sync.crypto.KeyBundle;
+
+import java.io.IOException;
+import java.util.Arrays;
+import java.util.Set;
+
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -10,24 +26,7 @@ import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
-import java.io.IOException;
-import java.util.Arrays;
-import java.util.Set;
-
-import org.json.simple.JSONArray;
-import org.json.simple.parser.ParseException;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.mozilla.apache.commons.codec.binary.Base64;
-import org.mozilla.gecko.sync.CollectionKeys;
-import org.mozilla.gecko.sync.CryptoRecord;
-import org.mozilla.gecko.sync.NoCollectionKeysSetException;
-import org.mozilla.gecko.sync.NonObjectJSONException;
-import org.mozilla.gecko.sync.crypto.CryptoException;
-import org.mozilla.gecko.sync.crypto.KeyBundle;
-import org.robolectric.RobolectricGradleTestRunner;
-
-@RunWith(RobolectricGradleTestRunner.class)
+@RunWith(TestRunner.class)
 public class TestCollectionKeys {
 
   @Test
@@ -71,7 +70,7 @@ public class TestCollectionKeys {
 
 
   @Test
-  public void testSetKeysFromWBO() throws IOException, ParseException, NonObjectJSONException, CryptoException, NoCollectionKeysSetException {
+  public void testSetKeysFromWBO() throws IOException, NonObjectJSONException, CryptoException, NoCollectionKeysSetException {
     String json = "{\"default\":[\"3fI6k1exImMgAKjilmMaAWxGqEIzFX/9K5EjEgH99vc=\",\"/AMaoCX4hzic28WY94XtokNi7N4T0nv+moS1y5wlbug=\"],\"collections\":{},\"collection\":\"crypto\",\"id\":\"keys\"}";
     CryptoRecord rec = new CryptoRecord(json);
 
@@ -87,7 +86,7 @@ public class TestCollectionKeys {
   }
 
   @Test
-  public void testCryptoRecordFromCollectionKeys() throws CryptoException, NoCollectionKeysSetException, IOException, ParseException, NonObjectJSONException {
+  public void testCryptoRecordFromCollectionKeys() throws CryptoException, NoCollectionKeysSetException, IOException, NonObjectJSONException {
     CollectionKeys ck1 = CollectionKeys.generateCollectionKeys();
     assertNotNull(ck1.defaultKeyBundle());
     assertEquals(ck1.keyBundleForCollection("foobar"), ck1.defaultKeyBundle());
@@ -103,7 +102,7 @@ public class TestCollectionKeys {
   }
 
   @Test
-  public void testCreateKeysBundle() throws CryptoException, NonObjectJSONException, IOException, ParseException, NoCollectionKeysSetException {
+  public void testCreateKeysBundle() throws CryptoException, NonObjectJSONException, IOException, NoCollectionKeysSetException {
     String username =                       "b6evr62dptbxz7fvebek7btljyu322wp";
     String friendlyBase32SyncKey =          "basuxv2426eqj7frhvpcwkavdi";
 

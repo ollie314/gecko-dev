@@ -1,7 +1,10 @@
 import argparse
 import os
+import sys
 from collections import OrderedDict
 from urlparse import urlparse
+
+import mozlog
 
 here = os.path.abspath(os.path.dirname(__file__))
 
@@ -127,6 +130,18 @@ class ReftestArgumentsParser(argparse.ArgumentParser):
                           "the extension's id as indicated in its install.rdf. "
                           "An optional path can be specified too.")
 
+        self.add_argument("--marionette",
+                          default=None,
+                          help="host:port to use when connecting to Marionette")
+
+        self.add_argument("--marionette-port-timeout",
+                          default=None,
+                          help=argparse.SUPPRESS)
+
+        self.add_argument("--marionette-socket-timeout",
+                          default=None,
+                          help=argparse.SUPPRESS)
+
         self.add_argument("--setenv",
                           action="append",
                           type=str,
@@ -150,6 +165,20 @@ class ReftestArgumentsParser(argparse.ArgumentParser):
                           dest="shuffle",
                           help="run reftests in random order")
 
+        self.add_argument("--run-until-failure",
+                          action="store_true",
+                          default=False,
+                          dest="runUntilFailure",
+                          help="stop running on the first failure. Useful for RR recordings.")
+
+        self.add_argument("--repeat",
+                          action="store",
+                          type=int,
+                          default=0,
+                          dest="repeat",
+                          help="number of times the select test(s) will be executed. Useful for "
+                          "finding intermittent failures.")
+
         self.add_argument("--focus-filter-mode",
                           action="store",
                           type=str,
@@ -159,11 +188,11 @@ class ReftestArgumentsParser(argparse.ArgumentParser):
                           "Valid values are `all', `needs-focus', or `non-needs-focus'. "
                           "Defaults to `all'.")
 
-        self.add_argument("--e10s",
-                          action="store_true",
-                          default=False,
+        self.add_argument("--disable-e10s",
+                          action="store_false",
+                          default=True,
                           dest="e10s",
-                          help="enables content processes")
+                          help="disables content processes")
 
         self.add_argument("--setpref",
                           action="append",
@@ -193,6 +222,8 @@ class ReftestArgumentsParser(argparse.ArgumentParser):
                           nargs="*",
                           help="Path to test file, manifest file, or directory containing tests")
 
+        mozlog.commandline.add_logging_group(self)
+
     def get_ip(self):
         import moznetwork
         if os.name != "nt":
@@ -221,8 +252,6 @@ class ReftestArgumentsParser(argparse.ArgumentParser):
         self.error("Failed to determine test suite; supply --suite to set this explicitly")
 
     def validate(self, options, reftest):
-        import sys
-
         if not options.tests:
             # Can't just set this in the argument parser because mach will set a default
             self.error("Must supply at least one path to a manifest file, test directory, or test file to run.")
@@ -251,19 +280,20 @@ class ReftestArgumentsParser(argparse.ArgumentParser):
 
         if options.reftestExtensionPath is None:
             if self.build_obj is not None:
-                options.reftestExtensionPath = os.path.join(self.build_obj.topobjdir, "_tests",
-                                                            "reftest", "reftest")
+                reftestExtensionPath = os.path.join(self.build_obj.topobjdir, "_tests",
+                                                    "reftest", "reftest")
             else:
-                options.reftestExtensionPath = os.path.join(here, "reftest")
+                reftestExtensionPath = os.path.join(here, "reftest")
+            options.reftestExtensionPath = os.path.normpath(reftestExtensionPath)
 
         if (options.specialPowersExtensionPath is None and
             options.suite in ["crashtest", "jstestbrowser"]):
             if self.build_obj is not None:
-                options.specialPowersExtensionPath = os.path.join(self.build_obj.topobjdir, "_tests",
-                                                                  "reftest", "specialpowers")
+                specialPowersExtensionPath = os.path.join(self.build_obj.topobjdir, "_tests",
+                                                          "reftest", "specialpowers")
             else:
-                options.specialPowersExtensionPath = os.path.join(
-                    here, "specialpowers")
+                specialPowersExtensionPath = os.path.join(here, "specialpowers")
+            options.specialPowersExtensionPath = os.path.normpath(specialPowersExtensionPath)
 
         options.leakThresholds = {
             "default": options.defaultLeakThreshold,
@@ -319,6 +349,12 @@ class DesktopArgumentsParser(ReftestArgumentsParser):
             if options.debugger is not None:
                 self.error("cannot specify a debugger with parallel tests")
 
+        if options.debugger:
+            # valgrind and some debuggers may cause Gecko to start slowly. Make sure
+            # marionette waits long enough to connect.
+            options.marionette_port_timeout = 900
+            options.marionette_socket_timeout = 540
+
         if not options.tests:
             self.error("No test files specified.")
 
@@ -364,12 +400,6 @@ class B2GArgumentParser(ReftestArgumentsParser):
                           type=str,
                           dest="b2gPath",
                           help="path to B2G repo or qemu dir")
-
-        self.add_argument("--marionette",
-                          action="store",
-                          type=str,
-                          dest="marionette",
-                          help="host:port to use when connecting to Marionette")
 
         self.add_argument("--emulator",
                           action="store",
@@ -469,14 +499,8 @@ class B2GArgumentParser(ReftestArgumentsParser):
                           action="store",
                           type=str,
                           dest="profile",
-                          help="for desktop testing, the path to the "
+                          help="for mulet testing, the path to the "
                           "gaia profile to use")
-
-        self.add_argument("--desktop",
-                          action="store_true",
-                          dest="desktop",
-                          default=False,
-                          help="Run the tests on a B2G desktop build")
 
         self.add_argument("--mulet",
                           action="store_true",
@@ -639,12 +663,6 @@ class RemoteArgumentsParser(ReftestArgumentsParser):
                           default="",
                           help="name of the pidfile to generate")
 
-        self.add_argument("--bootstrap",
-                          action="store_true",
-                          dest="bootstrap",
-                          default=False,
-                          help="test with a bootstrap addon required for native Fennec")
-
         self.add_argument("--dm_trans",
                           action="store",
                           type=str,
@@ -744,3 +762,8 @@ class RemoteArgumentsParser(ReftestArgumentsParser):
             if (width < 1366 or height < 1050):
                 self.error("ERROR: Invalid screen resolution %sx%s, please adjust to 1366x1050 or higher" % (
                     width, height))
+
+        # Disable e10s by default on Android because we don't run Android
+        # e10s jobs anywhere yet.
+        options.e10s = False
+        return options

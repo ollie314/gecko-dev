@@ -78,7 +78,16 @@ function TestCase(n, d, e, a)
   this.reason = '';
   this.bugnumber = typeof(BUGNUMER) != 'undefined' ? BUGNUMBER : '';
   this.type = (typeof window == 'undefined' ? 'shell' : 'browser');
-  gTestcases[gTc++] = this;
+  ({}).constructor.defineProperty(
+    gTestcases,
+    gTc++,
+    {
+      value: this,
+      enumerable: true,
+      configurable: true,
+      writable: true
+    }
+  );
 }
 
 gFailureExpected = false;
@@ -370,6 +379,40 @@ function enterFunc (funcName)
     funcName += "()";
 
   callStack.push(funcName);
+}
+
+/*
+ * An xorshift pseudo-random number generator see:
+ * https://en.wikipedia.org/wiki/Xorshift#xorshift.2A
+ * This generator will always produce a value, n, where
+ * 0 <= n <= 255
+ */
+function *XorShiftGenerator(seed, size) {
+    let x = seed;
+    for (let i = 0; i < size; i++) {
+        x ^= x >> 12;
+        x ^= x << 25;
+        x ^= x >> 27;
+        yield x % 256;
+    }
+}
+
+/*
+ * Yield every permutation of the elements in some iterable.
+ */
+function *Permutations(items) {
+    if (items.length == 0) {
+        yield [];
+    } else {
+        let swap;
+        for (let i = 0; i < items.length; i++) {
+            swap = items[0];
+            items[0] = items[i];
+            items[i] = swap;
+            for (let e of Permutations(items.slice(1, items.length)))
+                yield [items[0]].concat(e);
+        }
+    }
 }
 
 /*

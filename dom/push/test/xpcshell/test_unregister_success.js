@@ -29,7 +29,6 @@ add_task(function* test_unregister_success() {
   let unregisterPromise = new Promise(resolve => unregisterDone = resolve);
   PushService.init({
     serverURI: "wss://push.example.org/",
-    networkInfo: new MockDesktopNetworkInfo(),
     db,
     makeWebSocket(uri) {
       return new MockWebSocket(uri, {
@@ -42,6 +41,7 @@ add_task(function* test_unregister_success() {
         },
         onUnregister(request) {
           equal(request.channelID, channelID, 'Should include the channel ID');
+          equal(request.code, 200, 'Expected manual unregister reason');
           this.serverSendMsg(JSON.stringify({
             messageType: 'unregister',
             status: 200,
@@ -53,11 +53,12 @@ add_task(function* test_unregister_success() {
     }
   });
 
-  yield PushNotificationService.unregister(
-    'https://example.com/page/unregister-success', '');
+  yield PushService.unregister({
+    scope: 'https://example.com/page/unregister-success',
+    originAttributes: '',
+  });
   let record = yield db.getByKeyID(channelID);
   ok(!record, 'Unregister did not remove record');
 
-  yield waitForPromise(unregisterPromise, DEFAULT_TIMEOUT,
-    'Timed out waiting for unregister');
+  yield unregisterPromise;
 });

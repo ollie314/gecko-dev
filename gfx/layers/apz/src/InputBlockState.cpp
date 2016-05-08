@@ -6,8 +6,11 @@
 
 #include "InputBlockState.h"
 #include "AsyncPanZoomController.h"         // for AsyncPanZoomController
+#include "AsyncScrollBase.h"                // for kScrollSeriesTimeoutMs
 #include "gfxPrefs.h"                       // for gfxPrefs
+#include "mozilla/MouseEvents.h"
 #include "mozilla/SizePrintfMacros.h"       // for PRIuSIZE
+#include "mozilla/Telemetry.h"              // for Telemetry
 #include "mozilla/layers/APZCTreeManager.h" // for AllowedTouchBehavior
 #include "OverscrollHandoffState.h"
 
@@ -22,7 +25,8 @@ static uint64_t sBlockCounter = InputBlockState::NO_BLOCK_ID + 1;
 InputBlockState::InputBlockState(const RefPtr<AsyncPanZoomController>& aTargetApzc,
                                  bool aTargetConfirmed)
   : mTargetApzc(aTargetApzc)
-  , mTargetConfirmed(aTargetConfirmed)
+  , mTargetConfirmed(aTargetConfirmed ? TargetConfirmationState::eConfirmed
+                                      : TargetConfirmationState::eUnconfirmed)
   , mBlockId(sBlockCounter++)
   , mTransformToApzc(aTargetApzc->GetTransformToThis())
 {
@@ -32,12 +36,23 @@ InputBlockState::InputBlockState(const RefPtr<AsyncPanZoomController>& aTargetAp
 }
 
 bool
-InputBlockState::SetConfirmedTargetApzc(const RefPtr<AsyncPanZoomController>& aTargetApzc)
+InputBlockState::SetConfirmedTargetApzc(const RefPtr<AsyncPanZoomController>& aTargetApzc,
+                                        TargetConfirmationState aState)
 {
-  if (mTargetConfirmed) {
+  MOZ_ASSERT(aState == TargetConfirmationState::eConfirmed
+          || aState == TargetConfirmationState::eTimedOut);
+
+  if (mTargetConfirmed == TargetConfirmationState::eTimedOut &&
+      aState == TargetConfirmationState::eConfirmed) {
+    // The main thread finally responded. We had already timed out the
+    // confirmation, but we want to update the state internally so that we
+    // can record the time for telemetry purposes.
+    mTargetConfirmed = TargetConfirmationState::eTimedOutAndMainThreadResponded;
+  }
+  if (mTargetConfirmed != TargetConfirmationState::eUnconfirmed) {
     return false;
   }
-  mTargetConfirmed = true;
+  mTargetConfirmed = aState;
 
   TBS_LOG("%p got confirmed target APZC %p\n", this, mTargetApzc.get());
   if (mTargetApzc == aTargetApzc) {
@@ -57,7 +72,7 @@ InputBlockState::UpdateTargetApzc(const RefPtr<AsyncPanZoomController>& aTargetA
 {
   // note that aTargetApzc MAY be null here.
   mTargetApzc = aTargetApzc;
-  mTransformToApzc = aTargetApzc ? aTargetApzc->GetTransformToThis() : gfx::Matrix4x4();
+  mTransformToApzc = aTargetApzc ? aTargetApzc->GetTransformToThis() : ScreenToParentLayerMatrix4x4();
   mOverscrollHandoffChain = (mTargetApzc ? mTargetApzc->BuildOverscrollHandoffChain() : nullptr);
 }
 
@@ -82,7 +97,58 @@ InputBlockState::GetBlockId() const
 bool
 InputBlockState::IsTargetConfirmed() const
 {
-  return mTargetConfirmed;
+  return mTargetConfirmed != TargetConfirmationState::eUnconfirmed;
+}
+
+bool
+InputBlockState::HasReceivedRealConfirmedTarget() const
+{
+  return mTargetConfirmed == TargetConfirmationState::eConfirmed ||
+         mTargetConfirmed == TargetConfirmationState::eTimedOutAndMainThreadResponded;
+}
+
+bool
+InputBlockState::IsDownchainOf(AsyncPanZoomController* aA, AsyncPanZoomController* aB) const
+{
+  if (aA == aB) {
+    return true;
+  }
+
+  bool seenA = false;
+  for (size_t i = 0; i < mOverscrollHandoffChain->Length(); ++i) {
+    AsyncPanZoomController* apzc = mOverscrollHandoffChain->GetApzcAtIndex(i);
+    if (apzc == aB) {
+      return seenA;
+    }
+    if (apzc == aA) {
+      seenA = true;
+    }
+  }
+  return false;
+}
+
+
+void
+InputBlockState::SetScrolledApzc(AsyncPanZoomController* aApzc)
+{
+  // An input block should only have one scrolled APZC.
+  MOZ_ASSERT(!mScrolledApzc || (gfxPrefs::APZAllowImmediateHandoff() ? IsDownchainOf(mScrolledApzc, aApzc) : mScrolledApzc == aApzc));
+
+  mScrolledApzc = aApzc;
+}
+
+AsyncPanZoomController*
+InputBlockState::GetScrolledApzc() const
+{
+  return mScrolledApzc;
+}
+
+bool
+InputBlockState::IsDownchainOfScrolledApzc(AsyncPanZoomController* aApzc) const
+{
+  MOZ_ASSERT(aApzc && mScrolledApzc);
+
+  return IsDownchainOf(mScrolledApzc, aApzc);
 }
 
 CancelableBlockState::CancelableBlockState(const RefPtr<AsyncPanZoomController>& aTargetApzc,
@@ -102,11 +168,16 @@ CancelableBlockState::SetContentResponse(bool aPreventDefault)
   }
   TBS_LOG("%p got content response %d with timer expired %d\n",
     this, aPreventDefault, mContentResponseTimerExpired);
-  if (!mContentResponseTimerExpired) {
-    mPreventDefault = aPreventDefault;
-  }
+  mPreventDefault = aPreventDefault;
   mContentResponded = true;
   return true;
+}
+
+void
+CancelableBlockState::StartContentResponseTimer()
+{
+  MOZ_ASSERT(mContentResponseTimer.IsNull());
+  mContentResponseTimer = TimeStamp::Now();
 }
 
 bool
@@ -138,6 +209,12 @@ CancelableBlockState::IsDefaultPrevented() const
 }
 
 bool
+CancelableBlockState::HasReceivedAllContentNotifications() const
+{
+  return HasReceivedRealConfirmedTarget() && mContentResponded;
+}
+
+bool
 CancelableBlockState::IsReadyForHandling() const
 {
   if (!IsTargetConfirmed()) {
@@ -160,6 +237,104 @@ CancelableBlockState::DispatchEvent(const InputData& aEvent) const
   GetTargetApzc()->HandleInputEvent(aEvent, mTransformToApzc);
 }
 
+void
+CancelableBlockState::RecordContentResponseTime()
+{
+  if (!mContentResponseTimer) {
+    // We might get responses from content even though we didn't wait for them.
+    // In that case, ignore the time on them, because they're not relevant for
+    // tuning our timeout value. Also this function might get called multiple
+    // times on the same input block, so we should only record the time from the
+    // first successful call.
+    return;
+  }
+  if (!HasReceivedAllContentNotifications()) {
+    // Not done yet, we'll get called again
+    return;
+  }
+  mozilla::Telemetry::Accumulate(mozilla::Telemetry::CONTENT_RESPONSE_DURATION,
+    (uint32_t)(TimeStamp::Now() - mContentResponseTimer).ToMilliseconds());
+  mContentResponseTimer = TimeStamp();
+}
+
+DragBlockState::DragBlockState(const RefPtr<AsyncPanZoomController>& aTargetApzc,
+                               bool aTargetConfirmed,
+                               const MouseInput& aInitialEvent)
+  : CancelableBlockState(aTargetApzc, aTargetConfirmed)
+  , mReceivedMouseUp(false)
+{
+}
+
+bool
+DragBlockState::HasReceivedMouseUp()
+{
+  return mReceivedMouseUp;
+}
+
+void
+DragBlockState::MarkMouseUpReceived()
+{
+  mReceivedMouseUp = true;
+}
+
+void
+DragBlockState::SetDragMetrics(const AsyncDragMetrics& aDragMetrics)
+{
+  mDragMetrics = aDragMetrics;
+}
+
+void
+DragBlockState::DispatchEvent(const InputData& aEvent) const
+{
+  MouseInput mouseInput = aEvent.AsMouseInput();
+  if (!mouseInput.TransformToLocal(mTransformToApzc)) {
+    return;
+  }
+
+  GetTargetApzc()->HandleDragEvent(mouseInput, mDragMetrics);
+}
+
+void
+DragBlockState::AddEvent(const MouseInput& aEvent)
+{
+  mEvents.AppendElement(aEvent);
+}
+
+bool
+DragBlockState::HasEvents() const
+{
+  return !mEvents.IsEmpty();
+}
+
+void
+DragBlockState::DropEvents()
+{
+  TBS_LOG("%p dropping %" PRIuSIZE " events\n", this, mEvents.Length());
+  mEvents.Clear();
+}
+
+void
+DragBlockState::HandleEvents()
+{
+  while (HasEvents()) {
+    TBS_LOG("%p returning first of %" PRIuSIZE " events\n", this, mEvents.Length());
+    MouseInput event = mEvents[0];
+    mEvents.RemoveElementAt(0);
+    DispatchEvent(event);
+  }
+}
+
+bool
+DragBlockState::MustStayActive()
+{
+  return !mReceivedMouseUp;
+}
+
+const char*
+DragBlockState::Type()
+{
+  return "drag";
+}
 // This is used to track the current wheel transaction.
 static uint64_t sLastWheelBlockId = InputBlockState::NO_BLOCK_ID;
 
@@ -167,6 +342,7 @@ WheelBlockState::WheelBlockState(const RefPtr<AsyncPanZoomController>& aTargetAp
                                  bool aTargetConfirmed,
                                  const ScrollWheelInput& aInitialEvent)
   : CancelableBlockState(aTargetApzc, aTargetConfirmed)
+  , mScrollSeriesCounter(0)
   , mTransactionEnded(false)
 {
   sLastWheelBlockId = GetBlockId();
@@ -202,7 +378,8 @@ WheelBlockState::SetContentResponse(bool aPreventDefault)
 }
 
 bool
-WheelBlockState::SetConfirmedTargetApzc(const RefPtr<AsyncPanZoomController>& aTargetApzc)
+WheelBlockState::SetConfirmedTargetApzc(const RefPtr<AsyncPanZoomController>& aTargetApzc,
+                                        TargetConfirmationState aState)
 {
   // The APZC that we find via APZCCallbackHelpers may not be the same APZC
   // ESM or OverscrollHandoff would have computed. Make sure we get the right
@@ -213,18 +390,30 @@ WheelBlockState::SetConfirmedTargetApzc(const RefPtr<AsyncPanZoomController>& aT
     apzc = apzc->BuildOverscrollHandoffChain()->FindFirstScrollable(event);
   }
 
-  InputBlockState::SetConfirmedTargetApzc(apzc);
+  InputBlockState::SetConfirmedTargetApzc(apzc, aState);
   return true;
 }
 
 void
-WheelBlockState::Update(const ScrollWheelInput& aEvent)
+WheelBlockState::Update(ScrollWheelInput& aEvent)
 {
   // We might not be in a transaction if the block never started in a
   // transaction - for example, if nothing was scrollable.
   if (!InTransaction()) {
     return;
   }
+
+  // The current "scroll series" is a like a sub-transaction. It has a separate
+  // timeout of 80ms. Since we need to compute wheel deltas at different phases
+  // of a transaction (for example, when it is updated, and later when the
+  // event action is taken), we affix the scroll series counter to the event.
+  // This makes GetScrollWheelDelta() consistent.
+  if (!mLastEventTime.IsNull() &&
+      (aEvent.mTimeStamp - mLastEventTime).ToMilliseconds() > kScrollSeriesTimeoutMs)
+  {
+    mScrollSeriesCounter = 0;
+  }
+  aEvent.mScrollSeriesNumber = ++mScrollSeriesCounter;
 
   // If we can't scroll in the direction of the wheel event, we don't update
   // the last move time. This allows us to timeout a transaction even if the
@@ -248,15 +437,6 @@ void
 WheelBlockState::AddEvent(const ScrollWheelInput& aEvent)
 {
   mEvents.AppendElement(aEvent);
-}
-
-bool
-WheelBlockState::IsReadyForHandling() const
-{
-  if (!CancelableBlockState::IsReadyForHandling()) {
-    return false;
-  }
-  return true;
 }
 
 bool
@@ -443,7 +623,8 @@ PanGestureBlockState::PanGestureBlockState(const RefPtr<AsyncPanZoomController>&
 }
 
 bool
-PanGestureBlockState::SetConfirmedTargetApzc(const RefPtr<AsyncPanZoomController>& aTargetApzc)
+PanGestureBlockState::SetConfirmedTargetApzc(const RefPtr<AsyncPanZoomController>& aTargetApzc,
+                                             TargetConfirmationState aState)
 {
   // The APZC that we find via APZCCallbackHelpers may not be the same APZC
   // ESM or OverscrollHandoff would have computed. Make sure we get the right
@@ -458,7 +639,7 @@ PanGestureBlockState::SetConfirmedTargetApzc(const RefPtr<AsyncPanZoomController
     }
   }
 
-  InputBlockState::SetConfirmedTargetApzc(apzc);
+  InputBlockState::SetConfirmedTargetApzc(apzc, aState);
   return true;
 }
 
@@ -508,6 +689,7 @@ bool
 PanGestureBlockState::SetContentResponse(bool aPreventDefault)
 {
   if (aPreventDefault) {
+    TBS_LOG("%p setting interrupted flag\n", this);
     mInterrupted = true;
   }
   bool stateChanged = CancelableBlockState::SetContentResponse(aPreventDefault);
@@ -516,6 +698,13 @@ PanGestureBlockState::SetContentResponse(bool aPreventDefault)
     stateChanged = true;
   }
   return stateChanged;
+}
+
+bool
+PanGestureBlockState::HasReceivedAllContentNotifications() const
+{
+  return CancelableBlockState::HasReceivedAllContentNotifications()
+      && !mWaitingForContentResponse;
 }
 
 bool
@@ -546,6 +735,7 @@ TouchBlockState::TouchBlockState(const RefPtr<AsyncPanZoomController>& aTargetAp
   , mAllowedTouchBehaviorSet(false)
   , mDuringFastFling(false)
   , mSingleTapOccurred(false)
+  , mInSlop(false)
   , mTouchCounter(aCounter)
 {
   TBS_LOG("Creating %p\n", this);
@@ -585,6 +775,13 @@ TouchBlockState::CopyPropertiesFrom(const TouchBlockState& aOther)
 }
 
 bool
+TouchBlockState::HasReceivedAllContentNotifications() const
+{
+  return CancelableBlockState::HasReceivedAllContentNotifications()
+      && (!gfxPrefs::TouchActionEnabled() || mAllowedTouchBehaviorSet);
+}
+
+bool
 TouchBlockState::IsReadyForHandling() const
 {
   if (!CancelableBlockState::IsReadyForHandling()) {
@@ -611,16 +808,11 @@ TouchBlockState::IsDuringFastFling() const
   return mDuringFastFling;
 }
 
-bool
+void
 TouchBlockState::SetSingleTapOccurred()
 {
-  TBS_LOG("%p attempting to set single-tap occurred; disallowed=%d\n",
-    this, mDuringFastFling);
-  if (!mDuringFastFling) {
-    mSingleTapOccurred = true;
-    return true;
-  }
-  return false;
+  TBS_LOG("%p setting single-tap-occurred flag\n", this);
+  mSingleTapOccurred = true;
 }
 
 bool
@@ -750,6 +942,43 @@ TouchBlockState::TouchActionAllowsPanningXY() const
   TouchBehaviorFlags flags = mAllowedTouchBehaviors[0];
   return (flags & AllowedTouchBehavior::HORIZONTAL_PAN)
       && (flags & AllowedTouchBehavior::VERTICAL_PAN);
+}
+
+bool
+TouchBlockState::UpdateSlopState(const MultiTouchInput& aInput,
+                                 bool aApzcCanConsumeEvents)
+{
+  if (aInput.mType == MultiTouchInput::MULTITOUCH_START) {
+    // this is by definition the first event in this block. If it's the first
+    // touch, then we enter a slop state.
+    mInSlop = (aInput.mTouches.Length() == 1);
+    if (mInSlop) {
+      mSlopOrigin = aInput.mTouches[0].mScreenPoint;
+      TBS_LOG("%p entering slop with origin %s\n", this, Stringify(mSlopOrigin).c_str());
+    }
+    return false;
+  }
+  if (mInSlop) {
+    ScreenCoord threshold = aApzcCanConsumeEvents
+        ? AsyncPanZoomController::GetTouchStartTolerance()
+        : ScreenCoord(gfxPrefs::APZTouchMoveTolerance() * APZCTreeManager::GetDPI());
+    bool stayInSlop = (aInput.mType == MultiTouchInput::MULTITOUCH_MOVE) &&
+        (aInput.mTouches.Length() == 1) &&
+        ((aInput.mTouches[0].mScreenPoint - mSlopOrigin).Length() < threshold);
+    if (!stayInSlop) {
+      // we're out of the slop zone, and will stay out for the remainder of
+      // this block
+      TBS_LOG("%p exiting slop\n", this);
+      mInSlop = false;
+    }
+  }
+  return mInSlop;
+}
+
+uint32_t
+TouchBlockState::GetActiveTouchCount() const
+{
+  return mTouchCounter.GetActiveTouchCount();
 }
 
 } // namespace layers

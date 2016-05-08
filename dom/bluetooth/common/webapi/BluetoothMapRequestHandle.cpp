@@ -26,7 +26,7 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(BluetoothMapRequestHandle)
   NS_INTERFACE_MAP_ENTRY(nsISupports)
 NS_INTERFACE_MAP_END
 
-BluetoothMapRequestHandle::BluetoothMapRequestHandle(nsPIDOMWindow* aOwner)
+BluetoothMapRequestHandle::BluetoothMapRequestHandle(nsPIDOMWindowInner* aOwner)
   : mOwner(aOwner)
 {
   MOZ_ASSERT(aOwner);
@@ -37,7 +37,7 @@ BluetoothMapRequestHandle::~BluetoothMapRequestHandle()
 }
 
 already_AddRefed<BluetoothMapRequestHandle>
-BluetoothMapRequestHandle::Create(nsPIDOMWindow* aOwner)
+BluetoothMapRequestHandle::Create(nsPIDOMWindowInner* aOwner)
 {
   MOZ_ASSERT(aOwner);
 
@@ -66,20 +66,8 @@ BluetoothMapRequestHandle::ReplyToFolderListing(long aMasId,
     return nullptr;
   }
 
-  if (XRE_GetProcessType() == GeckoProcessType_Default) {
-    // In-process reply
-    bs->ReplyToMapFolderListing(aMasId, aFolderlists,
-      new BluetoothVoidReplyRunnable(nullptr, promise));
-  } else {
-    ContentChild *cc = ContentChild::GetSingleton();
-    if (!cc) {
-      aRv.Throw(NS_ERROR_FAILURE);
-      return nullptr;
-    }
-
-    bs->ReplyToMapFolderListing(aMasId, aFolderlists,
-      new BluetoothVoidReplyRunnable(nullptr, promise));
-  }
+  bs->ReplyToMapFolderListing(aMasId, aFolderlists,
+    new BluetoothVoidReplyRunnable(nullptr, promise));
 
   return promise.forget();
 }
@@ -202,6 +190,7 @@ BluetoothMapRequestHandle::ReplyToSetMessageStatus(long aMasId,
 
 already_AddRefed<Promise>
 BluetoothMapRequestHandle::ReplyToSendMessage(long aMasId,
+                                              const nsAString& aHandleId,
                                               bool aStatus,
                                               ErrorResult& aRv)
 {
@@ -220,7 +209,7 @@ BluetoothMapRequestHandle::ReplyToSendMessage(long aMasId,
     return nullptr;
   }
 
-  bs->ReplyToMapSendMessage(aMasId, aStatus,
+  bs->ReplyToMapSendMessage(aMasId, aHandleId, aStatus,
     new BluetoothVoidReplyRunnable(nullptr, promise));
 
   return promise.forget();

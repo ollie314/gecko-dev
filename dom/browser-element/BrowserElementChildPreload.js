@@ -19,8 +19,17 @@ Cu.import("resource://gre/modules/ExtensionContent.jsm");
 XPCOMUtils.defineLazyServiceGetter(this, "acs",
                                    "@mozilla.org/audiochannel/service;1",
                                    "nsIAudioChannelService");
+XPCOMUtils.defineLazyModuleGetter(this, "ManifestFinder",
+                                  "resource://gre/modules/ManifestFinder.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "ManifestObtainer",
+                                  "resource://gre/modules/ManifestObtainer.jsm");
+
 
 var kLongestReturnedString = 128;
+
+const Timer = Components.Constructor("@mozilla.org/timer;1",
+                                     "nsITimer",
+                                     "initWithCallback");
 
 function debug(msg) {
   //dump("BrowserElementChildPreload - " + msg + "\n");
@@ -60,17 +69,9 @@ const OBSERVED_EVENTS = [
   'xpcom-shutdown',
   'audio-playback',
   'activity-done',
-  'invalid-widget'
+  'invalid-widget',
+  'will-launch-app'
 ];
-
-const COMMAND_MAP = {
-  'cut': 'cmd_cut',
-  'copy': 'cmd_copyAndCollapseToEnd',
-  'copyImage': 'cmd_copyImage',
-  'copyLink': 'cmd_copyLink',
-  'paste': 'cmd_paste',
-  'selectall': 'cmd_selectAll'
-};
 
 /**
  * The BrowserElementChild implements one half of <iframe mozbrowser>.
@@ -134,7 +135,6 @@ function BrowserElementChild() {
 
   this._isContentWindowCreated = false;
   this._pendingSetInputMethodActive = [];
-  this._selectionStateChangedTarget = null;
 
   this.forwarder = new BrowserElementProxyForwarder();
 
@@ -157,9 +157,11 @@ BrowserElementChild.prototype = {
                                  Ci.nsIWebProgress.NOTIFY_SECURITY |
                                  Ci.nsIWebProgress.NOTIFY_STATE_WINDOW);
 
-    docShell.QueryInterface(Ci.nsIWebNavigation)
-            .sessionHistory = Cc["@mozilla.org/browser/shistory;1"]
-                                .createInstance(Ci.nsISHistory);
+    let webNavigation = docShell.QueryInterface(Ci.nsIWebNavigation);
+    if (!webNavigation.sessionHistory) {
+      webNavigation.sessionHistory = Cc["@mozilla.org/browser/shistory;1"]
+                                       .createInstance(Ci.nsISHistory);
+    }
 
     // This is necessary to get security web progress notifications.
     var securityUI = Cc['@mozilla.org/secure_browser_ui;1']
@@ -219,11 +221,6 @@ BrowserElementChild.prototype = {
                      /* useCapture = */ true,
                      /* wantsUntrusted = */ false);
 
-    addEventListener('mozselectionstatechanged',
-                     this._selectionStateChangedHandler.bind(this),
-                     /* useCapture = */ true,
-                     /* wantsUntrusted = */ false);
-
     addEventListener('scrollviewchange',
                      this._ScrollViewChangeHandler.bind(this),
                      /* useCapture = */ true,
@@ -279,7 +276,6 @@ BrowserElementChild.prototype = {
       "activate-next-paint-listener": this._activateNextPaintListener.bind(this),
       "set-input-method-active": this._recvSetInputMethodActive.bind(this),
       "deactivate-next-paint-listener": this._deactivateNextPaintListener.bind(this),
-      "do-command": this._recvDoCommand,
       "find-all": this._recvFindAll.bind(this),
       "find-next": this._recvFindNext.bind(this),
       "clear-match": this._recvClearMatch.bind(this),
@@ -289,7 +285,8 @@ BrowserElementChild.prototype = {
       "get-audio-channel-muted": this._recvGetAudioChannelMuted,
       "set-audio-channel-muted": this._recvSetAudioChannelMuted,
       "get-is-audio-channel-active": this._recvIsAudioChannelActive,
-      "get-structured-data": this._recvGetStructuredData
+      "get-structured-data": this._recvGetStructuredData,
+      "get-web-manifest": this._recvGetWebManifest,
     }
 
     addMessageListener("browser-element-api:call", function(aMessage) {
@@ -326,11 +323,14 @@ BrowserElementChild.prototype = {
     this.forwarder.init();
   },
 
+  _paintFrozenTimer: null,
   observe: function(subject, topic, data) {
     // Ignore notifications not about our document.  (Note that |content| /can/
     // be null; see bug 874900.)
 
-    if (topic !== 'activity-done' && topic !== 'audio-playback' &&
+    if (topic !== 'activity-done' &&
+        topic !== 'audio-playback' &&
+        topic !== 'will-launch-app' &&
         (!content || subject !== content.document)) {
       return;
     }
@@ -351,7 +351,29 @@ BrowserElementChild.prototype = {
       case 'invalid-widget':
         sendAsyncMsg('error', { type: 'invalid-widget' });
         break;
+      case 'will-launch-app':
+        // If the launcher is not visible, let's ignore the message.
+        if (!docShell.isActive) {
+          return;
+        }
+
+        // If this is not a content process, let's not freeze painting.
+        if (Services.appinfo.processType != Services.appinfo.PROCESS_TYPE_CONTENT) {
+          return;
+        }
+
+        docShell.contentViewer.pausePainting();
+
+        this._paintFrozenTimer && this._paintFrozenTimer.cancel();
+        this._paintFrozenTimer = new Timer(this, 3000, Ci.nsITimer.TYPE_ONE_SHOT);
+        break;
     }
+  },
+
+  notify: function(timer) {
+    docShell.contentViewer.resumePainting();
+    this._paintFrozenTimer.cancel();
+    this._paintFrozenTimer = null;
   },
 
   /**
@@ -405,15 +427,6 @@ BrowserElementChild.prototype = {
         args.promptType == 'custom-prompt') {
       return returnValue;
     }
-  },
-
-  _isCommandEnabled: function(cmd) {
-    let command = COMMAND_MAP[cmd];
-    if (!command) {
-      return false;
-    }
-
-    return docShell.isCommandEnabled(command);
   },
 
   /**
@@ -519,7 +532,7 @@ BrowserElementChild.prototype = {
 
   _recvEnteredFullscreen: function() {
     if (!this._windowUtils.handleFullscreenRequests() &&
-        !content.document.mozFullScreen) {
+        !content.document.fullscreenElement) {
       // If we don't actually have any pending fullscreen request
       // to handle, neither we have been in fullscreen, tell the
       // parent to just exit.
@@ -591,6 +604,7 @@ BrowserElementChild.prototype = {
     let handlers = {
       'icon': this._iconChangedHandler.bind(this),
       'apple-touch-icon': this._iconChangedHandler.bind(this),
+      'apple-touch-icon-precomposed': this._iconChangedHandler.bind(this),
       'search': this._openSearchHandler,
       'manifest': this._manifestChangedHandler
     };
@@ -710,97 +724,6 @@ BrowserElementChild.prototype = {
         sendAsyncMsg('opentab', {url: node.href});
       }
     }
-  },
-
-  _selectionStateChangedHandler: function(e) {
-    e.stopPropagation();
-
-    if (!this._isContentWindowCreated) {
-      return;
-    }
-
-    let boundingClientRect = e.boundingClientRect;
-
-    let isCollapsed = (e.selectedText.length == 0);
-    let isMouseUp = (e.states.indexOf('mouseup') == 0);
-    let canPaste = this._isCommandEnabled("paste");
-
-    if (this._selectionStateChangedTarget != e.target) {
-      // SelectionStateChanged events with the following states are not
-      // necessary to trigger the text dialog, bypass these events
-      // by default.
-      //
-      if(e.states.length == 0 ||
-         e.states.indexOf('drag') == 0 ||
-         e.states.indexOf('keypress') == 0 ||
-         e.states.indexOf('mousedown') == 0) {
-        return;
-      }
-
-      // The collapsed SelectionStateChanged event is unnecessary to dispatch,
-      // bypass this event by default, but here comes some exceptional cases
-      if (isCollapsed) {
-        if (isMouseUp && canPaste) {
-          // Always dispatch to support shortcut mode which can paste previous
-          // copied content easily
-        } else if (e.states.indexOf('blur') == 0) {
-          // Always dispatch to notify the blur for the focus content
-        } else if (e.states.indexOf('taponcaret') == 0) {
-          // Always dispatch to notify the caret be touched
-        } else {
-          return;
-        }
-      }
-    }
-
-    // If we select something and selection range is visible, we cache current
-    // event's target to selectionStateChangedTarget.
-    // And dispatch the next SelectionStateChagne event if target is matched, so
-    // that the parent side can hide the text dialog.
-    // We clear selectionStateChangedTarget if selection carets are invisible.
-    if (e.visible && !isCollapsed) {
-      this._selectionStateChangedTarget = e.target;
-    } else if (canPaste && isCollapsed) {
-      this._selectionStateChangedTarget = e.target;
-    } else {
-      this._selectionStateChangedTarget = null;
-    }
-
-    let zoomFactor = content.screen.width / content.innerWidth;
-
-    let detail = {
-      rect: {
-        width: boundingClientRect ? boundingClientRect.width : 0,
-        height: boundingClientRect ? boundingClientRect.height : 0,
-        top: boundingClientRect ? boundingClientRect.top : 0,
-        bottom: boundingClientRect ? boundingClientRect.bottom : 0,
-        left: boundingClientRect ? boundingClientRect.left : 0,
-        right: boundingClientRect ? boundingClientRect.right : 0,
-      },
-      commands: {
-        canSelectAll: this._isCommandEnabled("selectall"),
-        canCut: this._isCommandEnabled("cut"),
-        canCopy: this._isCommandEnabled("copy"),
-        canPaste: this._isCommandEnabled("paste"),
-      },
-      zoomFactor: zoomFactor,
-      states: e.states,
-      isCollapsed: (e.selectedText.length == 0),
-      visible: e.visible,
-    };
-
-    // Get correct geometry information if we have nested iframe.
-    let currentWindow = e.target.defaultView;
-    while (currentWindow.realFrameElement) {
-      let currentRect = currentWindow.realFrameElement.getBoundingClientRect();
-      detail.rect.top += currentRect.top;
-      detail.rect.bottom += currentRect.top;
-      detail.rect.left += currentRect.left;
-      detail.rect.right += currentRect.left;
-      currentWindow = currentWindow.realFrameElement.ownerDocument.defaultView;
-    }
-
-    sendAsyncMsg('selectionstatechanged', detail);
   },
 
   _genericMetaHandler: function(name, eventType, target) {
@@ -1129,7 +1052,7 @@ BrowserElementChild.prototype = {
 
     try {
       let sandboxRv = Cu.evalInSandbox(data.json.args.script, sandbox, "1.8");
-      if (sandboxRv instanceof Promise) {
+      if (sandboxRv instanceof sandbox.Promise) {
         sandboxRv.then(rv => {
           if (isJSON(rv)) {
             sendSuccess(rv);
@@ -1286,14 +1209,16 @@ BrowserElementChild.prototype = {
   _recvFireCtxCallback: function(data) {
     debug("Received fireCtxCallback message: (" + data.json.menuitem + ")");
 
+    let doCommandIfEnabled = (command) => {
+      if (docShell.isCommandEnabled(command)) {
+        docShell.doCommand(command);
+      }
+    };
+
     if (data.json.menuitem == 'copy-image') {
-      // Set command
-      data.json.command = 'copyImage';
-      this._recvDoCommand(data);
+      doCommandIfEnabled('cmd_copyImage');
     } else if (data.json.menuitem == 'copy-link') {
-      // Set command
-      data.json.command = 'copyLink';
-      this._recvDoCommand(data);
+      doCommandIfEnabled('cmd_copyLink');
     } else if (data.json.menuitem in this._ctxHandlers) {
       this._ctxHandlers[data.json.menuitem].click();
       this._ctxHandlers = {};
@@ -1372,6 +1297,11 @@ BrowserElementChild.prototype = {
     if (docShell && docShell.isActive !== visible) {
       docShell.isActive = visible;
       sendAsyncMsg('visibilitychange', {visible: visible});
+
+      // Ensure painting is not frozen if the app goes visible.
+      if (visible && this._paintFrozenTimer) {
+        this.notify();
+      }
     }
   },
 
@@ -1472,13 +1402,6 @@ BrowserElementChild.prototype = {
     docShell.contentViewer.fullZoom = data.json.zoom;
   },
 
-  _recvDoCommand: function(data) {
-    if (this._isCommandEnabled(data.json.command)) {
-      this._selectionStateChangedTarget = null;
-      docShell.doCommand(COMMAND_MAP[data.json.command]);
-    }
-  },
-
   _recvGetAudioChannelVolume: function(data) {
     debug("Received getAudioChannelVolume message: (" + data.json.id + ")");
 
@@ -1527,7 +1450,26 @@ BrowserElementChild.prototype = {
       id: data.json.id, successRv: active
     });
   },
-
+  _recvGetWebManifest: Task.async(function* (data) {
+    debug(`Received GetWebManifest message: (${data.json.id})`);
+    let manifest = null;
+    let hasManifest = ManifestFinder.contentHasManifestLink(content);
+    if (hasManifest) {
+      try {
+        manifest = yield ManifestObtainer.contentObtainManifest(content);
+      } catch (e) {
+        sendAsyncMsg('got-web-manifest', {
+          id: data.json.id,
+          errorMsg: `Error fetching web manifest: ${e}.`,
+        });
+        return;
+      }
+    }
+    sendAsyncMsg('got-web-manifest', {
+      id: data.json.id,
+      successRv: manifest
+    });
+  }),
   _initFinder: function() {
     if (!this._finder) {
       try {
@@ -1947,6 +1889,7 @@ BrowserElementChild.prototype = {
           case Cr.NS_BINDING_ABORTED :
             // Ignoring NS_BINDING_ABORTED, which is set when loading page is
             // stopped.
+          case Cr.NS_ERROR_PARSED_DATA_CACHED:
             return;
 
           // TODO See nsDocShell::DisplayLoadError to see what extra
@@ -1974,13 +1917,16 @@ BrowserElementChild.prototype = {
             sendAsyncMsg('error', { type: 'cspBlocked' });
             return;
           case Cr.NS_ERROR_PHISHING_URI :
-            sendAsyncMsg('error', { type: 'phishingBlocked' });
+            sendAsyncMsg('error', { type: 'deceptiveBlocked' });
             return;
           case Cr.NS_ERROR_MALWARE_URI :
             sendAsyncMsg('error', { type: 'malwareBlocked' });
             return;
           case Cr.NS_ERROR_UNWANTED_URI :
             sendAsyncMsg('error', { type: 'unwantedBlocked' });
+            return;
+          case Cr.NS_ERROR_FORBIDDEN_URI :
+            sendAsyncMsg('error', { type: 'forbiddenBlocked' });
             return;
 
           case Cr.NS_ERROR_OFFLINE :

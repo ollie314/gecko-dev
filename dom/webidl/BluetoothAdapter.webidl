@@ -43,7 +43,7 @@ interface BluetoothAdapter : EventTarget {
   readonly attribute BluetoothGattServer?   gattServer;
 
   [AvailableIn=CertifiedApps]
-  readonly attribute BluetoothPairingListener pairingReqs;
+  readonly attribute BluetoothPairingListener? pairingReqs;
 
   // Fired when attribute(s) of BluetoothAdapter changed
            attribute EventHandler   onattributechanged;
@@ -63,11 +63,17 @@ interface BluetoothAdapter : EventTarget {
   // Fired when handsfree connection status changed
            attribute EventHandler   onhfpstatuschanged;
 
+  // Fired when handsfree connection status changed
+           attribute EventHandler   onhidstatuschanged;
+
   // Fired when sco connection status changed
            attribute EventHandler   onscostatuschanged;
 
   // Fired when remote devices query current media play status
            attribute EventHandler   onrequestmediaplaystatus;
+
+  // Fired when remote devices request password for OBEX authentication
+           attribute EventHandler   onobexpasswordreq;
 
   // Fired when PBAP manager requests for 'pullphonebook'
            attribute EventHandler   onpullphonebookreq;
@@ -125,10 +131,17 @@ interface BluetoothAdapter : EventTarget {
 
   sequence<BluetoothDevice> getPairedDevices();
 
-  [NewObject]
+  /**
+   * [B2G only GATT client API]
+   * |startLeScan| and |stopLeScan| methods are exposed only if
+   * "dom.bluetooth.webbluetooth.enabled" preference is false.
+   */
+  [NewObject,
+   Func="mozilla::dom::bluetooth::BluetoothManager::B2GGattClientEnabled"]
   Promise<BluetoothDiscoveryHandle> startLeScan(sequence<DOMString> serviceUuids);
 
-  [NewObject]
+  [NewObject,
+   Func="mozilla::dom::bluetooth::BluetoothManager::B2GGattClientEnabled"]
   Promise<void> stopLeScan(BluetoothDiscoveryHandle discoveryHandle);
 
   [NewObject, Throws, AvailableIn=CertifiedApps]

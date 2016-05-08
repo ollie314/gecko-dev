@@ -48,14 +48,12 @@ private:
 //----------------------------------------------------------------------
 // Implementation
 
-nsSVGGradientFrame::nsSVGGradientFrame(nsStyleContext* aContext) :
-  nsSVGGradientFrameBase(aContext),
-  mLoopFlag(false),
-  mNoHRefURI(false)
+nsSVGGradientFrame::nsSVGGradientFrame(nsStyleContext* aContext)
+  : nsSVGPaintServerFrame(aContext)
+  , mLoopFlag(false)
+  , mNoHRefURI(false)
 {
 }
-
-NS_IMPL_FRAMEARENA_HELPERS(nsSVGGradientFrame)
 
 //----------------------------------------------------------------------
 // nsIFrame methods:
@@ -79,8 +77,8 @@ nsSVGGradientFrame::AttributeChanged(int32_t         aNameSpaceID,
     nsSVGEffects::InvalidateDirectRenderingObservers(this);
   }
 
-  return nsSVGGradientFrameBase::AttributeChanged(aNameSpaceID,
-                                                  aAttribute, aModType);
+  return nsSVGPaintServerFrame::AttributeChanged(aNameSpaceID,
+                                                 aAttribute, aModType);
 }
 
 //----------------------------------------------------------------------
@@ -227,7 +225,7 @@ nsSVGGradientFrame::GetPaintServerPattern(nsIFrame* aSource,
                 aSource->GetParent() : aSource;
   }
 
-  nsAutoTArray<nsIFrame*,8> stopFrames;
+  AutoTArray<nsIFrame*,8> stopFrames;
   GetStopFrames(&stopFrames);
 
   uint32_t nStops = stopFrames.Length();
@@ -333,7 +331,7 @@ nsSVGGradientFrame::GetReferencedGradient()
     nsCOMPtr<nsIURI> targetURI;
     nsCOMPtr<nsIURI> base = mContent->GetBaseURI();
     nsContentUtils::NewURIWithDocumentCharset(getter_AddRefs(targetURI), href,
-                                              mContent->GetCurrentDoc(), base);
+                                              mContent->GetUncomposedDoc(), base);
 
     property =
       nsSVGEffects::GetPaintingProperty(targetURI, this, nsSVGEffects::HrefProperty());
@@ -407,7 +405,7 @@ nsSVGLinearGradientFrame::Init(nsIContent*       aContent,
   NS_ASSERTION(aContent->IsSVGElement(nsGkAtoms::linearGradient),
                "Content is not an SVG linearGradient");
 
-  nsSVGLinearGradientFrameBase::Init(aContent, aParent, aPrevInFlow);
+  nsSVGGradientFrame::Init(aContent, aParent, aPrevInFlow);
 }
 #endif /* DEBUG */
 
@@ -476,8 +474,7 @@ nsSVGLinearGradientFrame::GetLinearGradientWithLength(uint32_t aIndex,
     return thisElement;
   }
 
-  return nsSVGLinearGradientFrameBase::GetLinearGradientWithLength(aIndex,
-                                                                   aDefault);
+  return nsSVGGradientFrame::GetLinearGradientWithLength(aIndex, aDefault);
 }
 
 bool
@@ -516,7 +513,7 @@ nsSVGRadialGradientFrame::Init(nsIContent*       aContent,
   NS_ASSERTION(aContent->IsSVGElement(nsGkAtoms::radialGradient),
                "Content is not an SVG radialGradient");
 
-  nsSVGRadialGradientFrameBase::Init(aContent, aParent, aPrevInFlow);
+  nsSVGGradientFrame::Init(aContent, aParent, aPrevInFlow);
 }
 #endif /* DEBUG */
 
@@ -603,8 +600,7 @@ nsSVGRadialGradientFrame::GetRadialGradientWithLength(uint32_t aIndex,
     return thisElement;
   }
 
-  return nsSVGRadialGradientFrameBase::GetRadialGradientWithLength(aIndex,
-                                                                   aDefault);
+  return nsSVGGradientFrame::GetRadialGradientWithLength(aIndex, aDefault);
 }
 
 bool

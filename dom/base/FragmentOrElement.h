@@ -142,7 +142,7 @@ public:
   virtual bool TextIsOnlyWhitespace() override;
   virtual bool HasTextForTranslation() override;
   virtual void AppendTextTo(nsAString& aResult) override;
-  MOZ_WARN_UNUSED_RESULT
+  MOZ_MUST_USE
   virtual bool AppendTextTo(nsAString& aResult, const mozilla::fallible_t&) override;
   virtual nsIContent *GetBindingParent() const override;
   virtual nsXBLBinding *GetXBLBinding() const override;
@@ -286,9 +286,9 @@ public:
     nsCOMPtr<nsICSSDeclaration> mSMILOverrideStyle;
 
     /**
-     * Holds any SMIL override style rules for this element.
+     * Holds any SMIL override style declaration for this element.
      */
-    RefPtr<mozilla::css::StyleRule> mSMILOverrideStyleRule;
+    RefPtr<mozilla::css::Declaration> mSMILOverrideStyleDeclaration;
 
     /**
      * An object implementing nsIDOMMozNamedAttrMap for this content (attributes)

@@ -17,7 +17,7 @@
 #include "nsTArray.h"
 
 class nsITimer;
-class nsPIDOMWindow;
+class nsPIDOMWindowInner;
 
 BEGIN_WORKERS_NAMESPACE
 
@@ -75,16 +75,6 @@ class RuntimeService final : public nsIObserver
 
   struct IdleThreadInfo;
 
-  struct MatchSharedWorkerInfo
-  {
-    WorkerPrivate* mWorkerPrivate;
-    SharedWorkerInfo* mSharedWorkerInfo;
-
-    explicit MatchSharedWorkerInfo(WorkerPrivate* aWorkerPrivate)
-    : mWorkerPrivate(aWorkerPrivate), mSharedWorkerInfo(nullptr)
-    { }
-  };
-
   mozilla::Mutex mMutex;
 
   // Protected by mMutex.
@@ -94,7 +84,7 @@ class RuntimeService final : public nsIObserver
   nsTArray<IdleThreadInfo> mIdleThreadArray;
 
   // *Not* protected by mMutex.
-  nsClassHashtable<nsPtrHashKey<nsPIDOMWindow>,
+  nsClassHashtable<nsPtrHashKey<nsPIDOMWindowInner>,
                    nsTArray<WorkerPrivate*> > mWindowMap;
 
   // Only used on the main thread.
@@ -134,25 +124,29 @@ public:
   GetService();
 
   bool
-  RegisterWorker(JSContext* aCx, WorkerPrivate* aWorkerPrivate);
+  RegisterWorker(WorkerPrivate* aWorkerPrivate);
 
   void
-  UnregisterWorker(JSContext* aCx, WorkerPrivate* aWorkerPrivate);
+  UnregisterWorker(WorkerPrivate* aWorkerPrivate);
 
   void
-  CancelWorkersForWindow(nsPIDOMWindow* aWindow);
+  RemoveSharedWorker(WorkerDomainInfo* aDomainInfo,
+                     WorkerPrivate* aWorkerPrivate);
 
   void
-  FreezeWorkersForWindow(nsPIDOMWindow* aWindow);
+  CancelWorkersForWindow(nsPIDOMWindowInner* aWindow);
 
   void
-  ThawWorkersForWindow(nsPIDOMWindow* aWindow);
+  FreezeWorkersForWindow(nsPIDOMWindowInner* aWindow);
 
   void
-  SuspendWorkersForWindow(nsPIDOMWindow* aWindow);
+  ThawWorkersForWindow(nsPIDOMWindowInner* aWindow);
 
   void
-  ResumeWorkersForWindow(nsPIDOMWindow* aWindow);
+  SuspendWorkersForWindow(nsPIDOMWindowInner* aWindow);
+
+  void
+  ResumeWorkersForWindow(nsPIDOMWindowInner* aWindow);
 
   nsresult
   CreateSharedWorker(const GlobalObject& aGlobal,
@@ -255,6 +249,11 @@ public:
   void
   SendOfflineStatusChangeEventToAllWorkers(bool aIsOffline);
 
+  void
+  MemoryPressureAllWorkers();
+
+  uint32_t ClampedHardwareConcurrency() const;
+
 private:
   RuntimeService();
   ~RuntimeService();
@@ -268,27 +267,15 @@ private:
   void
   Cleanup();
 
-  static PLDHashOperator
-  AddAllTopLevelWorkersToArray(const nsACString& aKey,
-                               WorkerDomainInfo* aData,
-                               void* aUserArg);
-
-  static PLDHashOperator
-  RemoveSharedWorkerFromWindowMap(nsPIDOMWindow* aKey,
-                                  nsAutoPtr<nsTArray<WorkerPrivate*> >& aData,
-                                  void* aUserArg);
-
-  static PLDHashOperator
-  FindSharedWorkerInfo(const nsACString& aKey,
-                       SharedWorkerInfo* aData,
-                       void* aUserArg);
+  void
+  AddAllTopLevelWorkersToArray(nsTArray<WorkerPrivate*>& aWorkers);
 
   void
-  GetWorkersForWindow(nsPIDOMWindow* aWindow,
+  GetWorkersForWindow(nsPIDOMWindowInner* aWindow,
                       nsTArray<WorkerPrivate*>& aWorkers);
 
   bool
-  ScheduleWorker(JSContext* aCx, WorkerPrivate* aWorkerPrivate);
+  ScheduleWorker(WorkerPrivate* aWorkerPrivate);
 
   static void
   ShutdownIdleThreads(nsITimer* aTimer, void* aClosure);

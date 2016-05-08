@@ -13,6 +13,7 @@
 #include "nsISSLStatus.h"
 #include "nsISocketProvider.h"
 #include "nsIURI.h"
+#include "nsIX509Cert.h"
 #include "nsNetUtil.h"
 #include "nsNSSComponent.h"
 #include "nsSecurityHeaderParser.h"
@@ -40,16 +41,9 @@
 using namespace mozilla;
 using namespace mozilla::psm;
 
-static PRLogModuleInfo *
-GetSSSLog()
-{
-  static PRLogModuleInfo *gSSSLog;
-  if (!gSSSLog)
-    gSSSLog = PR_NewLogModule("nsSSService");
-  return gSSSLog;
-}
+static LazyLogModule gSSSLog("nsSSService");
 
-#define SSSLOG(args) MOZ_LOG(GetSSSLog(), mozilla::LogLevel::Debug, args)
+#define SSSLOG(args) MOZ_LOG(gSSSLog, mozilla::LogLevel::Debug, args)
 
 ////////////////////////////////////////////////////////////////////////////////
 
@@ -227,11 +221,6 @@ NS_IMPL_ISUPPORTS(nsSiteSecurityService,
 nsresult
 nsSiteSecurityService::Init()
 {
-   // Child processes are not allowed direct access to this.
-   if (!XRE_IsParentProcess()) {
-     MOZ_CRASH("Child process: no direct access to nsSiteSecurityService");
-   }
-
   // Don't access Preferences off the main thread.
   if (!NS_IsMainThread()) {
     NS_NOTREACHED("nsSiteSecurityService initialized off main thread");
@@ -251,7 +240,7 @@ nsSiteSecurityService::Init()
   mozilla::Preferences::AddStrongObserver(this,
     "test.currentTimeOffsetSeconds");
   mSiteStateStorage =
-    new mozilla::DataStorage(NS_LITERAL_STRING("SiteSecurityServiceState.txt"));
+    mozilla::DataStorage::Get(NS_LITERAL_STRING("SiteSecurityServiceState.txt"));
   bool storageWillPersist = false;
   nsresult rv = mSiteStateStorage->Init(storageWillPersist);
   if (NS_WARN_IF(NS_FAILED(rv))) {
@@ -350,6 +339,11 @@ NS_IMETHODIMP
 nsSiteSecurityService::RemoveState(uint32_t aType, nsIURI* aURI,
                                    uint32_t aFlags)
 {
+   // Child processes are not allowed direct access to this.
+   if (!XRE_IsParentProcess()) {
+     MOZ_CRASH("Child process: no direct access to nsISiteSecurityService::RemoveState");
+   }
+
   // Only HSTS is supported at the moment.
   NS_ENSURE_TRUE(aType == nsISiteSecurityService::HEADER_HSTS ||
                  aType == nsISiteSecurityService::HEADER_HPKP,
@@ -400,6 +394,11 @@ nsSiteSecurityService::ProcessHeader(uint32_t aType,
                                      bool* aIncludeSubdomains,
                                      uint32_t* aFailureResult)
 {
+   // Child processes are not allowed direct access to this.
+   if (!XRE_IsParentProcess()) {
+     MOZ_CRASH("Child process: no direct access to nsISiteSecurityService::ProcessHeader");
+   }
+
   if (aFailureResult) {
     *aFailureResult = nsISiteSecurityService::ERROR_UNKNOWN;
   }
@@ -421,6 +420,11 @@ nsSiteSecurityService::UnsafeProcessHeader(uint32_t aType,
                                            bool* aIncludeSubdomains,
                                            uint32_t* aFailureResult)
 {
+   // Child processes are not allowed direct access to this.
+   if (!XRE_IsParentProcess()) {
+     MOZ_CRASH("Child process: no direct access to nsISiteSecurityService::UnsafeProcessHeader");
+   }
+
   return ProcessHeaderInternal(aType, aSourceURI, aHeader, nullptr, aFlags,
                                aMaxAge, aIncludeSubdomains, aFailureResult);
 }
@@ -691,19 +695,20 @@ nsSiteSecurityService::ProcessPKPHeader(nsIURI* aSourceURI,
   rv = aSSLStatus->GetServerCert(getter_AddRefs(cert));
   NS_ENSURE_SUCCESS(rv, rv);
   NS_ENSURE_TRUE(cert, NS_ERROR_FAILURE);
-  ScopedCERTCertificate nssCert(cert->GetCert());
+  UniqueCERTCertificate nssCert(cert->GetCert());
   NS_ENSURE_TRUE(nssCert, NS_ERROR_FAILURE);
 
   mozilla::pkix::Time now(mozilla::pkix::Now());
-  ScopedCERTCertList certList;
+  UniqueCERTCertList certList;
   RefPtr<SharedCertVerifier> certVerifier(GetDefaultCertVerifier());
   NS_ENSURE_TRUE(certVerifier, NS_ERROR_UNEXPECTED);
   if (certVerifier->VerifySSLServerCert(nssCert, nullptr, // stapled ocsp
                                         now, nullptr, // pinarg
                                         host.get(), // hostname
+                                        certList,
                                         false, // don't store intermediates
-                                        CertVerifier::FLAG_LOCAL_ONLY,
-                                        &certList) != SECSuccess) {
+                                        CertVerifier::FLAG_LOCAL_ONLY)
+      != SECSuccess) {
     return NS_ERROR_FAILURE;
   }
 
@@ -712,8 +717,8 @@ nsSiteSecurityService::ProcessPKPHeader(nsIURI* aSourceURI,
     return NS_ERROR_FAILURE;
   }
   bool isBuiltIn = false;
-  SECStatus srv = IsCertBuiltInRoot(rootNode->cert, isBuiltIn);
-  if (srv != SECSuccess) {
+  mozilla::pkix::Result result = IsCertBuiltInRoot(rootNode->cert, isBuiltIn);
+  if (result != mozilla::pkix::Success) {
     return NS_ERROR_FAILURE;
   }
 
@@ -865,6 +870,11 @@ NS_IMETHODIMP
 nsSiteSecurityService::IsSecureURI(uint32_t aType, nsIURI* aURI,
                                    uint32_t aFlags, bool* aResult)
 {
+   // Child processes are not allowed direct access to this.
+   if (!XRE_IsParentProcess() && aType != nsISiteSecurityService::HEADER_HSTS) {
+     MOZ_CRASH("Child process: no direct access to nsISiteSecurityService::IsSecureURI for non-HSTS entries");
+   }
+
   NS_ENSURE_ARG(aURI);
   NS_ENSURE_ARG(aResult);
 
@@ -889,7 +899,7 @@ int STSPreloadCompare(const void *key, const void *entry)
 {
   const char *keyStr = (const char *)key;
   const nsSTSPreload *preloadEntry = (const nsSTSPreload *)entry;
-  return strcmp(keyStr, preloadEntry->mHost);
+  return strcmp(keyStr, &kSTSHostTable[preloadEntry->mHostIndex]);
 }
 
 // Returns the preload list entry for the given host, if it exists.
@@ -914,6 +924,11 @@ NS_IMETHODIMP
 nsSiteSecurityService::IsSecureHost(uint32_t aType, const char* aHost,
                                     uint32_t aFlags, bool* aResult)
 {
+   // Child processes are not allowed direct access to this.
+   if (!XRE_IsParentProcess() && aType != nsISiteSecurityService::HEADER_HSTS) {
+     MOZ_CRASH("Child process: no direct access to nsISiteSecurityService::IsSecureHost for non-HSTS entries");
+   }
+
   NS_ENSURE_ARG(aHost);
   NS_ENSURE_ARG(aResult);
 
@@ -1049,6 +1064,11 @@ nsSiteSecurityService::IsSecureHost(uint32_t aType, const char* aHost,
 NS_IMETHODIMP
 nsSiteSecurityService::ClearAll()
 {
+   // Child processes are not allowed direct access to this.
+   if (!XRE_IsParentProcess()) {
+     MOZ_CRASH("Child process: no direct access to nsISiteSecurityService::ClearAll");
+   }
+
   return mSiteStateStorage->Clear();
 }
 
@@ -1058,6 +1078,11 @@ nsSiteSecurityService::GetKeyPinsForHostname(const char* aHostname,
                                              /*out*/ nsTArray<nsCString>& pinArray,
                                              /*out*/ bool* aIncludeSubdomains,
                                              /*out*/ bool* afound) {
+   // Child processes are not allowed direct access to this.
+   if (!XRE_IsParentProcess()) {
+     MOZ_CRASH("Child process: no direct access to nsISiteSecurityService::GetKeyPinsForHostname");
+   }
+
   NS_ENSURE_ARG(afound);
   NS_ENSURE_ARG(aHostname);
 
@@ -1100,6 +1125,11 @@ nsSiteSecurityService::SetKeyPins(const char* aHost, bool aIncludeSubdomains,
                                   const char** aSha256Pins,
                                   /*out*/ bool* aResult)
 {
+   // Child processes are not allowed direct access to this.
+   if (!XRE_IsParentProcess()) {
+     MOZ_CRASH("Child process: no direct access to nsISiteSecurityService::SetKeyPins");
+   }
+
   NS_ENSURE_ARG_POINTER(aHost);
   NS_ENSURE_ARG_POINTER(aResult);
   NS_ENSURE_ARG_POINTER(aSha256Pins);

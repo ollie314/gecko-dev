@@ -154,7 +154,7 @@ PlacesTreeView.prototype = {
     // A node is removed form the view either if it has no parent or if its
     // root-ancestor is not the root node (in which case that's the node
     // for which nodeRemoved was called).
-    let ancestors = [x for (x of PlacesUtils.nodeAncestors(aNode))];
+    let ancestors = Array.from(PlacesUtils.nodeAncestors(aNode));
     if (ancestors.length == 0 ||
         ancestors[ancestors.length - 1] != this._rootNode) {
       throw new Error("Removed node passed to _getRowForNode");
@@ -230,7 +230,7 @@ PlacesTreeView.prototype = {
     if (aRow < 0) {
       return null;
     }
-  
+
     let node = this._rows[aRow];
     if (node !== undefined)
       return node;
@@ -279,7 +279,7 @@ PlacesTreeView.prototype = {
       return 0;
 
     // Inserting the new elements into the rows array in one shot (by
-    // Array.concat) is faster than resizing the array (by splice) on each loop
+    // Array.prototype.concat) is faster than resizing the array (by splice) on each loop
     // iteration.
     let cc = aContainer.childCount;
     let newElements = new Array(cc);
@@ -882,24 +882,25 @@ PlacesTreeView.prototype = {
       if (queryOptions.excludeItems) {
         return;
       }
-
-      PlacesUtils.livemarks.getLivemark({ id: aNode.itemId })
-        .then(aLivemark => {
-          let shouldInvalidate = 
-            !this._controller.hasCachedLivemarkInfo(aNode);
-          this._controller.cacheLivemarkInfo(aNode, aLivemark);
-          if (aNewState == Components.interfaces.nsINavHistoryContainerResultNode.STATE_OPENED) {
-            aLivemark.registerForUpdates(aNode, this);
-            // Prioritize the current livemark.
-            aLivemark.reload();
-            PlacesUtils.livemarks.reloadLivemarks();
-            if (shouldInvalidate)
-              this.invalidateContainer(aNode);
-          }
-          else {
-            aLivemark.unregisterForUpdates(aNode);
-          }
-        }, () => undefined);
+      if (aNode.itemId != -1) { // run when there's a valid node id
+        PlacesUtils.livemarks.getLivemark({ id: aNode.itemId })
+          .then(aLivemark => {
+            let shouldInvalidate =
+              !this._controller.hasCachedLivemarkInfo(aNode);
+            this._controller.cacheLivemarkInfo(aNode, aLivemark);
+            if (aNewState == Components.interfaces.nsINavHistoryContainerResultNode.STATE_OPENED) {
+              aLivemark.registerForUpdates(aNode, this);
+              // Prioritize the current livemark.
+              aLivemark.reload();
+              PlacesUtils.livemarks.reloadLivemarks();
+              if (shouldInvalidate)
+                this.invalidateContainer(aNode);
+            }
+            else {
+              aLivemark.unregisterForUpdates(aNode);
+            }
+          }, () => undefined);
+      }
     }
   },
 

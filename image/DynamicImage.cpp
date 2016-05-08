@@ -180,12 +180,13 @@ DynamicImage::GetFrameAtSize(const IntSize& aSize,
 {
   RefPtr<DrawTarget> dt = gfxPlatform::GetPlatform()->
     CreateOffscreenContentDrawTarget(aSize, SurfaceFormat::B8G8R8A8);
-  if (!dt) {
+  if (!dt || !dt->IsValid()) {
     gfxWarning() <<
       "DynamicImage::GetFrame failed in CreateOffscreenContentDrawTarget";
     return nullptr;
   }
-  RefPtr<gfxContext> context = new gfxContext(dt);
+  RefPtr<gfxContext> context = gfxContext::ForDrawTarget(dt);
+  MOZ_ASSERT(context); // already checked the draw target above
 
   auto result = Draw(context, aSize, ImageRegion::Create(aSize),
                      aWhichFrame, Filter::POINT, Nothing(), aFlags);
@@ -244,12 +245,6 @@ DynamicImage::Draw(gfxContext* aContext,
   gfxUtils::DrawPixelSnapped(aContext, mDrawable, drawableSize, region,
                              SurfaceFormat::B8G8R8A8, aFilter);
   return DrawResult::SUCCESS;
-}
-
-NS_IMETHODIMP
-DynamicImage::RequestDecode()
-{
-  return NS_OK;
 }
 
 NS_IMETHODIMP

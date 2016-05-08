@@ -2,17 +2,6 @@
 
 var notificationURL = "http://example.org/browser/browser/base/content/test/alerts/file_dom_notifications.html";
 
-function waitForCloseWindow(window) {
-  return new Promise(function(resolve) {
-    Services.ww.registerNotification(function observer(subject, topic, data) {
-      if (topic == "domwindowclosed" && subject == window) {
-        Services.ww.unregisterNotification(observer);
-        resolve();
-      }
-    });
-  });
-}
-
 add_task(function* test_settingsOpen_observer() {
   info("Opening a dummy tab so openPreferences=>switchToTabHavingURI doesn't use the blank tab.");
   yield BrowserTestUtils.withNewTab({
@@ -40,19 +29,17 @@ add_task(function* test_settingsOpen_button() {
       gBrowser,
       url: notificationURL
     }, function* tabTask(aBrowser) {
-      let notification = aBrowser.contentWindow.wrappedJSObject.showNotification2();
-
       info("Waiting for notification");
-      yield BrowserTestUtils.waitForEvent(notification, "show");
+      yield openNotification(aBrowser, "showNotification2");
 
       let alertWindow = Services.wm.getMostRecentWindow("alert:alert");
       if (!alertWindow) {
         ok(true, "Notifications don't use XUL windows on all platforms.");
-        notification.close();
+        yield closeNotification(aBrowser);
         return;
       }
 
-      let closePromise = waitForCloseWindow(alertWindow);
+      let closePromise = promiseWindowClosed(alertWindow);
       let tabPromise = BrowserTestUtils.waitForNewTab(gBrowser, "about:preferences#content");
       let openSettingsMenuItem = alertWindow.document.getElementById("openSettingsMenuItem");
       openSettingsMenuItem.click();

@@ -29,12 +29,10 @@ function run_test() {
 
   do_get_profile();
   setPrefs({
+    'testing.allowInsecureServerURL': true,
     'http2.retryInterval': 1000,
     'http2.maxRetries': 2
   });
-  disableServiceWorkerEvents(
-    'https://example.com/page'
-  );
 
   run_next_test();
 }
@@ -57,21 +55,20 @@ add_task(function* test1() {
     scope: 'https://example.com/page',
     originAttributes: '',
     quota: Infinity,
+    systemRecord: true,
   };
 
   yield db.put(record);
 
-  let notifyPromise = promiseObserverNotification('push-subscription-change',
+  let notifyPromise = promiseObserverNotification(PushServiceComponent.subscriptionChangeTopic,
                                                   _ => true);
 
   PushService.init({
     serverURI: serverURL + "/subscribe",
-    service: PushServiceHttp2,
     db
   });
 
-  yield waitForPromise(notifyPromise, DEFAULT_TIMEOUT,
-    'Timed out waiting for notifications');
+  yield notifyPromise;
 
   let aRecord = yield db.getByKeyID(serverURL + '/subscriptionNoKey');
   ok(aRecord, 'The record should still be there');

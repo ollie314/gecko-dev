@@ -18,7 +18,7 @@
 #include "nsITimedChannel.h"
 #include "nsIInterfaceRequestor.h"
 #include "nsIRequestObserver.h"
-#include "nsISchedulingContext.h"
+#include "nsIRequestContext.h"
 #include "CacheObserver.h"
 #include "MainThreadUtils.h"
 
@@ -38,8 +38,7 @@ using namespace mozilla::net;
 // this enables LogLevel::Debug level information and places all output in
 // the file nspr.log
 //
-static PRLogModuleInfo* gLoadGroupLog = nullptr;
-
+static LazyLogModule gLoadGroupLog("LoadGroup");
 #undef LOG
 #define LOG(args) MOZ_LOG(gLoadGroupLog, mozilla::LogLevel::Debug, args)
 
@@ -57,8 +56,7 @@ public:
 };
 
 static bool
-RequestHashMatchEntry(PLDHashTable *table, const PLDHashEntryHdr *entry,
-                      const void *key)
+RequestHashMatchEntry(const PLDHashEntryHdr *entry, const void *key)
 {
     const RequestMapEntry *e =
         static_cast<const RequestMapEntry *>(entry);
@@ -117,11 +115,6 @@ nsLoadGroup::nsLoadGroup(nsISupports* outer)
     , mTimedNonCachedRequestsUntilOnEndPageLoad(0)
 {
     NS_INIT_AGGREGATED(outer);
-
-    // Initialize the global PRLogModule for nsILoadGroup logging
-    if (nullptr == gLoadGroupLog)
-        gLoadGroupLog = PR_NewLogModule("LoadGroup");
-
     LOG(("LOADGROUP [%x]: Created.\n", this));
 }
 
@@ -132,20 +125,20 @@ nsLoadGroup::~nsLoadGroup()
 
     mDefaultLoadRequest = 0;
 
-    if (mSchedulingContext) {
-        nsID scid;
-        mSchedulingContext->GetID(&scid);
+    if (mRequestContext) {
+        nsID rcid;
+        mRequestContext->GetID(&rcid);
 
         if (IsNeckoChild() && gNeckoChild) {
-            char scid_str[NSID_LENGTH];
-            scid.ToProvidedString(scid_str);
+            char rcid_str[NSID_LENGTH];
+            rcid.ToProvidedString(rcid_str);
 
-            nsCString scid_nscs;
-            scid_nscs.AssignASCII(scid_str);
+            nsCString rcid_nscs;
+            rcid_nscs.AssignASCII(rcid_str);
 
-            gNeckoChild->SendRemoveSchedulingContext(scid_nscs);
+            gNeckoChild->SendRemoveRequestContext(rcid_nscs);
         } else {
-            mSchedulingContextService->RemoveSchedulingContext(scid);
+            mRequestContextService->RemoveRequestContext(rcid);
         }
     }
 
@@ -178,7 +171,7 @@ nsLoadGroup::GetName(nsACString &result)
         result.Truncate();
         return NS_OK;
     }
-    
+
     return mDefaultLoadRequest->GetName(result);
 }
 
@@ -194,9 +187,9 @@ nsLoadGroup::GetStatus(nsresult *status)
 {
     if (NS_SUCCEEDED(mStatus) && mDefaultLoadRequest)
         return mDefaultLoadRequest->GetStatus(status);
-    
+
     *status = mStatus;
-    return NS_OK; 
+    return NS_OK;
 }
 
 static bool
@@ -232,7 +225,7 @@ nsLoadGroup::Cancel(nsresult status)
     nsresult rv;
     uint32_t count = mRequests.EntryCount();
 
-    nsAutoTArray<nsIRequest*, 8> requests;
+    AutoTArray<nsIRequest*, 8> requests;
 
     if (!AppendRequestsToArray(&mRequests, &requests)) {
         return NS_ERROR_OUT_OF_MEMORY;
@@ -304,7 +297,7 @@ nsLoadGroup::Suspend()
     nsresult rv, firstError;
     uint32_t count = mRequests.EntryCount();
 
-    nsAutoTArray<nsIRequest*, 8> requests;
+    AutoTArray<nsIRequest*, 8> requests;
 
     if (!AppendRequestsToArray(&mRequests, &requests)) {
         return NS_ERROR_OUT_OF_MEMORY;
@@ -349,7 +342,7 @@ nsLoadGroup::Resume()
     nsresult rv, firstError;
     uint32_t count = mRequests.EntryCount();
 
-    nsAutoTArray<nsIRequest*, 8> requests;
+    AutoTArray<nsIRequest*, 8> requests;
 
     if (!AppendRequestsToArray(&mRequests, &requests)) {
         return NS_ERROR_OUT_OF_MEMORY;
@@ -486,7 +479,7 @@ nsLoadGroup::AddRequest(nsIRequest *request, nsISupports* ctxt)
         rv = MergeLoadFlags(request, flags);
     }
     if (NS_FAILED(rv)) return rv;
-    
+
     //
     // Add the request to the list of active requests...
     //
@@ -708,12 +701,12 @@ nsLoadGroup::SetNotificationCallbacks(nsIInterfaceRequestor *aCallbacks)
 }
 
 NS_IMETHODIMP
-nsLoadGroup::GetSchedulingContextID(nsID *aSCID)
+nsLoadGroup::GetRequestContextID(nsID *aRCID)
 {
-    if (!mSchedulingContext) {
+    if (!mRequestContext) {
         return NS_ERROR_NOT_AVAILABLE;
     }
-    return mSchedulingContext->GetID(aSCID);
+    return mRequestContext->GetID(aRCID);
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -816,10 +809,24 @@ nsLoadGroup::SetDefaultLoadFlags(uint32_t aFlags)
     return NS_OK;
 }
 
+NS_IMETHODIMP
+nsLoadGroup::GetUserAgentOverrideCache(nsACString & aUserAgentOverrideCache)
+{
+  aUserAgentOverrideCache = mUserAgentOverrideCache;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsLoadGroup::SetUserAgentOverrideCache(const nsACString & aUserAgentOverrideCache)
+{
+  mUserAgentOverrideCache = aUserAgentOverrideCache;
+  return NS_OK;
+}
+
 
 ////////////////////////////////////////////////////////////////////////////////
 
-void 
+void
 nsLoadGroup::TelemetryReport()
 {
     if (mDefaultLoadIsTimed) {
@@ -1062,12 +1069,12 @@ nsresult nsLoadGroup::MergeDefaultLoadFlags(nsIRequest *aRequest,
 
 nsresult nsLoadGroup::Init()
 {
-    mSchedulingContextService = do_GetService("@mozilla.org/network/scheduling-context-service;1");
-    if (mSchedulingContextService) {
-        nsID schedulingContextID;
-        if (NS_SUCCEEDED(mSchedulingContextService->NewSchedulingContextID(&schedulingContextID))) {
-            mSchedulingContextService->GetSchedulingContext(schedulingContextID,
-                                                            getter_AddRefs(mSchedulingContext));
+    mRequestContextService = do_GetService("@mozilla.org/network/request-context-service;1");
+    if (mRequestContextService) {
+        nsID requestContextID;
+        if (NS_SUCCEEDED(mRequestContextService->NewRequestContextID(&requestContextID))) {
+            mRequestContextService->GetRequestContext(requestContextID,
+                                                      getter_AddRefs(mRequestContext));
         }
     }
 

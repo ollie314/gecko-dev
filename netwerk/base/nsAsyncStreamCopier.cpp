@@ -19,13 +19,13 @@ using namespace mozilla;
 //
 // NSPR_LOG_MODULES=nsStreamCopier:5
 //
-static PRLogModuleInfo *gStreamCopierLog = nullptr;
+static LazyLogModule gStreamCopierLog("nsStreamCopier");
 #define LOG(args) MOZ_LOG(gStreamCopierLog, mozilla::LogLevel::Debug, args)
 
 /**
  * An event used to perform initialization off the main thread.
  */
-class AsyncApplyBufferingPolicyEvent final: public nsRunnable
+class AsyncApplyBufferingPolicyEvent final: public Runnable
 {
 public:
     /**
@@ -44,8 +44,9 @@ public:
           return NS_OK;
       }
 
-      nsCOMPtr<nsIRunnable> event = NS_NewRunnableMethod(mCopier, &nsAsyncStreamCopier::AsyncCopyInternal);
-      rv = mTarget->Dispatch(event, NS_DISPATCH_NORMAL);
+      rv = mTarget->Dispatch(NewRunnableMethod(mCopier,
+					       &nsAsyncStreamCopier::AsyncCopyInternal),
+			     NS_DISPATCH_NORMAL);
       MOZ_ASSERT(NS_SUCCEEDED(rv));
 
       if (NS_FAILED(rv)) {
@@ -70,8 +71,6 @@ nsAsyncStreamCopier::nsAsyncStreamCopier()
     , mIsPending(false)
     , mShouldSniffBuffering(false)
 {
-    if (!gStreamCopierLog)
-        gStreamCopierLog = PR_NewLogModule("nsStreamCopier");
     LOG(("Creating nsAsyncStreamCopier @%x\n", this));
 }
 

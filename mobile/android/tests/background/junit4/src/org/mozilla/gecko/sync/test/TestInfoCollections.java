@@ -3,23 +3,23 @@
 
 package org.mozilla.gecko.sync.test;
 
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.mozilla.gecko.background.testhelpers.TestRunner;
+import org.mozilla.gecko.sync.ExtendedJSONObject;
+import org.mozilla.gecko.sync.InfoCollections;
+import org.mozilla.gecko.sync.InfoCounts;
+import org.mozilla.gecko.sync.Utils;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.mozilla.gecko.sync.ExtendedJSONObject;
-import org.mozilla.gecko.sync.InfoCollections;
-import org.mozilla.gecko.sync.InfoCounts;
-import org.mozilla.gecko.sync.Utils;
-import org.robolectric.RobolectricGradleTestRunner;
-
 /**
  * Test both info/collections and info/collection_counts.
  */
-@RunWith(RobolectricGradleTestRunner.class)
+@RunWith(TestRunner.class)
 public class TestInfoCollections {
   public static final String TEST_COLLECTIONS_JSON =
       "{\"history\":1.3319567131E9, "    +
@@ -49,7 +49,7 @@ public class TestInfoCollections {
     InfoCounts infoCountsEmpty = new InfoCounts(new ExtendedJSONObject("{}"));
     assertEquals(null, infoCountsEmpty.getCount("bookmarks"));
 
-    ExtendedJSONObject record = ExtendedJSONObject.parseJSONObject(TEST_COUNTS_JSON);
+    ExtendedJSONObject record = new ExtendedJSONObject(TEST_COUNTS_JSON);
     InfoCounts infoCountsFull = new InfoCounts(record);
     assertEquals(Integer.valueOf(766), infoCountsFull.getCount("bookmarks"));
     assertEquals(null, infoCountsFull.getCount("notpresent"));
@@ -59,7 +59,7 @@ public class TestInfoCollections {
   @SuppressWarnings("static-method")
   @Test
   public void testSetCollectionsFromRecord() throws Exception {
-    ExtendedJSONObject record = ExtendedJSONObject.parseJSONObject(TEST_COLLECTIONS_JSON);
+    ExtendedJSONObject record = new ExtendedJSONObject(TEST_COLLECTIONS_JSON);
     InfoCollections infoCollections = new InfoCollections(record);
 
     assertEquals(Utils.decimalSecondsToMilliseconds(1.3319567131E9), infoCollections.getTimestamp("history").longValue());
@@ -71,7 +71,7 @@ public class TestInfoCollections {
   @SuppressWarnings("static-method")
   @Test
   public void testUpdateNeeded() throws Exception {
-    ExtendedJSONObject record = ExtendedJSONObject.parseJSONObject(TEST_COLLECTIONS_JSON);
+    ExtendedJSONObject record = new ExtendedJSONObject(TEST_COLLECTIONS_JSON);
     InfoCollections infoCollections = new InfoCollections(record);
 
     long none = -1;

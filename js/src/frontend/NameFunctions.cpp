@@ -65,36 +65,47 @@ class NameResolver
     }
 
     /*
-     * Walk over the given ParseNode, converting it to a stringified name that
-     * respresents where the function is being assigned to.
+     * Walk over the given ParseNode, attempting to convert it to a stringified
+     * name that respresents where the function is being assigned to.
+     *
+     * |*foundName| is set to true if a name is found for the expression.
      */
-    bool nameExpression(ParseNode* n) {
+    bool nameExpression(ParseNode* n, bool* foundName) {
         switch (n->getKind()) {
           case PNK_DOT:
-            return nameExpression(n->expr()) && appendPropertyReference(n->pn_atom);
+            if (!nameExpression(n->expr(), foundName))
+                return false;
+            if (!*foundName)
+                return true;
+            return appendPropertyReference(n->pn_atom);
 
           case PNK_NAME:
+            *foundName = true;
             return buf->append(n->pn_atom);
 
           case PNK_THIS:
+            *foundName = true;
             return buf->append("this");
 
           case PNK_ELEM:
-            return nameExpression(n->pn_left) &&
-                   buf->append('[') &&
-                   nameExpression(n->pn_right) &&
-                   buf->append(']');
+            if (!nameExpression(n->pn_left, foundName))
+                return false;
+            if (!*foundName)
+                return true;
+            if (!buf->append('[') || !nameExpression(n->pn_right, foundName))
+                return false;
+            if (!*foundName)
+                return true;
+            return buf->append(']');
 
           case PNK_NUMBER:
+            *foundName = true;
             return appendNumber(n->pn_dval);
 
           default:
-            /*
-             * Technically this isn't an "abort" situation, we're just confused
-             * on what to call this function, but failures in naming aren't
-             * treated as fatal.
-             */
-            return false;
+            /* We're confused as to what to call this function. */
+            *foundName = false;
+            return true;
         }
     }
 
@@ -156,7 +167,7 @@ class NameResolver
                  * flagged as a contributor.
                  */
                 pos--;
-                /* fallthrough */
+                MOZ_FALLTHROUGH;
 
               default:
                 /* Save any other nodes we encounter on the way up. */
@@ -212,7 +223,10 @@ class NameResolver
         if (assignment) {
             if (assignment->isAssignment())
                 assignment = assignment->pn_left;
-            if (!nameExpression(assignment))
+            bool foundName = false;
+            if (!nameExpression(assignment, &foundName))
+                return false;
+            if (!foundName)
                 return true;
         }
 
@@ -366,7 +380,6 @@ class NameResolver
           case PNK_TRUE:
           case PNK_FALSE:
           case PNK_NULL:
-          case PNK_THIS:
           case PNK_ELISION:
           case PNK_GENERATOR:
           case PNK_NUMBER:
@@ -374,13 +387,13 @@ class NameResolver
           case PNK_CONTINUE:
           case PNK_DEBUGGER:
           case PNK_EXPORT_BATCH_SPEC:
-          case PNK_FRESHENBLOCK:
           case PNK_OBJECT_PROPERTY_NAME:
           case PNK_POSHOLDER:
             MOZ_ASSERT(cur->isArity(PN_NULLARY));
             break;
 
           case PNK_TYPEOFNAME:
+          case PNK_SUPERBASE:
             MOZ_ASSERT(cur->isArity(PN_UNARY));
             MOZ_ASSERT(cur->pn_kid->isKind(PNK_NAME));
             MOZ_ASSERT(!cur->pn_kid->maybeExpr());
@@ -420,6 +433,7 @@ class NameResolver
 
           // Nodes with a single nullable child.
           case PNK_SEMI:
+          case PNK_THIS:
             MOZ_ASSERT(cur->isArity(PN_UNARY));
             if (ParseNode* expr = cur->pn_kid) {
                 if (!resolve(expr, prefix))
@@ -442,14 +456,15 @@ class NameResolver
           case PNK_MODASSIGN:
           case PNK_POWASSIGN:
           case PNK_COLON:
-          case PNK_CASE:
           case PNK_SHORTHAND:
           case PNK_DOWHILE:
           case PNK_WHILE:
           case PNK_SWITCH:
           case PNK_LETBLOCK:
           case PNK_FOR:
+          case PNK_COMPREHENSIONFOR:
           case PNK_CLASSMETHOD:
+          case PNK_SETTHIS:
             MOZ_ASSERT(cur->isArity(PN_BINARY));
             if (!resolve(cur->pn_left, prefix))
                 return false;
@@ -473,9 +488,12 @@ class NameResolver
                 return false;
             break;
 
-          case PNK_DEFAULT:
+          case PNK_CASE:
             MOZ_ASSERT(cur->isArity(PN_BINARY));
-            MOZ_ASSERT(!cur->pn_left);
+            if (ParseNode* caseExpr = cur->pn_left) {
+                if (!resolve(caseExpr, prefix))
+                    return false;
+            }
             if (!resolve(cur->pn_right, prefix))
                 return false;
             break;
@@ -684,13 +702,15 @@ class NameResolver
             }
             break;
 
-          // Array comprehension nodes are lists with a single child -- PNK_FOR for
-          // comprehensions, PNK_LEXICALSCOPE for legacy comprehensions.  Probably
-          // this should be a non-list eventually.
+          // Array comprehension nodes are lists with a single child:
+          // PNK_COMPREHENSIONFOR for comprehensions, PNK_LEXICALSCOPE for
+          // legacy comprehensions.  Probably this should be a non-list
+          // eventually.
           case PNK_ARRAYCOMP:
             MOZ_ASSERT(cur->isArity(PN_LIST));
             MOZ_ASSERT(cur->pn_count == 1);
-            MOZ_ASSERT(cur->pn_head->isKind(PNK_LEXICALSCOPE) || cur->pn_head->isKind(PNK_FOR));
+            MOZ_ASSERT(cur->pn_head->isKind(PNK_LEXICALSCOPE) ||
+                       cur->pn_head->isKind(PNK_COMPREHENSIONFOR));
             if (!resolve(cur->pn_head, prefix))
                 return false;
             break;
@@ -721,8 +741,8 @@ class NameResolver
           // Import/export spec lists contain import/export specs containing
           // only pairs of names. Alternatively, an export spec lists may
           // contain a single export batch specifier.
-          case PNK_IMPORT_SPEC_LIST: {
           case PNK_EXPORT_SPEC_LIST:
+          case PNK_IMPORT_SPEC_LIST: {
             MOZ_ASSERT(cur->isArity(PN_LIST));
 #ifdef DEBUG
             bool isImport = cur->isKind(PNK_IMPORT_SPEC_LIST);
@@ -782,6 +802,12 @@ class NameResolver
           case PNK_MODULE:
             MOZ_ASSERT(cur->isArity(PN_CODE));
             if (!resolve(cur->pn_body, prefix))
+                return false;
+            break;
+
+          case PNK_ANNEXB_FUNCTION:
+            MOZ_ASSERT(cur->isArity(PN_BINARY));
+            if (!resolve(cur->pn_left, prefix))
                 return false;
             break;
 

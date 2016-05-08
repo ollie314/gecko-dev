@@ -5,14 +5,14 @@
    - file, You can obtain one at http://mozilla.org/MPL/2.0/. -->
 
 <!DOCTYPE window [
-  <!ENTITY % webideDTD SYSTEM "chrome://browser/locale/devtools/webide.dtd" >
+  <!ENTITY % webideDTD SYSTEM "chrome://devtools/locale/webide.dtd" >
   %webideDTD;
 ]>
 
 <?xul-overlay href="chrome://global/content/editMenuOverlay.xul"?>
 
 <?xml-stylesheet href="chrome://global/skin/global.css"?>
-<?xml-stylesheet href="chrome://devtools/skin/themes/common.css"?>
+<?xml-stylesheet href="chrome://devtools/skin/common.css"?>
 <?xml-stylesheet href="chrome://webide/skin/webide.css"?>
 
 <window id="webide" onclose="return UI.canCloseProject();"
@@ -147,7 +147,7 @@
     <div flex="1" id="deck-panels">
       <vbox id="project-listing-panel" class="project-listing panel-list" flex="1">
         <div id="project-listing-wrapper" class="panel-list-wrapper">
-          <iframe id="project-listing-panel-details" flex="1" src="project-listing.xhtml"/>
+          <iframe id="project-listing-panel-details" flex="1" src="project-listing.xhtml" tooltip="aHTMLTooltip"/>
         </div>
       </vbox>
       <splitter class="devtools-side-splitter" id="project-listing-splitter"/>
@@ -167,7 +167,7 @@
       <splitter class="devtools-side-splitter" id="runtime-listing-splitter"/>
       <vbox id="runtime-listing-panel" class="runtime-listing panel-list" flex="1">
         <div id="runtime-listing-wrapper" class="panel-list-wrapper">
-          <iframe id="runtime-listing-panel-details" flex="1" src="runtime-listing.xhtml"/>
+          <iframe id="runtime-listing-panel-details" flex="1" src="runtime-listing.xhtml" tooltip="aHTMLTooltip"/>
         </div>
       </vbox>
     </div>

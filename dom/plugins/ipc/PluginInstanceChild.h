@@ -7,12 +7,13 @@
 #ifndef dom_plugins_PluginInstanceChild_h
 #define dom_plugins_PluginInstanceChild_h 1
 
+#include "mozilla/EventForwards.h"
 #include "mozilla/plugins/PPluginInstanceChild.h"
 #include "mozilla/plugins/PluginScriptableObjectChild.h"
 #include "mozilla/plugins/StreamNotifyChild.h"
 #include "mozilla/plugins/PPluginSurfaceChild.h"
 #include "mozilla/ipc/CrossProcessMutex.h"
-#include "nsClassHashtable.h"
+#include "nsRefPtrHashtable.h"
 #if defined(OS_WIN)
 #include "mozilla/gfx/SharedDIBWin.h"
 #elif defined(MOZ_WIDGET_COCOA)
@@ -30,6 +31,7 @@
 #include "nsRect.h"
 #include "nsTHashtable.h"
 #include "mozilla/PaintTracker.h"
+#include "mozilla/gfx/Types.h"
 
 #include <map>
 
@@ -88,6 +90,8 @@ protected:
     AnswerNPP_SetValue_NPNVprivateModeBool(const bool& value, NPError* result) override;
     virtual bool
     AnswerNPP_SetValue_NPNVmuteAudioBool(const bool& value, NPError* result) override;
+    virtual bool
+    AnswerNPP_SetValue_NPNVCSSZoomFactor(const double& value, NPError* result) override;
 
     virtual bool
     AnswerNPP_HandleEvent(const NPRemoteEvent& event, int16_t* handled) override;
@@ -255,13 +259,25 @@ public:
 
     void AsyncCall(PluginThreadCallback aFunc, void* aUserData);
     // This function is a more general version of AsyncCall
-    void PostChildAsyncCall(ChildAsyncCall* aTask);
+    void PostChildAsyncCall(already_AddRefed<ChildAsyncCall> aTask);
 
     int GetQuirks();
 
     void NPN_URLRedirectResponse(void* notifyData, NPBool allow);
 
+
+    NPError NPN_InitAsyncSurface(NPSize *size, NPImageFormat format,
+                                 void *initData, NPAsyncSurface *surface);
+    NPError NPN_FinalizeAsyncSurface(NPAsyncSurface *surface);
+
+    void NPN_SetCurrentAsyncSurface(NPAsyncSurface *surface, NPRect *changed);
+
     void DoAsyncRedraw();
+
+    virtual bool RecvHandledWindowedPluginKeyEvent(
+                   const NativeEventData& aKeyEventData,
+                   const bool& aIsConsumed) override;
+
 private:
     friend class PluginModuleChild;
 
@@ -269,7 +285,7 @@ private:
     InternalGetNPObjectForValue(NPNVariable aValue,
                                 NPObject** aObject);
 
-    bool IsAsyncDrawing();
+    bool IsUsingDirectDrawing();
 
     virtual bool RecvUpdateBackground(const SurfaceDescriptor& aBackground,
                                       const nsIntRect& aRect) override;
@@ -297,6 +313,7 @@ private:
     void HookSetWindowLongPtr();
     void SetUnityHooks();
     void ClearUnityHooks();
+    void InitImm32Hook();
     static inline bool SetWindowLongHookCheck(HWND hWnd,
                                                 int nIndex,
                                                 LONG_PTR newLong);
@@ -342,6 +359,15 @@ private:
                                           LONG newLong);
 #endif
 
+    static HIMC WINAPI ImmGetContextProc(HWND aWND);
+    static BOOL WINAPI ImmReleaseContextProc(HWND aWND, HIMC aIMC);
+    static LONG WINAPI ImmGetCompositionStringProc(HIMC aIMC, DWORD aIndex,
+                                                   LPVOID aBuf, DWORD aLen);
+    static BOOL WINAPI ImmSetCandidateWindowProc(HIMC hIMC,
+                                                 LPCANDIDATEFORM plCandidate);
+    static BOOL WINAPI ImmNotifyIME(HIMC aIMC, DWORD aAction, DWORD aIndex,
+                                    DWORD aValue);
+
     class FlashThrottleAsyncMsg : public ChildAsyncCall
     {
       public:
@@ -358,7 +384,7 @@ private:
           mWindowed(isWindowed)
         {}
 
-        void Run() override;
+        NS_IMETHOD Run() override;
 
         WNDPROC GetProc();
         HWND GetWnd() { return mWnd; }
@@ -374,7 +400,9 @@ private:
         bool                 mWindowed;
     };
 
-#endif
+    bool ShouldPostKeyMessage(UINT message, WPARAM wParam, LPARAM lParam);
+    bool MaybePostKeyMessage(UINT message, WPARAM wParam, LPARAM lParam);
+#endif // #if defined(OS_WIN)
     const NPPluginFuncs* mPluginIface;
     nsCString                   mMimeType;
     uint16_t                    mMode;
@@ -385,10 +413,40 @@ private:
 #if defined(XP_DARWIN)
     double mContentsScaleFactor;
 #endif
+    double mCSSZoomFactor;
+    uint32_t mPostingKeyEvents;
+    uint32_t mPostingKeyEventsOutdated;
     int16_t               mDrawingModel;
 
+    NPAsyncSurface* mCurrentDirectSurface;
+
+    // The surface hashtables below serve a few purposes. They let us verify
+    // and retain extra information about plugin surfaces, and they let us
+    // free shared memory that the plugin might forget to release.
+    struct DirectBitmap {
+        DirectBitmap(PluginInstanceChild* aOwner, const Shmem& shmem,
+                     const gfx::IntSize& size, uint32_t stride, SurfaceFormat format);
+
+      private:
+        ~DirectBitmap();
+
+      public:
+        NS_INLINE_DECL_THREADSAFE_REFCOUNTING(DirectBitmap);
+
+        PluginInstanceChild* mOwner;
+        Shmem mShmem;
+        gfx::SurfaceFormat mFormat;
+        gfx::IntSize mSize;
+        uint32_t mStride;
+    };
+    nsRefPtrHashtable<nsPtrHashKey<NPAsyncSurface>, DirectBitmap> mDirectBitmaps;
+
+#if defined(XP_WIN)
+    nsDataHashtable<nsPtrHashKey<NPAsyncSurface>, WindowsHandle> mDxgiSurfaces;
+#endif
+
     mozilla::Mutex mAsyncInvalidateMutex;
-    CancelableTask *mAsyncInvalidateTask;
+    CancelableRunnable *mAsyncInvalidateTask;
 
     // Cached scriptable actors to avoid IPC churn
     PluginScriptableObjectChild* mCachedWindowActor;
@@ -579,10 +637,10 @@ private:
     gfxSurfaceType mSurfaceType;
 
     // Keep InvalidateRect task pointer to be able Cancel it on Destroy
-    CancelableTask *mCurrentInvalidateTask;
+    RefPtr<CancelableRunnable> mCurrentInvalidateTask;
 
     // Keep AsyncSetWindow task pointer to be able to Cancel it on Destroy
-    CancelableTask *mCurrentAsyncSetWindowTask;
+    RefPtr<CancelableRunnable> mCurrentAsyncSetWindowTask;
 
     // True while plugin-child in plugin call
     // Use to prevent plugin paint re-enter
@@ -612,6 +670,37 @@ private:
 
     // Has this instance been destroyed, either by ActorDestroy or NPP_Destroy?
     bool mDestroyed;
+
+#ifdef XP_WIN
+    // WM_*CHAR messages are never consumed by chrome process's widget.
+    // So, if preceding keydown or keyup event is consumed by reserved
+    // shortcut key in the chrome process, we shouldn't send the following
+    // WM_*CHAR messages to the plugin.
+    bool mLastKeyEventConsumed;
+#endif // #ifdef XP_WIN
+
+    // While IME in the process has composition, this is set to true.
+    // Otherwise, false.
+    static bool sIsIMEComposing;
+
+    // A counter is incremented by AutoStackHelper to indicate that there is an
+    // active plugin call which should be preventing shutdown.
+public:
+    class AutoStackHelper {
+    public:
+        explicit AutoStackHelper(PluginInstanceChild* instance)
+            : mInstance(instance)
+        {
+            ++mInstance->mStackDepth;
+        }
+        ~AutoStackHelper() {
+            --mInstance->mStackDepth;
+        }
+    private:
+        PluginInstanceChild *const mInstance;
+    };
+private:
+    int32_t mStackDepth;
 };
 
 } // namespace plugins

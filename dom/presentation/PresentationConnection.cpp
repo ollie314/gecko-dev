@@ -6,6 +6,8 @@
 
 #include "mozilla/AsyncEventDispatcher.h"
 #include "mozilla/dom/MessageEvent.h"
+#include "mozilla/dom/MessageEventBinding.h"
+#include "nsContentUtils.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsIPresentationService.h"
 #include "nsServiceManagerUtils.h"
@@ -31,13 +33,17 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION_INHERITED(PresentationConnection)
   NS_INTERFACE_MAP_ENTRY(nsIPresentationSessionListener)
 NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
 
-PresentationConnection::PresentationConnection(nsPIDOMWindow* aWindow,
+PresentationConnection::PresentationConnection(nsPIDOMWindowInner* aWindow,
                                                const nsAString& aId,
+                                               const uint8_t aRole,
                                                PresentationConnectionState aState)
   : DOMEventTargetHelper(aWindow)
   , mId(aId)
   , mState(aState)
 {
+  MOZ_ASSERT(aRole == nsIPresentationService::ROLE_CONTROLLER ||
+             aRole == nsIPresentationService::ROLE_RECEIVER);
+  mRole = aRole;
 }
 
 /* virtual */ PresentationConnection::~PresentationConnection()
@@ -45,12 +51,15 @@ PresentationConnection::PresentationConnection(nsPIDOMWindow* aWindow,
 }
 
 /* static */ already_AddRefed<PresentationConnection>
-PresentationConnection::Create(nsPIDOMWindow* aWindow,
+PresentationConnection::Create(nsPIDOMWindowInner* aWindow,
                                const nsAString& aId,
+                               const uint8_t aRole,
                                PresentationConnectionState aState)
 {
+  MOZ_ASSERT(aRole == nsIPresentationService::ROLE_CONTROLLER ||
+             aRole == nsIPresentationService::ROLE_RECEIVER);
   RefPtr<PresentationConnection> connection =
-    new PresentationConnection(aWindow, aId, aState);
+    new PresentationConnection(aWindow, aId, aRole, aState);
   return NS_WARN_IF(!connection->Init()) ? nullptr : connection.forget();
 }
 
@@ -67,7 +76,7 @@ PresentationConnection::Init()
     return false;
   }
 
-  nsresult rv = service->RegisterSessionListener(mId, this);
+  nsresult rv = service->RegisterSessionListener(mId, mRole, this);
   if(NS_WARN_IF(NS_FAILED(rv))) {
     return false;
   }
@@ -84,7 +93,7 @@ PresentationConnection::Shutdown()
     return;
   }
 
-  nsresult rv = service->UnregisterSessionListener(mId);
+  nsresult rv = service->UnregisterSessionListener(mId, mRole);
   NS_WARN_IF(NS_FAILED(rv));
 }
 
@@ -116,25 +125,10 @@ PresentationConnection::State() const
 
 void
 PresentationConnection::Send(const nsAString& aData,
-                          ErrorResult& aRv)
+                             ErrorResult& aRv)
 {
   // Sending is not allowed if the session is not connected.
   if (NS_WARN_IF(mState != PresentationConnectionState::Connected)) {
-    aRv.Throw(NS_ERROR_DOM_INVALID_STATE_ERR);
-    return;
-  }
-
-  nsresult rv;
-  nsCOMPtr<nsIStringInputStream> stream =
-    do_CreateInstance(NS_STRINGINPUTSTREAM_CONTRACTID, &rv);
-  if(NS_WARN_IF(NS_FAILED(rv))) {
-    aRv.Throw(NS_ERROR_DOM_INVALID_STATE_ERR);
-    return;
-  }
-
-  NS_ConvertUTF16toUTF8 msgString(aData);
-  rv = stream->SetData(msgString.BeginReading(), msgString.Length());
-  if(NS_WARN_IF(NS_FAILED(rv))) {
     aRv.Throw(NS_ERROR_DOM_INVALID_STATE_ERR);
     return;
   }
@@ -146,7 +140,7 @@ PresentationConnection::Send(const nsAString& aData,
     return;
   }
 
-  rv = service->SendSessionMessage(mId, stream);
+  nsresult rv = service->SendSessionMessage(mId, mRole, aData);
   if(NS_WARN_IF(NS_FAILED(rv))) {
     aRv.Throw(NS_ERROR_DOM_OPERATION_ERR);
   }
@@ -179,12 +173,12 @@ PresentationConnection::Terminate(ErrorResult& aRv)
     return;
   }
 
-  NS_WARN_IF(NS_FAILED(service->TerminateSession(mId)));
+  NS_WARN_IF(NS_FAILED(service->TerminateSession(mId, mRole)));
 }
 
 NS_IMETHODIMP
 PresentationConnection::NotifyStateChange(const nsAString& aSessionId,
-                                       uint16_t aState)
+                                          uint16_t aState)
 {
   if (!aSessionId.Equals(mId)) {
     return NS_ERROR_INVALID_ARG;
@@ -220,7 +214,7 @@ PresentationConnection::NotifyStateChange(const nsAString& aSessionId,
       return NS_ERROR_NOT_AVAILABLE;
     }
 
-    nsresult rv = service->UnregisterSessionListener(mId);
+    nsresult rv = service->UnregisterSessionListener(mId, mRole);
     if(NS_WARN_IF(NS_FAILED(rv))) {
       return rv;
     }
@@ -231,7 +225,7 @@ PresentationConnection::NotifyStateChange(const nsAString& aSessionId,
 
 NS_IMETHODIMP
 PresentationConnection::NotifyMessage(const nsAString& aSessionId,
-                                   const nsACString& aData)
+                                      const nsACString& aData)
 {
   if (!aSessionId.Equals(mId)) {
     return NS_ERROR_INVALID_ARG;
@@ -283,15 +277,10 @@ PresentationConnection::DispatchMessageEvent(JS::Handle<JS::Value> aData)
   RefPtr<MessageEvent> messageEvent =
     NS_NewDOMMessageEvent(this, nullptr, nullptr);
 
-  rv = messageEvent->InitMessageEvent(NS_LITERAL_STRING("message"),
-                                      false, false,
-                                      aData,
-                                      origin,
-                                      EmptyString(), nullptr);
-  if (NS_WARN_IF(NS_FAILED(rv))) {
-    return rv;
-  }
-
+  messageEvent->InitMessageEvent(nullptr,
+                                 NS_LITERAL_STRING("message"),
+                                 false, false, aData, origin,
+                                 EmptyString(), nullptr, nullptr);
   messageEvent->SetTrusted(true);
 
   RefPtr<AsyncEventDispatcher> asyncDispatcher =

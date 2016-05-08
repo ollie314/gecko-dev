@@ -9,7 +9,11 @@
 
 #if defined(JS_CODEGEN_MIPS32)
 # include "jit/mips32/Assembler-mips32.h"
+#elif defined(JS_CODEGEN_MIPS64)
+# include "jit/mips64/Assembler-mips64.h"
 #endif
+
+#include "jit/AtomicOp.h"
 
 namespace js {
 namespace jit {
@@ -95,6 +99,8 @@ class MacroAssemblerMIPSShared : public Assembler
     void ma_xor(Register rd, Imm32 imm);
     void ma_xor(Register rd, Register rs, Imm32 imm);
 
+    void ma_ctz(Register rd, Register rs);
+
     // load
     void ma_load(Register dest, const BaseIndex& src, LoadStoreSize size = SizeWord,
                  LoadStoreExtension extension = SignExtend);
@@ -113,6 +119,7 @@ class MacroAssemblerMIPSShared : public Assembler
 
     // subtract
     void ma_subu(Register rd, Register rs, Imm32 imm);
+    void ma_subu(Register rd, Register rs);
     void ma_subu(Register rd, Imm32 imm);
     void ma_subTestOverflow(Register rd, Register rs, Imm32 imm, Label* overflow);
 
@@ -139,8 +146,12 @@ class MacroAssemblerMIPSShared : public Assembler
         ma_li(ScratchRegister, imm);
         ma_b(lhs, ScratchRegister, l, c, jumpKind);
     }
+    template <typename T>
+    void ma_b(Register lhs, T rhs, wasm::JumpTarget target, Condition c,
+              JumpKind jumpKind = LongJump);
 
     void ma_b(Label* l, JumpKind jumpKind = LongJump);
+    void ma_b(wasm::JumpTarget target, JumpKind jumpKind = LongJump);
 
     // fp instructions
     void ma_lis(FloatRegister dest, float value);
@@ -177,6 +188,53 @@ class MacroAssemblerMIPSShared : public Assembler
     void moveFromFloat32(FloatRegister src, Register dest) {
         as_mfc1(dest, src);
     }
+
+  private:
+    void atomicEffectOpMIPSr2(int nbytes, AtomicOp op, const Register& value, const Register& addr,
+                              Register flagTemp, Register valueTemp, Register offsetTemp, Register maskTemp);
+    void atomicFetchOpMIPSr2(int nbytes, bool signExtend, AtomicOp op, const Register& value, const Register& addr,
+                             Register flagTemp, Register valueTemp, Register offsetTemp, Register maskTemp,
+                             Register output);
+    void compareExchangeMIPSr2(int nbytes, bool signExtend, const Register& addr, Register oldval,
+                               Register newval, Register flagTemp, Register valueTemp, Register offsetTemp,
+                               Register maskTemp, Register output);
+
+  protected:
+    void atomicEffectOp(int nbytes, AtomicOp op, const Imm32& value, const Address& address,
+                        Register flagTemp, Register valueTemp, Register offsetTemp, Register maskTemp);
+    void atomicEffectOp(int nbytes, AtomicOp op, const Imm32& value, const BaseIndex& address,
+                        Register flagTemp, Register valueTemp, Register offsetTemp, Register maskTemp);
+    void atomicEffectOp(int nbytes, AtomicOp op, const Register& value, const Address& address,
+                        Register flagTemp, Register valueTemp, Register offsetTemp, Register maskTemp);
+    void atomicEffectOp(int nbytes, AtomicOp op, const Register& value, const BaseIndex& address,
+                        Register flagTemp, Register valueTemp, Register offsetTemp, Register maskTemp);
+
+    void atomicFetchOp(int nbytes, bool signExtend, AtomicOp op, const Imm32& value,
+                       const Address& address, Register flagTemp, Register valueTemp,
+                       Register offsetTemp, Register maskTemp, Register output);
+    void atomicFetchOp(int nbytes, bool signExtend, AtomicOp op, const Imm32& value,
+                       const BaseIndex& address, Register flagTemp, Register valueTemp,
+                       Register offsetTemp, Register maskTemp, Register output);
+    void atomicFetchOp(int nbytes, bool signExtend, AtomicOp op, const Register& value,
+                       const Address& address, Register flagTemp, Register valueTemp,
+                       Register offsetTemp, Register maskTemp, Register output);
+    void atomicFetchOp(int nbytes, bool signExtend, AtomicOp op, const Register& value,
+                       const BaseIndex& address, Register flagTemp, Register valueTemp,
+                       Register offsetTemp, Register maskTemp, Register output);
+
+    void compareExchange(int nbytes, bool signExtend, const Address& address, Register oldval,
+                         Register newval, Register valueTemp, Register offsetTemp, Register maskTemp,
+                         Register output);
+    void compareExchange(int nbytes, bool signExtend, const BaseIndex& address, Register oldval,
+                         Register newval, Register valueTemp, Register offsetTemp, Register maskTemp,
+                         Register output);
+
+    void atomicExchange(int nbytes, bool signExtend, const Address& address, Register value,
+                        Register valueTemp, Register offsetTemp, Register maskTemp,
+                        Register output);
+    void atomicExchange(int nbytes, bool signExtend, const BaseIndex& address, Register value,
+                        Register valueTemp, Register offsetTemp, Register maskTemp,
+                        Register output);
 };
 
 } // namespace jit

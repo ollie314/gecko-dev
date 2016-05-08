@@ -19,7 +19,7 @@ function fakeSvcWinMediator() {
           return this.cnt-- > 0;
         },
         getNext: function() {
-          let elt = {addTopics: [], remTopics: []};
+          let elt = {addTopics: [], remTopics: [], numAPL: 0, numRPL: 0};
           logs.push(elt);
           return {
             addEventListener: function(topic) {
@@ -27,7 +27,15 @@ function fakeSvcWinMediator() {
             },
             removeEventListener: function(topic) {
               elt.remTopics.push(topic);
-            }
+            },
+            gBrowser: {
+              addProgressListener() {
+                elt.numAPL++;
+              },
+              removeProgressListener() {
+                elt.numRPL++;
+              },
+            },
           };
         }
       };
@@ -53,7 +61,7 @@ function run_test() {
   logs = fakeSvcWinMediator();
   Svc.Obs.notify("weave:engine:start-tracking");
   do_check_eq(logs.length, 2);
-  for each (let log in logs) {
+  for (let log of logs) {
     do_check_eq(log.addTopics.length, 5);
     do_check_true(log.addTopics.indexOf("pageshow") >= 0);
     do_check_true(log.addTopics.indexOf("TabOpen") >= 0);
@@ -61,13 +69,15 @@ function run_test() {
     do_check_true(log.addTopics.indexOf("TabSelect") >= 0);
     do_check_true(log.addTopics.indexOf("unload") >= 0);
     do_check_eq(log.remTopics.length, 0);
+    do_check_eq(log.numAPL, 1, "Added 1 progress listener");
+    do_check_eq(log.numRPL, 0, "Didn't remove a progress listener");
   }
 
   _("Test listeners are unregistered on windows");
   logs = fakeSvcWinMediator();
   Svc.Obs.notify("weave:engine:stop-tracking");
   do_check_eq(logs.length, 2);
-  for each (let log in logs) {
+  for (let log of logs) {
     do_check_eq(log.addTopics.length, 0);
     do_check_eq(log.remTopics.length, 5);
     do_check_true(log.remTopics.indexOf("pageshow") >= 0);
@@ -75,10 +85,12 @@ function run_test() {
     do_check_true(log.remTopics.indexOf("TabClose") >= 0);
     do_check_true(log.remTopics.indexOf("TabSelect") >= 0);
     do_check_true(log.remTopics.indexOf("unload") >= 0);
+    do_check_eq(log.numAPL, 0, "Didn't add a progress listener");
+    do_check_eq(log.numRPL, 1, "Removed 1 progress listener");
   }
 
   _("Test tab listener");
-  for each (let evttype in ["TabOpen", "TabClose", "TabSelect"]) {
+  for (let evttype of ["TabOpen", "TabClose", "TabSelect"]) {
     // Pretend we just synced.
     tracker.clearChangedIDs();
     do_check_false(tracker.modified);
@@ -95,6 +107,21 @@ function run_test() {
   do_check_false(tracker.modified);
 
   tracker.onTab({type: "pageshow", originalTarget: "pageshow"});
+  do_check_true(Utils.deepEquals(Object.keys(engine.getChangedIDs()),
+                                 [clientsEngine.localID]));
+
+  // Pretend we just synced and saw some progress listeners.
+  tracker.clearChangedIDs();
+  do_check_false(tracker.modified);
+  tracker.onLocationChange({ isTopLevel: false }, undefined, undefined, 0);
+  do_check_false(tracker.modified, "non-toplevel request didn't flag as modified");
+
+  tracker.onLocationChange({ isTopLevel: true }, undefined, undefined,
+                           Ci.nsIWebProgressListener.LOCATION_CHANGE_SAME_DOCUMENT);
+  do_check_false(tracker.modified, "location change within the same document request didn't flag as modified");
+
+  tracker.onLocationChange({ isTopLevel: true }, undefined, undefined, 0);
+  do_check_true(tracker.modified, "location change for a new top-level document flagged as modified");
   do_check_true(Utils.deepEquals(Object.keys(engine.getChangedIDs()),
                                  [clientsEngine.localID]));
 }

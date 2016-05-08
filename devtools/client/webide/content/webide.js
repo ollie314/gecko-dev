@@ -6,13 +6,14 @@ var Cc = Components.classes;
 var Cu = Components.utils;
 var Ci = Components.interfaces;
 
-Cu.import("resource://devtools/client/framework/gDevTools.jsm");
 Cu.import("resource://gre/modules/Task.jsm");
 
 const {require} = Cu.import("resource://devtools/shared/Loader.jsm", {});
+const {gDevTools} = require("devtools/client/framework/devtools");
+const {gDevToolsBrowser} = require("devtools/client/framework/devtools-browser");
 const {Toolbox} = require("devtools/client/framework/toolbox");
-const {Services} = Cu.import("resource://gre/modules/Services.jsm");
-const {AppProjects} = require("devtools/client/app-manager/app-projects");
+const Services = require("Services");
+const {AppProjects} = require("devtools/client/webide/modules/app-projects");
 const {Connection} = require("devtools/shared/client/connection-manager");
 const {AppManager} = require("devtools/client/webide/modules/app-manager");
 const EventEmitter = require("devtools/shared/event-emitter");
@@ -26,7 +27,7 @@ const {RuntimeScanners} = require("devtools/client/webide/modules/runtimes");
 const {showDoorhanger} = require("devtools/client/shared/doorhanger");
 const {Simulators} = require("devtools/client/webide/modules/simulators");
 
-const Strings = Services.strings.createBundle("chrome://browser/locale/devtools/webide.properties");
+const Strings = Services.strings.createBundle("chrome://devtools/locale/webide.properties");
 
 const HTML = "http://www.w3.org/1999/xhtml";
 const HELP_URL = "https://developer.mozilla.org/docs/Tools/WebIDE/Troubleshooting";
@@ -1154,5 +1155,5 @@ var Cmds = {
   resetZoom: function() {
     UI.contentViewer.fullZoom = 1;
     Services.prefs.setCharPref("devtools.webide.zoom", 1);
-  },
+  }
 };

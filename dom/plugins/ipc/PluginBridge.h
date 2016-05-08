@@ -7,6 +7,8 @@
 #ifndef mozilla_plugins_PluginBridge_h
 #define mozilla_plugins_PluginBridge_h
 
+#include "base/process.h"
+
 namespace mozilla {
 
 namespace dom {
@@ -19,13 +21,14 @@ bool
 SetupBridge(uint32_t aPluginId, dom::ContentParent* aContentParent,
             bool aForceBridgeNow, nsresult* aResult, uint32_t* aRunID);
 
-bool
+nsresult
 FindPluginsForContent(uint32_t aPluginEpoch,
                       nsTArray<PluginTag>* aPlugins,
                       uint32_t* aNewPluginEpoch);
 
 void
 TerminatePlugin(uint32_t aPluginId,
+                base::ProcessId aContentProcessId,
                 const nsCString& aMonitorDescription,
                 const nsAString& aBrowserDumpId);
 

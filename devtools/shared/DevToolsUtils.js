@@ -12,157 +12,12 @@ var promise = require("promise");
 
 loader.lazyRequireGetter(this, "FileUtils",
                          "resource://gre/modules/FileUtils.jsm", true);
-loader.lazyRequireGetter(this, "setTimeout", "Timer", true);
 
-/**
- * Turn the error |aError| into a string, without fail.
- */
-exports.safeErrorString = function safeErrorString(aError) {
-  try {
-    let errorString = aError.toString();
-    if (typeof errorString == "string") {
-      // Attempt to attach a stack to |errorString|. If it throws an error, or
-      // isn't a string, don't use it.
-      try {
-        if (aError.stack) {
-          let stack = aError.stack.toString();
-          if (typeof stack == "string") {
-            errorString += "\nStack: " + stack;
-          }
-        }
-      } catch (ee) { }
-
-      // Append additional line and column number information to the output,
-      // since it might not be part of the stringified error.
-      if (typeof aError.lineNumber == "number" && typeof aError.columnNumber == "number") {
-        errorString += "Line: " + aError.lineNumber + ", column: " + aError.columnNumber;
-      }
-
-      return errorString;
-    }
-  } catch (ee) { }
-
-  // We failed to find a good error description, so do the next best thing.
-  return Object.prototype.toString.call(aError);
+// Re-export the thread-safe utils.
+const ThreadSafeDevToolsUtils = require("./ThreadSafeDevToolsUtils.js");
+for (let key of Object.keys(ThreadSafeDevToolsUtils)) {
+  exports[key] = ThreadSafeDevToolsUtils[key];
 }
-
-/**
- * Report that |aWho| threw an exception, |aException|.
- */
-exports.reportException = function reportException(aWho, aException) {
-  let msg = aWho + " threw an exception: " + exports.safeErrorString(aException);
-
-  dump(msg + "\n");
-
-  if (Cu && Cu.reportError) {
-    /*
-     * Note that the xpcshell test harness registers an observer for
-     * console messages, so when we're running tests, this will cause
-     * the test to quit.
-     */
-    Cu.reportError(msg);
-  }
-}
-
-/**
- * Given a handler function that may throw, return an infallible handler
- * function that calls the fallible handler, and logs any exceptions it
- * throws.
- *
- * @param aHandler function
- *      A handler function, which may throw.
- * @param aName string
- *      A name for aHandler, for use in error messages. If omitted, we use
- *      aHandler.name.
- *
- * (SpiderMonkey does generate good names for anonymous functions, but we
- * don't have a way to get at them from JavaScript at the moment.)
- */
-exports.makeInfallible = function makeInfallible(aHandler, aName) {
-  if (!aName)
-    aName = aHandler.name;
-
-  return function (/* arguments */) {
-    try {
-      return aHandler.apply(this, arguments);
-    } catch (ex) {
-      let who = "Handler function";
-      if (aName) {
-        who += " " + aName;
-      }
-      return exports.reportException(who, ex);
-    }
-  }
-}
-/**
- * Interleaves two arrays element by element, returning the combined array, like
- * a zip. In the case of arrays with different sizes, undefined values will be
- * interleaved at the end along with the extra values of the larger array.
- *
- * @param Array a
- * @param Array b
- * @returns Array
- *          The combined array, in the form [a1, b1, a2, b2, ...]
- */
-exports.zip = function zip(a, b) {
-  if (!b) {
-    return a;
-  }
-  if (!a) {
-    return b;
-  }
-  const pairs = [];
-  for (let i = 0, aLength = a.length, bLength = b.length;
-       i < aLength || i < bLength;
-       i++) {
-    pairs.push([a[i], b[i]]);
-  }
-  return pairs;
-};
-
-
-/**
- * Converts an object into an array with 2-element arrays as key/value
- * pairs of the object. `{ foo: 1, bar: 2}` would become
- * `[[foo, 1], [bar 2]]` (order not guaranteed);
- *
- * @param object obj
- * @returns array
- */
-exports.entries = function entries(obj) {
-  return Object.keys(obj).map(k => [k, obj[k]]);
-}
-
-/**
- * Takes an array of 2-element arrays as key/values pairs and
- * constructs an object using them.
- */
-exports.toObject = function(arr) {
-  const obj = {};
-  for(let pair of arr) {
-    obj[pair[0]] = pair[1];
-  }
-  return obj;
-}
-
-/**
- * Composes the given functions into a single function, which will
- * apply the results of each function right-to-left, starting with
- * applying the given arguments to the right-most function.
- * `compose(foo, bar, baz)` === `args => foo(bar(baz(args)`
- *
- * @param ...function funcs
- * @returns function
- */
-exports.compose = function compose(...funcs) {
-  return (...args) => {
-    const initialValue = funcs[funcs.length - 1].apply(null, args);
-    const leftFuncs = funcs.slice(0, -1);
-    return leftFuncs.reduceRight((composed, f) => f(composed),
-                                 initialValue);
-  };
-}
-
 
 /**
  * Waits for the next tick in the event loop to execute a callback.
@@ -171,8 +26,19 @@ exports.executeSoon = function executeSoon(aFn) {
   if (isWorker) {
     setImmediate(aFn);
   } else {
+    let executor;
+    // Only enable async stack reporting when DEBUG_JS_MODULES is set
+    // (customized local builds) to avoid a performance penalty.
+    if (AppConstants.DEBUG_JS_MODULES || exports.testing) {
+      let stack = components.stack;
+      executor = () => {
+        Cu.callFunctionWithAsyncStack(aFn, stack, "DevToolsUtils.executeSoon");
+      };
+    } else {
+      executor = aFn;
+    }
     Services.tm.mainThread.dispatch({
-      run: exports.makeInfallible(aFn)
+      run: exports.makeInfallible(executor)
     }, Ci.nsIThread.DISPATCH_NORMAL);
   }
 };
@@ -250,7 +116,7 @@ exports.yieldingEach = function yieldingEach(aArray, aFn) {
   }());
 
   return promise.all(outstanding);
-}
+};
 
 /**
  * Like XPCOMUtils.defineLazyGetter, but with a |this| sensitive getter that
@@ -325,8 +191,13 @@ exports.getProperty = function getProperty(aObj, aKey) {
 exports.hasSafeGetter = function hasSafeGetter(aDesc) {
   // Scripted functions that are CCWs will not appear scripted until after
   // unwrapping.
-  let fn = aDesc.get.unwrap();
-  return fn && fn.callable && fn.class == "Function" && fn.script === undefined;
+  try {
+    let fn = aDesc.get.unwrap();
+    return fn && fn.callable && fn.class == "Function" && fn.script === undefined;
+  } catch(e) {
+    // Avoid exception 'Object in compartment marked as invisible to Debugger'
+    return false;
+  }
 };
 
 /**
@@ -365,7 +236,7 @@ exports.dumpn = function dumpn(str) {
   if (exports.dumpn.wantLogging) {
     dump("DBG-SERVER: " + str + "\n");
   }
-}
+};
 
 // We want wantLogging to be writable. The exports object is frozen by the
 // loader, so define it on dumpn instead.
@@ -383,40 +254,6 @@ exports.dumpv = function(msg) {
 // We want wantLogging to be writable. The exports object is frozen by the
 // loader, so define it on dumpn instead.
 exports.dumpv.wantVerbose = false;
-
-/**
- * Utility function for updating an object with the properties of
- * other objects.
- *
- * @param aTarget Object
- *        The object being updated.
- * @param aNewAttrs Object
- *        The rest params are objects to update aTarget with. You
- *        can pass as many as you like.
- */
-exports.update = function update(aTarget, ...aArgs) {
-  for (let attrs of aArgs) {
-    for (let key in attrs) {
-      let desc = Object.getOwnPropertyDescriptor(attrs, key);
-
-      if (desc) {
-        Object.defineProperty(aTarget, key, desc);
-      }
-    }
-  }
-
-  return aTarget;
-}
-
-/**
- * Utility function for getting the values from an object as an array
- *
- * @param aObject Object
- *        The object to iterate over
- */
-exports.values = function values(aObject) {
-  return Object.keys(aObject).map(k => aObject[k]);
-}
 
 /**
  * Defines a getter on a specified object that will be created upon first use.
@@ -440,25 +277,10 @@ exports.defineLazyGetter = function defineLazyGetter(aObject, aName, aLambda) {
   });
 };
 
-// DEPRECATED: use DevToolsUtils.assert(condition, message) instead!
-let haveLoggedDeprecationMessage = false;
-exports.dbg_assert = function dbg_assert(cond, e) {
-  if (!haveLoggedDeprecationMessage) {
-    haveLoggedDeprecationMessage = true;
-    const deprecationMessage = "DevToolsUtils.dbg_assert is deprecated! Use DevToolsUtils.assert instead!\n"
-          + Error().stack;
-    dump(deprecationMessage);
-    if (typeof console === "object" && console && console.warn) {
-      console.warn(deprecationMessage);
-    }
-  }
-
-  if (!cond) {
-    return e;
-  }
-};
-
 exports.defineLazyGetter(this, "AppConstants", () => {
+  if (isWorker) {
+    return {};
+  }
   const scope = {};
   Cu.import("resource://gre/modules/AppConstants.jsm", scope);
   return scope.AppConstants;
@@ -469,8 +291,17 @@ exports.defineLazyGetter(this, "AppConstants", () => {
  */
 exports.noop = function () { };
 
+let assertionFailureCount = 0;
+
+Object.defineProperty(exports, "assertionFailureCount", {
+  get() {
+    return assertionFailureCount;
+  }
+});
+
 function reallyAssert(condition, message) {
   if (!condition) {
+    assertionFailureCount++;
     const err = new Error("Assertion failure: " + message);
     exports.reportException("DevToolsUtils.assert", err);
     throw err;
@@ -492,15 +323,12 @@ function reallyAssert(condition, message) {
  * assertion failure is logged and then an error is thrown.
  *
  * If assertions are not enabled, then this function is a no-op.
- *
- * This is an improvement over `dbg_assert`, which doesn't actually cause any
- * fatal behavior, and is therefore much easier to accidentally ignore.
  */
 Object.defineProperty(exports, "assert", {
   get: () => (AppConstants.DEBUG || AppConstants.DEBUG_JS_MODULES || this.testing)
     ? reallyAssert
     : exports.noop,
-})
+});
 
 /**
  * Defines a getter on a specified object for a module.  The module will not
@@ -553,8 +381,14 @@ exports.defineLazyGetter(this, "NetworkHelper", () => {
  *        - loadFromCache: if false, will bypass the cache and
  *          always load fresh from the network (default: true)
  *        - policy: the nsIContentPolicy type to apply when fetching the URL
+ *                  (only works when loading from system principal)
  *        - window: the window to get the loadGroup from
  *        - charset: the charset to use if the channel doesn't provide one
+ *        - principal: the principal to use, if omitted, the request is loaded
+ *                     with the system principal
+ *        - cacheKey: when loading from cache, use this key to retrieve a cache
+ *                    specific to a given SHEntry. (Allows loading POST
+ *                    requests from cache)
  * @returns Promise that resolves with an object with the following members on
  *          success:
  *           - content: the document at that URL, as a string,
@@ -569,7 +403,9 @@ exports.defineLazyGetter(this, "NetworkHelper", () => {
 function mainThreadFetch(aURL, aOptions={ loadFromCache: true,
                                           policy: Ci.nsIContentPolicy.TYPE_OTHER,
                                           window: null,
-                                          charset: null }) {
+                                          charset: null,
+                                          principal: null,
+                                          cacheKey: null }) {
   // Create a channel.
   let url = aURL.split(" -> ").pop();
   let channel;
@@ -583,6 +419,13 @@ function mainThreadFetch(aURL, aOptions={ loadFromCache: true,
   channel.loadFlags = aOptions.loadFromCache
     ? channel.LOAD_FROM_CACHE
     : channel.LOAD_BYPASS_CACHE;
+
+  // When loading from cache, the cacheKey allows us to target a specific
+  // SHEntry and offer ways to restore POST requests from cache.
+  if (aOptions.loadFromCache &&
+      aOptions.cacheKey && channel instanceof Ci.nsICacheInfoChannel) {
+    channel.cacheKey = aOptions.cacheKey;
+  }
 
   if (aOptions.window) {
     // Respect private browsing.
@@ -668,12 +511,40 @@ function mainThreadFetch(aURL, aOptions={ loadFromCache: true,
  * @param {Object} options - The options object passed to @method fetch.
  * @return {nsIChannel} - The newly created channel. Throws on failure.
  */
-function newChannelForURL(url, { policy }) {
+function newChannelForURL(url, { policy, window, principal }) {
+  var securityFlags = Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL;
+  if (window) {
+    // Respect private browsing.
+    var req = window.QueryInterface(Ci.nsIInterfaceRequestor)
+                    .getInterface(Ci.nsIWebNavigation)
+                    .QueryInterface(Ci.nsIDocumentLoader)
+                    .loadGroup;
+    if (req) {
+      var nc = req.notificationCallbacks;
+      if (nc) {
+        try {
+          var lc = nc.getInterface(Ci.nsILoadContext);
+          if (lc) {
+            if (lc.usePrivateBrowsing) {
+              securityFlags |= Ci.nsILoadInfo.SEC_FORCE_PRIVATE_BROWSING;
+            }
+          }
+        } catch(ex) {}
+      }
+    }
+  }
+
   let channelOptions = {
     contentPolicyType: policy,
     loadUsingSystemPrincipal: true,
+    securityFlags: securityFlags,
     uri: url
   };
+  if (principal) {
+    channelOptions.loadingPrincipal = principal;
+  } else {
+    channelOptions.loadUsingSystemPrincipal = true;
+  }
 
   try {
     return NetUtil.newChannel(channelOptions);
@@ -697,7 +568,7 @@ if (!this.isWorker) {
   // issuing an rpc request, to fetch the URL on our behalf.
   exports.fetch = function (url, options) {
     return rpc("fetch", url, options);
-  }
+  };
 }
 
 /**
@@ -809,30 +680,4 @@ exports.openFileStream = function (filePath) {
       }
     );
   });
-}
-
-exports.isGenerator = function (fn) {
-  if (typeof fn !== "function") {
-    return false;
-  }
-  let proto = Object.getPrototypeOf(fn);
-  if (!proto) {
-    return false;
-  }
-  let ctor = proto.constructor;
-  if (!ctor) {
-    return false;
-  }
-  return ctor.name == "GeneratorFunction";
-};
-
-exports.isPromise = function (p) {
-  return p && typeof p.then === "function";
-};
-
-/**
- * Return true if `thing` is a SavedFrame, false otherwise.
- */
-exports.isSavedFrame = function (thing) {
-  return Object.prototype.toString.call(thing) === "[object SavedFrame]";
 };

@@ -17,14 +17,23 @@
 
 #import <Cocoa/Cocoa.h>
 
+// We can escape the default delimiters ("[[" and "]]") by temporarily
+// changing the delimiters just before they appear, and changing them back
+// just after.
+#define DLIM_ESCAPE_START "[[dlim (( ))]]"
+#define DLIM_ESCAPE_END "((dlim [[ ]]))"
+
 using namespace mozilla;
 
 class SpeechTaskCallback final : public nsISpeechTaskCallback
 {
 public:
-  SpeechTaskCallback(nsISpeechTask* aTask, NSSpeechSynthesizer* aSynth)
+  SpeechTaskCallback(nsISpeechTask* aTask,
+                     NSSpeechSynthesizer* aSynth,
+                     const nsTArray<size_t>& aOffsets)
     : mTask(aTask)
     , mSpeechSynthesizer(aSynth)
+    , mOffsets(aOffsets)
   {
     mStartingTime = TimeStamp::Now();
   }
@@ -50,6 +59,7 @@ private:
   NSSpeechSynthesizer* mSpeechSynthesizer;
   TimeStamp mStartingTime;
   uint32_t mCurrentIndex;
+  nsTArray<size_t> mOffsets;
 };
 
 NS_IMPL_CYCLE_COLLECTION(SpeechTaskCallback, mTask);
@@ -79,6 +89,11 @@ SpeechTaskCallback::OnPause()
   NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT;
 
   [mSpeechSynthesizer pauseSpeakingAtBoundary:NSSpeechImmediateBoundary];
+  if (!mTask) {
+    // When calling pause() on child porcess, it may not receive end event
+    // from chrome process yet.
+    return NS_ERROR_FAILURE;
+  }
   mTask->DispatchPause(GetTimeDurationFromStart(), mCurrentIndex);
   return NS_OK;
 
@@ -91,6 +106,11 @@ SpeechTaskCallback::OnResume()
   NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT;
 
   [mSpeechSynthesizer continueSpeaking];
+  if (!mTask) {
+    // When calling resume() on child porcess, it may not receive end event
+    // from chrome process yet.
+    return NS_ERROR_FAILURE;
+  }
   mTask->DispatchResume(GetTimeDurationFromStart(), mCurrentIndex);
   return NS_OK;
 
@@ -119,7 +139,10 @@ SpeechTaskCallback::GetTimeDurationFromStart()
 void
 SpeechTaskCallback::OnWillSpeakWord(uint32_t aIndex)
 {
-  mCurrentIndex = aIndex;
+  mCurrentIndex = mOffsets[aIndex];
+  if (!mTask) {
+    return;
+  }
   mTask->DispatchBoundary(NS_LITERAL_STRING("word"),
                           GetTimeDurationFromStart(), mCurrentIndex);
 }
@@ -127,6 +150,9 @@ SpeechTaskCallback::OnWillSpeakWord(uint32_t aIndex)
 void
 SpeechTaskCallback::OnError(uint32_t aIndex)
 {
+  if (!mTask) {
+    return;
+  }
   mTask->DispatchError(GetTimeDurationFromStart(), aIndex);
 }
 
@@ -135,6 +161,7 @@ SpeechTaskCallback::OnDidFinishSpeaking()
 {
   mTask->DispatchEnd(GetTimeDurationFromStart(), mCurrentIndex);
   // no longer needed
+  [mSpeechSynthesizer setDelegate:nil];
   mTask = nullptr;
 }
 
@@ -179,29 +206,43 @@ SpeechTaskCallback::OnDidFinishSpeaking()
 namespace mozilla {
 namespace dom {
 
-class RegisterVoicesRunnable final : public nsRunnable
+struct OSXVoice
 {
-public:
-  explicit RegisterVoicesRunnable(OSXSpeechSynthesizerService* aSpeechService)
-    : mSpeechService(aSpeechService)
+  OSXVoice() : mIsDefault(false)
   {
   }
 
-  NS_IMETHOD Run();
+  nsString mUri;
+  nsString mName;
+  nsString mLocale;
+  bool mIsDefault;
+};
+
+class RegisterVoicesRunnable final : public Runnable
+{
+public:
+  RegisterVoicesRunnable(OSXSpeechSynthesizerService* aSpeechService,
+                         nsTArray<OSXVoice>& aList)
+    : mSpeechService(aSpeechService)
+    , mVoices(aList)
+  {
+  }
+
+  NS_IMETHOD Run() override;
 
 private:
   ~RegisterVoicesRunnable()
   {
   }
 
-  RefPtr<OSXSpeechSynthesizerService> mSpeechService;
+  // This runnable always use sync mode.  It is unnecesarry to reference object
+  OSXSpeechSynthesizerService* mSpeechService;
+  nsTArray<OSXVoice>& mVoices;
 };
 
 NS_IMETHODIMP
 RegisterVoicesRunnable::Run()
 {
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT;
-
   nsresult rv;
   nsCOMPtr<nsISynthVoiceRegistry> registry =
     do_GetService(NS_SYNTHVOICEREGISTRY_CONTRACTID, &rv);
@@ -209,36 +250,77 @@ RegisterVoicesRunnable::Run()
     return rv;
   }
 
+  for (OSXVoice voice : mVoices) {
+    rv = registry->AddVoice(mSpeechService, voice.mUri, voice.mName, voice.mLocale, true, false);
+    if (NS_WARN_IF(NS_FAILED(rv))) {
+      continue;
+    }
+
+    if (voice.mIsDefault) {
+      registry->SetDefaultVoice(voice.mUri, true);
+    }
+  }
+
+  registry->NotifyVoicesChanged();
+
+  return NS_OK;
+}
+
+class EnumVoicesRunnable final : public Runnable
+{
+public:
+  explicit EnumVoicesRunnable(OSXSpeechSynthesizerService* aSpeechService)
+    : mSpeechService(aSpeechService)
+  {
+  }
+
+  NS_IMETHOD Run() override;
+
+private:
+  ~EnumVoicesRunnable()
+  {
+  }
+
+  RefPtr<OSXSpeechSynthesizerService> mSpeechService;
+};
+
+NS_IMETHODIMP
+EnumVoicesRunnable::Run()
+{
+  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT;
+
+  AutoTArray<OSXVoice, 64> list;
+
   NSArray* voices = [NSSpeechSynthesizer availableVoices];
   NSString* defaultVoice = [NSSpeechSynthesizer defaultVoice];
 
   for (NSString* voice in voices) {
+    OSXVoice item;
+
     NSDictionary* attr = [NSSpeechSynthesizer attributesForVoice:voice];
 
     nsAutoString identifier;
     nsCocoaUtils::GetStringForNSString([attr objectForKey:NSVoiceIdentifier],
                                        identifier);
 
-    nsAutoString name;
-    nsCocoaUtils::GetStringForNSString([attr objectForKey:NSVoiceName], name);
+    nsCocoaUtils::GetStringForNSString([attr objectForKey:NSVoiceName], item.mName);
 
-    nsAutoString locale;
     nsCocoaUtils::GetStringForNSString(
-      [attr objectForKey:NSVoiceLocaleIdentifier], locale);
-    locale.ReplaceChar('_', '-');
+      [attr objectForKey:NSVoiceLocaleIdentifier], item.mLocale);
+    item.mLocale.ReplaceChar('_', '-');
 
-    nsAutoString uri;
-    uri.AssignLiteral("urn:moz-tts:osx:");
-    uri.Append(identifier);
-    rv = registry->AddVoice(mSpeechService, uri, name, locale, true, false);
-    if (NS_WARN_IF(NS_FAILED(rv))) {
-      continue;
-    }
+    item.mUri.AssignLiteral("urn:moz-tts:osx:");
+    item.mUri.Append(identifier);
 
     if ([voice isEqualToString:defaultVoice]) {
-      registry->SetDefaultVoice(uri, true);
+      item.mIsDefault = true;
     }
+
+    list.AppendElement(item);
   }
+
+  RefPtr<RegisterVoicesRunnable> runnable = new RegisterVoicesRunnable(mSpeechService, list);
+  NS_DispatchToMainThread(runnable, NS_DISPATCH_SYNC);
 
   return NS_OK;
 
@@ -274,9 +356,14 @@ OSXSpeechSynthesizerService::Init()
     return false;
   }
 
+  nsCOMPtr<nsIThread> thread;
+  if (NS_FAILED(NS_NewNamedThread("SpeechWorker", getter_AddRefs(thread)))) {
+  	return false;
+  }
+
   // Get all the voices and register in the SynthVoiceRegistry
-  nsCOMPtr<nsIRunnable> runnable = new RegisterVoicesRunnable(this);
-  NS_DispatchToMainThread(runnable);
+  nsCOMPtr<nsIRunnable> runnable = new EnumVoicesRunnable(this);
+  thread->Dispatch(runnable, NS_DISPATCH_NORMAL);
 
   mInitialized = true;
   return true;
@@ -315,7 +402,34 @@ OSXSpeechSynthesizerService::Speak(const nsAString& aText,
            forProperty:NSSpeechPitchBaseProperty error:nil];
   }
 
-  RefPtr<SpeechTaskCallback> callback = new SpeechTaskCallback(aTask, synth);
+  nsAutoString escapedText;
+  // We need to map the the offsets from the given text to the escaped text.
+  // The index of the offsets array is the position in the escaped text,
+  // the element value is the position in the user-supplied text.
+  nsTArray<size_t> offsets;
+  offsets.SetCapacity(aText.Length());
+
+  // This loop looks for occurances of "[[" or "]]", escapes them, and
+  // populates the offsets array to supply a map to the original offsets.
+  for (size_t i = 0; i < aText.Length(); i++) {
+    if (aText.Length() > i + 1 &&
+        ((aText[i] == ']' && aText[i+1] == ']') ||
+         (aText[i] == '[' && aText[i+1] == '['))) {
+      escapedText.AppendLiteral(DLIM_ESCAPE_START);
+      offsets.AppendElements(strlen(DLIM_ESCAPE_START));
+      escapedText.Append(aText[i]);
+      offsets.AppendElement(i);
+      escapedText.Append(aText[++i]);
+      offsets.AppendElement(i);
+      escapedText.AppendLiteral(DLIM_ESCAPE_END);
+      offsets.AppendElements(strlen(DLIM_ESCAPE_END));
+    } else {
+      escapedText.Append(aText[i]);
+      offsets.AppendElement(i);
+    }
+  }
+
+  RefPtr<SpeechTaskCallback> callback = new SpeechTaskCallback(aTask, synth, offsets);
   nsresult rv = aTask->Setup(callback, 0, 0, 0);
   NS_ENSURE_SUCCESS(rv, rv);
 
@@ -323,7 +437,7 @@ OSXSpeechSynthesizerService::Speak(const nsAString& aText,
   [synth setDelegate:delegate];
   [delegate release ];
 
-  NSString* text = nsCocoaUtils::ToNSString(aText);
+  NSString* text = nsCocoaUtils::ToNSString(escapedText);
   BOOL success = [synth startSpeakingString:text];
   NS_ENSURE_TRUE(success, NS_ERROR_FAILURE);
 
@@ -344,9 +458,6 @@ NS_IMETHODIMP
 OSXSpeechSynthesizerService::Observe(nsISupports* aSubject, const char* aTopic,
                                      const char16_t* aData)
 {
-  if (!strcmp(aTopic, "profile-after-change")) {
-    Init();
-  }
   return NS_OK;
 }
 
@@ -359,7 +470,11 @@ OSXSpeechSynthesizerService::GetInstance()
   }
 
   if (!sSingleton) {
-    sSingleton = new OSXSpeechSynthesizerService();
+    RefPtr<OSXSpeechSynthesizerService> speechService =
+      new OSXSpeechSynthesizerService();
+    if (speechService->Init()) {
+      sSingleton = speechService;
+    }
   }
   return sSingleton;
 }

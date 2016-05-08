@@ -7,6 +7,10 @@
 
 #include "base/process_util.h"
 
+#ifdef OS_POSIX
+#include <errno.h>
+#endif
+
 #include "mozilla/ipc/MessageChannel.h"
 #include "mozilla/ipc/ProtocolUtils.h"
 #include "mozilla/ipc/Transport.h"
@@ -15,6 +19,11 @@
 #if defined(MOZ_SANDBOX) && defined(XP_WIN)
 #define TARGET_SANDBOX_EXPORTS
 #include "mozilla/sandboxTarget.h"
+#endif
+
+#if defined(MOZ_CRASHREPORTER) && defined(XP_WIN)
+#include "aclapi.h"
+#include "sddl.h"
 #endif
 
 using namespace IPC;
@@ -295,6 +304,123 @@ bool DuplicateHandle(HANDLE aSourceHandle,
 }
 #endif
 
+#ifdef MOZ_CRASHREPORTER
+void
+AnnotateSystemError()
+{
+  int64_t error = 0;
+#if defined(XP_WIN)
+  error = ::GetLastError();
+#elif defined(OS_POSIX)
+  error = errno;
+#endif
+  if (error) {
+    CrashReporter::AnnotateCrashReport(
+      NS_LITERAL_CSTRING("IPCSystemError"),
+      nsPrintfCString("%lld", error));
+  }
+}
+
+void
+AnnotateProcessInformation(base::ProcessId aPid)
+{
+#ifdef XP_WIN
+  HANDLE processHandle = OpenProcess(READ_CONTROL|PROCESS_QUERY_INFORMATION, FALSE, aPid);
+  if (!processHandle) {
+    CrashReporter::AnnotateCrashReport(
+      NS_LITERAL_CSTRING("IPCExtraSystemError"),
+      nsPrintfCString("Failed to get information of process %d, error(%d)",
+                      aPid,
+                      ::GetLastError()));
+    return;
+  }
+
+  DWORD exitCode = 0;
+  if (!::GetExitCodeProcess(processHandle, &exitCode)) {
+    CrashReporter::AnnotateCrashReport(
+      NS_LITERAL_CSTRING("IPCExtraSystemError"),
+      nsPrintfCString("Failed to get exit information of process %d, error(%d)",
+                      aPid,
+                      ::GetLastError()));
+    return;
+  }
+
+  if (exitCode != STILL_ACTIVE) {
+    CrashReporter::AnnotateCrashReport(
+      NS_LITERAL_CSTRING("IPCExtraSystemError"),
+      nsPrintfCString("Process %d is not alive. Exit code: %d",
+                      aPid,
+                      exitCode));
+    return;
+  }
+
+  PSECURITY_DESCRIPTOR secDesc = nullptr;
+  PSID ownerSid = nullptr;
+  DWORD rv = ::GetSecurityInfo(processHandle,
+                               SE_KERNEL_OBJECT,
+                               OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                               &ownerSid,
+                               nullptr,
+                               nullptr,
+                               nullptr,
+                               &secDesc);
+  if (rv != ERROR_SUCCESS) {
+    // GetSecurityInfo() failed.
+    CrashReporter::AnnotateCrashReport(
+      NS_LITERAL_CSTRING("IPCExtraSystemError"),
+      nsPrintfCString("Failed to get security information of process %d,"
+                      " error(%d)",
+                      aPid,
+                      rv));
+    return;
+  }
+
+  LPTSTR ownerSidStr = nullptr;
+  nsString annotation{};
+  annotation.AppendLiteral("Owner: ");
+  if (::ConvertSidToStringSid(ownerSid, &ownerSidStr)) {
+    annotation.Append(ownerSidStr);
+  }
+  ::LocalFree(ownerSidStr);
+
+  LPTSTR secDescStr = nullptr;
+  annotation.AppendLiteral(", Security Descriptor: ");
+  if (::ConvertSecurityDescriptorToStringSecurityDescriptor(secDesc,
+                                                            SDDL_REVISION_1,
+                                                            DACL_SECURITY_INFORMATION,
+                                                            &secDescStr,
+                                                            nullptr)) {
+    annotation.Append(secDescStr);
+  }
+
+  CrashReporter::AnnotateCrashReport(
+    NS_LITERAL_CSTRING("IPCExtraSystemError"),
+    NS_ConvertUTF16toUTF8(annotation));
+
+  ::LocalFree(secDescStr);
+  ::LocalFree(secDesc);
+#endif
+}
+#endif
+
+void
+LogMessageForProtocol(const char* aTopLevelProtocol, base::ProcessId aOtherPid,
+                      const char* aContextDescription,
+                      const char* aMessageDescription,
+                      MessageDirection aDirection)
+{
+  nsPrintfCString logMessage("[time: %" PRId64 "][%d%s%d] [%s] %s %s\n",
+                             PR_Now(), base::GetCurrentProcId(),
+                             aDirection == MessageDirection::eReceiving ? "<-" : "->",
+                             aOtherPid, aTopLevelProtocol,
+                             aContextDescription,
+                             aMessageDescription);
+#ifdef ANDROID
+  __android_log_write(ANDROID_LOG_INFO, "GeckoIPC", logMessage.get());
+#endif
+  fputs(logMessage.get(), stderr);
+}
+
 void
 ProtocolErrorBreakpoint(const char* aMsg)
 {
@@ -305,8 +431,7 @@ ProtocolErrorBreakpoint(const char* aMsg)
 }
 
 void
-FatalError(const char* aProtocolName, const char* aMsg,
-           ProcessId aOtherPid, bool aIsParent)
+FatalError(const char* aProtocolName, const char* aMsg, bool aIsParent)
 {
   ProtocolErrorBreakpoint(aMsg);
 
@@ -325,12 +450,19 @@ FatalError(const char* aProtocolName, const char* aMsg,
                                        nsDependentCString(aProtocolName));
     CrashReporter::AnnotateCrashReport(NS_LITERAL_CSTRING("IPCFatalErrorMsg"),
                                        nsDependentCString(aMsg));
+    AnnotateSystemError();
 #endif
     MOZ_CRASH("IPC FatalError in the parent process!");
   } else {
     formattedMessage.AppendLiteral("\". abort()ing as a result.");
     NS_RUNTIMEABORT(formattedMessage.get());
   }
+}
+
+void
+LogicError(const char* aMsg)
+{
+  NS_RUNTIMEABORT(aMsg);
 }
 
 } // namespace ipc

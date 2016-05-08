@@ -28,6 +28,7 @@ class APZEventState;
 // tree.
 class ChromeProcessController : public mozilla::layers::GeckoContentController
 {
+protected:
   typedef mozilla::layers::FrameMetrics FrameMetrics;
   typedef mozilla::layers::ScrollableLayerGuid ScrollableLayerGuid;
 
@@ -38,12 +39,7 @@ public:
 
   // GeckoContentController interface
   virtual void RequestContentRepaint(const FrameMetrics& aFrameMetrics) override;
-  virtual void PostDelayedTask(Task* aTask, int aDelayMs) override;
-  virtual void RequestFlingSnap(const FrameMetrics::ViewID& aScrollId,
-                                const mozilla::CSSPoint& aDestination) override;
-  virtual void AcknowledgeScrollUpdate(const FrameMetrics::ViewID& aScrollId,
-                                       const uint32_t& aScrollGeneration) override;
-
+  virtual void PostDelayedTask(already_AddRefed<Runnable> aTask, int aDelayMs) override;
   virtual void HandleDoubleTap(const mozilla::CSSPoint& aPoint, Modifiers aModifiers,
                                const ScrollableLayerGuid& aGuid) override;
   virtual void HandleSingleTap(const mozilla::CSSPoint& aPoint, Modifiers aModifiers,
@@ -51,8 +47,6 @@ public:
   virtual void HandleLongTap(const mozilla::CSSPoint& aPoint, Modifiers aModifiers,
                                const ScrollableLayerGuid& aGuid,
                                uint64_t aInputBlockId) override;
-  virtual void SendAsyncScrollDOMEvent(bool aIsRootContent, const mozilla::CSSRect &aContentRect,
-                                       const mozilla::CSSSize &aScrollableSize) override {}
   virtual void NotifyAPZStateChange(const ScrollableLayerGuid& aGuid,
                                     APZStateChange aChange,
                                     int aArg) override;

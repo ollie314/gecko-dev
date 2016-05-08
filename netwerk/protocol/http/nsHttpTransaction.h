@@ -29,7 +29,7 @@ class nsIHttpActivityObserver;
 class nsIEventTarget;
 class nsIInputStream;
 class nsIOutputStream;
-class nsISchedulingContext;
+class nsIRequestContext;
 
 namespace mozilla { namespace net {
 
@@ -126,9 +126,9 @@ public:
     const TimeStamp GetPendingTime() { return mPendingTime; }
     bool UsesPipelining() const { return mCaps & NS_HTTP_ALLOW_PIPELINING; }
 
-    // overload of nsAHttpTransaction::SchedulingContext()
-    nsISchedulingContext *SchedulingContext() override { return mSchedulingContext.get(); }
-    void SetSchedulingContext(nsISchedulingContext *aSchedulingContext);
+    // overload of nsAHttpTransaction::RequestContext()
+    nsIRequestContext *RequestContext() override { return mRequestContext.get(); }
+    void SetRequestContext(nsIRequestContext *aRequestContext);
     void DispatchedAsBlocking();
     void RemoveDispatchedAsBlocking();
 
@@ -143,6 +143,7 @@ public:
     }
     void SetPushedStream(Http2PushedStream *push) { mPushedStream = push; }
     uint32_t InitialRwin() const { return mInitialRwin; };
+    bool ChannelPipeFull() { return mWaitingOnPipeOut; }
 
     // Locked methods to get and set timing info
     const TimingStruct Timings();
@@ -161,6 +162,8 @@ public:
     mozilla::TimeStamp GetRequestStart();
     mozilla::TimeStamp GetResponseStart();
     mozilla::TimeStamp GetResponseEnd();
+
+    int64_t GetTransferSize() { return mTransferSize; }
 
 private:
     friend class DeleteHttpTransaction;
@@ -195,7 +198,7 @@ private:
     void ReuseConnectionOnRestartOK(bool reuseOk) override { mReuseOnRestart = reuseOk; }
 
 private:
-    class UpdateSecurityCallbacks : public nsRunnable
+    class UpdateSecurityCallbacks : public Runnable
     {
       public:
         UpdateSecurityCallbacks(nsHttpTransaction* aTrans,
@@ -221,7 +224,7 @@ private:
     nsCOMPtr<nsISupports>           mSecurityInfo;
     nsCOMPtr<nsIAsyncInputStream>   mPipeIn;
     nsCOMPtr<nsIAsyncOutputStream>  mPipeOut;
-    nsCOMPtr<nsISchedulingContext>  mSchedulingContext;
+    nsCOMPtr<nsIRequestContext>     mRequestContext;
 
     nsCOMPtr<nsISupports>             mChannel;
     nsCOMPtr<nsIHttpActivityObserver> mActivityDistributor;
@@ -242,6 +245,7 @@ private:
 
     int64_t                         mContentLength;   // equals -1 if unknown
     int64_t                         mContentRead;     // count of consumed content bytes
+    int64_t                         mTransferSize; // count of received bytes
 
     // After a 304/204 or other "no-content" style response we will skip over
     // up to MAX_INVALID_RESPONSE_BODY_SZ bytes when looking for the next
@@ -303,6 +307,7 @@ private:
     bool                            mContentDecoding;
     bool                            mContentDecodingCheck;
     bool                            mDeferredSendProgress;
+    bool                            mWaitingOnPipeOut;
 
     // mClosed           := transaction has been explicitly closed
     // mTransactionDone  := transaction ran to completion or was interrupted
@@ -412,7 +417,7 @@ private:
     uint64_t                           mCountRecv;
     uint64_t                           mCountSent;
     uint32_t                           mAppId;
-    bool                               mIsInBrowser;
+    bool                               mIsInIsolatedMozBrowser;
 #ifdef MOZ_WIDGET_GONK
     nsMainThreadPtrHandle<nsINetworkInfo> mActiveNetworkInfo;
 #endif

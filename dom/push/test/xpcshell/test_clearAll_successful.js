@@ -27,7 +27,6 @@ add_task(function* test_unregister_success() {
 
   PushService.init({
     serverURI: "wss://push.example.org/",
-    networkInfo: new MockDesktopNetworkInfo(),
     db,
     makeWebSocket(uri) {
       return new MockWebSocket(uri, {
@@ -42,7 +41,7 @@ add_task(function* test_unregister_success() {
     }
   });
 
-  yield PushNotificationService.clearAll();
+  yield PushService._clearAll();
   let record = yield db.getByKeyID(channelID);
   ok(!record, 'Unregister did not remove record');
 });

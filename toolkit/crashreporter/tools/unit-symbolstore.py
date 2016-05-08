@@ -5,6 +5,7 @@
 
 import concurrent.futures
 import mock
+import mozunit
 import os
 import platform
 import shutil
@@ -63,13 +64,41 @@ class HelperMixin(object):
         symbolstore.srcdirRepoInfo = {}
         symbolstore.vcsFileInfoCache = {}
 
+    def make_dirs(self, f):
+        d = os.path.dirname(f)
+        if d and not os.path.exists(d):
+            os.makedirs(d)
+
     def add_test_files(self, files):
         for f in files:
+            f = os.path.join(self.test_dir, f)
+            self.make_dirs(f)
+            writer(f)
+
+class TestSizeOrder(HelperMixin, unittest.TestCase):
+    def test_size_order(self):
+        """
+        Test that files are processed ordered by size on disk.
+        """
+        processed = []
+        def mock_process_file(filenames):
+            for filename in filenames:
+                processed.append((filename[len(self.test_dir):] if filename.startswith(self.test_dir) else filename).replace('\\', '/'))
+            return True
+        for f, size in (('a/one', 10), ('b/c/two', 30), ('c/three', 20)):
             f = os.path.join(self.test_dir, f)
             d = os.path.dirname(f)
             if d and not os.path.exists(d):
                 os.makedirs(d)
-            writer(f)
+            open(f, 'wb').write('x' * size)
+        d = symbolstore.GetPlatformSpecificDumper(dump_syms="dump_syms",
+                                                  symbol_path="symbol_path")
+        d.ShouldProcess = lambda f: True
+        d.ProcessFiles = mock_process_file
+        d.Process(self.test_dir)
+        d.Finish(stop_pool=False)
+        self.assertEqual(processed, ['b/c/two', 'c/three', 'a/one'])
+
 
 class TestExclude(HelperMixin, unittest.TestCase):
     def test_exclude_wildcard(self):
@@ -93,6 +122,7 @@ class TestExclude(HelperMixin, unittest.TestCase):
         expected.sort()
         self.assertEqual(processed, expected)
 
+
     def test_exclude_filenames(self):
         """
         Test that excluding a filename without a wildcard works.
@@ -113,6 +143,7 @@ class TestExclude(HelperMixin, unittest.TestCase):
         expected = add_extension(["bar", "abc/bar", "def/bar"])
         expected.sort()
         self.assertEqual(processed, expected)
+
 
 def mock_dump_syms(module_id, filename, extra=[]):
     return ["MODULE os x86 %s %s" % (module_id, filename)
@@ -260,6 +291,31 @@ class TestRepoManifest(HelperMixin, unittest.TestCase):
                          symbolstore.GetVCSFilename(file3, d.srcdirs)[0])
 
 if platform.system() in ("Windows", "Microsoft"):
+    class TestFixFilenameCase(HelperMixin, unittest.TestCase):
+        def test_fix_filename_case(self):
+            # self.test_dir is going to be 8.3 paths...
+            junk = os.path.join(self.test_dir, 'x')
+            with open(junk, 'wb') as o:
+                o.write('x')
+            d = symbolstore.Dumper_Win32(dump_syms='dump_syms',
+                                         symbol_path=self.test_dir)
+            fixed_dir = os.path.dirname(d.FixFilenameCase(junk))
+            files = [
+                'one\\two.c',
+                'three\\Four.d',
+                'Five\\Six.e',
+                'seven\\Eight\\nine.F',
+            ]
+            for rel_path in files:
+                full_path = os.path.normpath(os.path.join(self.test_dir,
+                                                          rel_path))
+                self.make_dirs(full_path)
+                with open(full_path, 'wb') as o:
+                    o.write('x')
+                fixed_path = d.FixFilenameCase(full_path.lower())
+                fixed_path = os.path.relpath(fixed_path, fixed_dir)
+                self.assertEqual(rel_path, fixed_path)
+
     class TestSourceServer(HelperMixin, unittest.TestCase):
         @patch("subprocess.call")
         @patch("subprocess.Popen")
@@ -451,12 +507,17 @@ class TestFunctional(HelperMixin, unittest.TestCase):
                                         'crashreporter', 'tools',
                                         'symbolstore.py')
         if platform.system() in ("Windows", "Microsoft"):
-            self.dump_syms = os.path.join(self.topsrcdir,
-                                          'toolkit',
-                                          'crashreporter',
-                                          'tools',
-                                          'win32',
-                                          'dump_syms_vc{_MSC_VER}.exe'.format(**buildconfig.substs))
+            if buildconfig.substs['MSVC_HAS_DIA_SDK']:
+                self.dump_syms = os.path.join(buildconfig.topobjdir,
+                                              'dist', 'host', 'bin',
+                                              'dump_syms.exe')
+            else:
+                self.dump_syms = os.path.join(self.topsrcdir,
+                                              'toolkit',
+                                              'crashreporter',
+                                              'tools',
+                                              'win32',
+                                              'dump_syms_vc{_MSC_VER}.exe'.format(**buildconfig.substs))
             self.target_bin = os.path.join(buildconfig.topobjdir,
                                            'browser',
                                            'app',
@@ -501,5 +562,5 @@ if __name__ == '__main__':
     # that our mocking/module-patching works.
     symbolstore.Dumper.GlobalInit(concurrent.futures.ThreadPoolExecutor)
 
-    unittest.main()
+    mozunit.main()
 

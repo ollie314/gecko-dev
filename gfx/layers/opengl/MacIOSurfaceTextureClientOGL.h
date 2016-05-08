@@ -13,47 +13,32 @@ class MacIOSurface;
 namespace mozilla {
 namespace layers {
 
-class MacIOSurfaceTextureClientOGL : public TextureClient
+class MacIOSurfaceTextureData : public TextureData
 {
 public:
-  explicit MacIOSurfaceTextureClientOGL(ISurfaceAllocator* aAllcator,
-                                        TextureFlags aFlags);
+  static MacIOSurfaceTextureData* Create(MacIOSurface* aSurface);
 
-  virtual ~MacIOSurfaceTextureClientOGL();
+  ~MacIOSurfaceTextureData();
 
-  // Creates a TextureClient and init width.
-  static already_AddRefed<MacIOSurfaceTextureClientOGL>
-  Create(ISurfaceAllocator* aAllocator,
-         TextureFlags aFlags,
-         MacIOSurface* aSurface);
+  virtual void FillInfo(TextureData::Info& aInfo) const override;
 
-  virtual bool Lock(OpenMode aMode) override;
+  virtual bool Lock(OpenMode, FenceHandle*) override { return true; }
 
-  virtual void Unlock() override;
+  virtual void Unlock() override {}
 
-  virtual bool IsLocked() const override;
+  virtual bool Serialize(SurfaceDescriptor& aOutDescriptor) override;
 
-  virtual bool IsAllocated() const override { return !!mSurface; }
+  virtual void Deallocate(ClientIPCAllocator*) override { mSurface = nullptr; }
 
-  virtual bool ToSurfaceDescriptor(SurfaceDescriptor& aOutDescriptor) override;
+  virtual void Forget(ClientIPCAllocator*) override { mSurface = nullptr; }
 
-  virtual gfx::IntSize GetSize() const override;
-
-  virtual bool HasInternalBuffer() const override { return false; }
-
-  virtual already_AddRefed<gfx::DataSourceSurface> GetAsSurface() override;
-
-  // This TextureClient should not be used in a context where we use CreateSimilar
-  // (ex. component alpha) because the underlying texture data is always created by
-  // an external producer.
-  virtual already_AddRefed<TextureClient>
-  CreateSimilar(TextureFlags, TextureAllocationFlags) const override { return nullptr; }
+  // For debugging purposes only.
+  already_AddRefed<gfx::DataSourceSurface> GetAsSurface();
 
 protected:
-  virtual void FinalizeOnIPDLThread() override;
+  explicit MacIOSurfaceTextureData(MacIOSurface* aSurface);
 
   RefPtr<MacIOSurface> mSurface;
-  bool mIsLocked;
 };
 
 } // namespace layers

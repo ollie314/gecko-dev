@@ -4,7 +4,16 @@
 
 /*** =================== SAVED SIGNONS CODE =================== ***/
 
+Cu.import("resource://gre/modules/AppConstants.jsm");
+Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+
+XPCOMUtils.defineLazyModuleGetter(this, "DeferredTask",
+                                  "resource://gre/modules/DeferredTask.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "PlacesUtils",
+                                  "resource://gre/modules/PlacesUtils.jsm");
+
 var kSignonBundle;
+var showingPasswords = false;
 var dateFormatter = new Intl.DateTimeFormat(undefined,
                       { day: "numeric", month: "short", year: "numeric" });
 var dateAndTimeFormatter = new Intl.DateTimeFormat(undefined,
@@ -13,6 +22,8 @@ var dateAndTimeFormatter = new Intl.DateTimeFormat(undefined,
 
 function SignonsStartup() {
   kSignonBundle = document.getElementById("signonBundle");
+  document.getElementById("togglePasswords").label = kSignonBundle.getString("showPasswords");
+  document.getElementById("togglePasswords").accessKey = kSignonBundle.getString("showPasswordsAccessKey");
   document.getElementById("signonsIntro").textContent = kSignonBundle.getString("loginsDescriptionAll");
 
   let treecols = document.getElementsByTagName("treecols")[0];
@@ -39,16 +50,46 @@ function setFilter(aFilterString) {
 }
 
 var signonsTreeView = {
-  _filterSet : [],
-  _lastSelectedRanges : [],
+  // Keep track of which favicons we've fetched or started fetching.
+  // Maps a login origin to a favicon URL.
+  _faviconMap: new Map(),
+  _filterSet: [],
+  // Coalesce invalidations to avoid repeated flickering.
+  _invalidateTask: new DeferredTask(() => {
+    signonsTree.treeBoxObject.invalidateColumn(signonsTree.columns.siteCol);
+  }, 10),
+  _lastSelectedRanges: [],
   selection: null,
 
-  rowCount : 0,
-  setTree : function(tree) {},
-  getImageSrc : function(row,column) {},
-  getProgressMode : function(row,column) {},
-  getCellValue : function(row,column) {},
-  getCellText : function(row,column) {
+  rowCount: 0,
+  setTree(tree) {},
+  getImageSrc(row, column) {
+    if (column.element.getAttribute("id") !== "siteCol") {
+      return "";
+    }
+
+    const signon = this._filterSet.length ? this._filterSet[row] : signons[row];
+
+    // We already have the favicon URL or we started to fetch (value is null).
+    if (this._faviconMap.has(signon.hostname)) {
+      return this._faviconMap.get(signon.hostname);
+    }
+
+    // Record the fact that we already starting fetching a favicon for this
+    // origin in order to avoid multiple requests for the same origin.
+    this._faviconMap.set(signon.hostname, null);
+
+    PlacesUtils.promiseFaviconLinkUrl(signon.hostname)
+      .then(faviconURI => {
+        this._faviconMap.set(signon.hostname, faviconURI.spec);
+        this._invalidateTask.arm();
+      }).catch(Cu.reportError);
+
+    return "";
+  },
+  getProgressMode(row, column) {},
+  getCellValue(row, column) {},
+  getCellText(row, column) {
     var time;
     var signon = this._filterSet.length ? this._filterSet[row] : signons[row];
     switch (column.id) {
@@ -75,30 +116,25 @@ var signonsTreeView = {
         return "";
     }
   },
-  isEditable : function(row, col) {
-    if (col.id == "userCol") {
+  isEditable(row, col) {
+    if (col.id == "userCol" || col.id == "passwordCol") {
       return true;
     }
-
-    if (col.id == "passwordCol") {
-      return masterPasswordLogin();
-    }
-
     return false;
   },
-  isSeparator : function(index) { return false; },
-  isSorted : function() { return false; },
-  isContainer : function(index) { return false; },
-  cycleHeader : function(column) {},
-  getRowProperties : function(row) { return ""; },
-  getColumnProperties : function(column) { return ""; },
-  getCellProperties : function(row,column) {
+  isSeparator(index) { return false; },
+  isSorted() { return false; },
+  isContainer(index) { return false; },
+  cycleHeader(column) {},
+  getRowProperties(row) { return ""; },
+  getColumnProperties(column) { return ""; },
+  getCellProperties(row, column) {
     if (column.element.getAttribute("id") == "siteCol")
       return "ltr";
 
     return "";
   },
-  setCellText : function(row, col, value) {
+  setCellText(row, col, value) {
     // If there is a filter, _filterSet needs to be used, otherwise signons is used.
     let table = signonsTreeView._filterSet.length ? signonsTreeView._filterSet : signons;
     function _editLogin(field) {
@@ -130,8 +166,7 @@ function LoadSignons() {
   try {
     signons = passwordmanager.getAllLogins();
   } catch (e) {
-    window.close();
-    return;
+    signons = [];
   }
   signons.forEach(login => login.QueryInterface(Components.interfaces.nsILoginMetaInfo));
   signonsTreeView.rowCount = signons.length;
@@ -146,10 +181,13 @@ function LoadSignons() {
 
   // disable "remove all signons" button if there are no signons
   var element = document.getElementById("removeAllSignons");
+  var toggle = document.getElementById("togglePasswords");
   if (signons.length == 0) {
     element.setAttribute("disabled","true");
+    toggle.setAttribute("disabled","true");
   } else {
     element.removeAttribute("disabled");
+    toggle.removeAttribute("disabled");
   }
 
   return true;
@@ -193,8 +231,36 @@ function DeleteAllSignons() {
   Services.telemetry.getHistogramById("PWMGR_MANAGE_DELETED_ALL").add(1);
 }
 
+function TogglePasswordVisible() {
+  if (showingPasswords || masterPasswordLogin(AskUserShowPasswords)) {
+    showingPasswords = !showingPasswords;
+    document.getElementById("togglePasswords").label = kSignonBundle.getString(showingPasswords ? "hidePasswords" : "showPasswords");
+    document.getElementById("togglePasswords").accessKey = kSignonBundle.getString(showingPasswords ? "hidePasswordsAccessKey" : "showPasswordsAccessKey");
+    document.getElementById("passwordCol").hidden = !showingPasswords;
+    _filterPasswords();
+  }
+
+  // Notify observers that the password visibility toggling is
+  // completed.  (Mostly useful for tests)
+  Components.classes["@mozilla.org/observer-service;1"]
+            .getService(Components.interfaces.nsIObserverService)
+            .notifyObservers(null, "passwordmgr-password-toggle-complete", null);
+  Services.telemetry.getHistogramById("PWMGR_MANAGE_VISIBILITY_TOGGLED").add(showingPasswords);
+}
+
+function AskUserShowPasswords() {
+  var prompter = Components.classes["@mozilla.org/embedcomp/prompt-service;1"].getService(Components.interfaces.nsIPromptService);
+  var dummy = { value: false };
+
+  // Confirm the user wants to display passwords
+  return prompter.confirmEx(window,
+          null,
+          kSignonBundle.getString("noMasterPasswordPrompt"), prompter.STD_YES_NO_BUTTONS,
+          null, null, null, null, dummy) == 0;    // 0=="Yes" button
+}
+
 function FinalizeSignonDeletions(syncNeeded) {
-  for (var s=0; s<deletedSignons.length; s++) {
+  for (var s = 0; s < deletedSignons.length; s++) {
     passwordmanager.removeLogin(deletedSignons[s]);
     Services.telemetry.getHistogramById("PWMGR_MANAGE_DELETED").add(1);
   }
@@ -215,11 +281,10 @@ function HandleSignonKeyPress(e) {
   if (signonsTree.getAttribute("editing")) {
     return;
   }
-  if (e.keyCode == KeyEvent.DOM_VK_DELETE
-#ifdef XP_MACOSX
-      || e.keyCode == KeyEvent.DOM_VK_BACK_SPACE
-#endif
-   ) {
+  if (e.keyCode == KeyEvent.DOM_VK_DELETE ||
+      (AppConstants.platform == "macosx" &&
+       e.keyCode == KeyEvent.DOM_VK_BACK_SPACE))
+  {
     DeleteSignon();
   }
 }
@@ -241,6 +306,7 @@ function getColumnByName(column) {
     case "timesUsed":
       return document.getElementById("timesUsedCol");
   }
+  return undefined;
 }
 
 var lastSignonSortColumn = "hostname";
@@ -306,7 +372,7 @@ function SignonMatchesFilter(aSignon, aFilterValue) {
   if (aSignon.httpRealm &&
       aSignon.httpRealm.toLowerCase().indexOf(aFilterValue) != -1)
     return true;
-  if (Services.logins.isLoggedIn && aSignon.password &&
+  if (showingPasswords && aSignon.password &&
       aSignon.password.toLowerCase().indexOf(aFilterValue) != -1)
     return true;
 
@@ -330,8 +396,7 @@ function SignonSaveState() {
   }
 }
 
-function _filterPasswords()
-{
+function _filterPasswords() {
   var filter = document.getElementById("filter").value;
   if (filter == "") {
     SignonClearFilter();
@@ -362,8 +427,9 @@ function _filterPasswords()
 }
 
 function CopyPassword() {
-  // Don't copy passwords if a master password hasn't been entered.
-  if (!masterPasswordLogin())
+  // Don't copy passwords if we aren't already showing the passwords & a master
+  // password hasn't been entered.
+  if (!showingPasswords && !masterPasswordLogin())
     return;
   // Copy selected signon's password to clipboard
   var clipboard = Components.classes["@mozilla.org/widget/clipboardhelper;1"].
@@ -416,7 +482,13 @@ function UpdateContextMenu() {
 
   menuItems.get("context-editusername").removeAttribute("disabled");
   menuItems.get("context-copypassword").removeAttribute("disabled");
-  menuItems.get("context-editpassword").removeAttribute("disabled");
+
+  // Disable "Edit Password" if the password column isn't showing.
+  if (!document.getElementById("passwordCol").hidden) {
+    menuItems.get("context-editpassword").removeAttribute("disabled");
+  } else {
+    menuItems.get("context-editpassword").setAttribute("disabled", "true");
+  }
 }
 
 function masterPasswordLogin(noPasswordCallback) {

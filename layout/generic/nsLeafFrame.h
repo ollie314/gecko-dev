@@ -20,7 +20,7 @@
  */
 class nsLeafFrame : public nsFrame {
 public:
-  NS_DECL_FRAMEARENA_HELPERS
+  NS_DECL_ABSTRACT_FRAME(nsLeafFrame)
 
   // nsIFrame replacements
   virtual void BuildDisplayList(nsDisplayListBuilder*   aBuilder,
@@ -84,11 +84,6 @@ protected:
    * Return the intrinsic isize of the frame's content area. Note that this
    * should not include borders or padding and should not depend on the applied
    * styles.
-   * One exception to this is that the intrinsic (logical) size of an <iframe>
-   * depends on the writing-mode property (because the default intrinsic size
-   * is specified physically, for compat reasons). This should be OK because a
-   * change to writing-mode will trigger frame reconstruction anyhow, so the
-   * result will remain consistent for any given frame once constructed.
    */
   virtual nscoord GetIntrinsicISize() = 0;
 
@@ -100,12 +95,6 @@ protected:
    * call this method.
    */
   virtual nscoord GetIntrinsicBSize();
-
-  /**
-   * Subroutine to add in borders and padding
-   */
-  void AddBordersAndPadding(const nsHTMLReflowState& aReflowState,
-                            mozilla::LogicalSize& aDesiredSize);
 
   /**
    * Set aDesiredSize to be the available size

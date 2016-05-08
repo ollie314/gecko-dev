@@ -14,7 +14,7 @@ interface nsIHttpHeaderVisitor;
  * the inspection of the resulting HTTP response status and headers when they
  * become available.
  */
-[builtinclass, scriptable, uuid(e90acf2d-eaf2-41d8-97b2-c8d99f6437a1)]
+[builtinclass, scriptable, uuid(c5a4a073-4539-49c7-a3f2-cec3f0619c6c)]
 interface nsIHttpChannel : nsIChannel
 {
     /**************************************************************************
@@ -59,6 +59,11 @@ interface nsIHttpChannel : nsIChannel
      * Referrer policies. See ReferrerPolicy.h for more details.
      */
 
+
+    /*   The undefined state, usually used to check the need of
+         overruling document-wide referrer policy. */
+    const unsigned long REFERRER_POLICY_UNSET                      = 4294967295; // UINT32_MAX
+
     /*   default state, a shorter name for no-referrer-when-downgrade   */
     const unsigned long REFERRER_POLICY_DEFAULT                    = 0;
     /*   default state, doesn't send referrer from https->http          */
@@ -83,6 +88,31 @@ interface nsIHttpChannel : nsIChannel
      * Set the HTTP referrer URI with a referrer policy.
      */
     void setReferrerWithPolicy(in nsIURI referrer, in unsigned long referrerPolicy);
+
+    /**
+     * Returns the network protocol used to fetch the resource as identified
+     * by the ALPN Protocol ID.
+     *
+     * @throws NS_ERROR_NOT_AVAILABLE if called before the response
+     *         has been received (before onStartRequest).
+     */
+    readonly attribute ACString protocolVersion;
+
+    /**
+     * size consumed by the response header fields and the response payload body
+     */
+    readonly attribute uint64_t transferSize;
+
+    /**
+     * The size of the message body received by the client,
+     * after removing any applied content-codings
+     */
+    readonly attribute uint64_t decodedBodySize;
+
+    /**
+     * The size in octets of the payload body, prior to removing content-codings
+     */
+    readonly attribute uint64_t encodedBodySize;
 
     /**
      * Get the value of a particular request header.
@@ -345,18 +375,36 @@ interface nsIHttpChannel : nsIChannel
 
     /**
      * Instructs the channel to immediately redirect to a new destination.
-     * Can only be called on channels not yet opened.
+     * Can only be called on channels that have not yet called their
+     * listener's OnStartRequest(). Generally that means the latest time
+     * this can be used is one of:
+     *    "http-on-examine-response"
+     *    "http-on-examine-merged-response"
+     *    "http-on-examine-cached-response"
+     *
+     * When non-null URL is set before AsyncOpen:
+     *  we attempt to redirect to the targetURI before we even start building
+     *  and sending the request to the cache or the origin server.
+     *  If the redirect is vetoed, we fail the channel.
+     *
+     * When set between AsyncOpen and first call to OnStartRequest being called:
+     *  we attempt to redirect before we start delivery of network or cached
+     *  response to the listener.  If vetoed, we continue with delivery of
+     *  the original content to the channel listener.
+     *
+     * When passed aTargetURI is null the channel behaves normally (can be
+     * rewritten).
      *
      * This method provides no explicit conflict resolution. The last
      * caller to call it wins.
      *
-     * @throws NS_ERROR_ALREADY_OPENED if called after the channel
-     *         has been opened.
+     * @throws NS_ERROR_NOT_AVAILABLE if called after the channel has already
+     *         started to deliver the content to its listener.
      */
-    void redirectTo(in nsIURI aNewURI);
+    void redirectTo(in nsIURI aTargetURI);
 
     /**
-     * Identifies the scheduling context for this load.
+     * Identifies the request context for this load.
      */
-    [noscript] attribute nsID schedulingContextID;
+    [noscript] attribute nsID requestContextID;
 };

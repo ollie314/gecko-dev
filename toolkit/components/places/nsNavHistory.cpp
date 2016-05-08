@@ -543,7 +543,7 @@ nsNavHistory::NotifyManyFrecenciesChanged()
 
 namespace {
 
-class FrecencyNotification : public nsRunnable
+class FrecencyNotification : public Runnable
 {
 public:
   FrecencyNotification(const nsACString& aSpec,
@@ -566,8 +566,14 @@ public:
     if (navHistory) {
       nsCOMPtr<nsIURI> uri;
       (void)NS_NewURI(getter_AddRefs(uri), mSpec);
-      navHistory->NotifyFrecencyChanged(uri, mNewFrecency, mGUID, mHidden,
-                                        mLastVisitDate);
+      // We cannot assert since some automated tests are checking this path.
+      NS_WARN_IF_FALSE(uri, "Invalid URI in FrecencyNotification");
+      // Notify a frecency change only if we have a valid uri, otherwise
+      // the observer couldn't gather any useful data from the notification.
+      if (uri) {
+        navHistory->NotifyFrecencyChanged(uri, mNewFrecency, mGUID, mHidden,
+                                          mLastVisitDate);
+      }
     }
     return NS_OK;
   }
@@ -889,27 +895,12 @@ nsNavHistory::EvaluateQueryForNode(const nsCOMArray<nsNavHistoryQuery>& aQueries
         if (NS_FAILED(NS_NewURI(getter_AddRefs(nodeUri), aNode->mURI)))
           continue;
       }
-      if (! query->UriIsPrefix()) {
-        // easy case: the URI is an exact match
-        bool equals;
-        nsresult rv = query->Uri()->Equals(nodeUri, &equals);
-        NS_ENSURE_SUCCESS(rv, false);
-        if (! equals)
-          continue;
-      } else {
-        // harder case: match prefix, note that we need to get the ASCII string
-        // from the node's parsed URI instead of using the node's mUrl string,
-        // because that might not be normalized
-        nsAutoCString nodeUriString;
-        nodeUri->GetAsciiSpec(nodeUriString);
-        nsAutoCString queryUriString;
-        query->Uri()->GetAsciiSpec(queryUriString);
-        if (queryUriString.Length() > nodeUriString.Length())
-          continue; // not long enough to match as prefix
-        nodeUriString.SetLength(queryUriString.Length());
-        if (! nodeUriString.Equals(queryUriString))
-          continue; // prefixes don't match
-      }
+
+      bool equals;
+      nsresult rv = query->Uri()->Equals(nodeUri, &equals);
+      NS_ENSURE_SUCCESS(rv, false);
+      if (! equals)
+        continue;
     }
 
     // Transitions matching.
@@ -1103,14 +1094,24 @@ nsNavHistory::CanAddURI(nsIURI* aURI, bool* canAdd)
   NS_ENSURE_ARG(aURI);
   NS_ENSURE_ARG_POINTER(canAdd);
 
+  // Default to false.
+  *canAdd = false;
+
   // If history is disabled, don't add any entry.
   if (IsHistoryDisabled()) {
-    *canAdd = false;
+    return NS_OK;
+  }
+
+  // If the url length is over a threshold, don't add it.
+  nsCString spec;
+  nsresult rv = aURI->GetSpec(spec);
+  NS_ENSURE_SUCCESS(rv, rv);
+  if (!mDB || spec.Length() > mDB->MaxUrlLength()) {
     return NS_OK;
   }
 
   nsAutoCString scheme;
-  nsresult rv = aURI->GetScheme(scheme);
+  rv = aURI->GetScheme(scheme);
   NS_ENSURE_SUCCESS(rv, rv);
 
   // first check the most common cases (HTTP, HTTPS) to allow in to avoid most
@@ -1137,7 +1138,6 @@ nsNavHistory::CanAddURI(nsIURI* aURI, bool* canAdd)
       scheme.EqualsLiteral("wyciwyg") ||
       scheme.EqualsLiteral("javascript") ||
       scheme.EqualsLiteral("blob")) {
-    *canAdd = false;
     return NS_OK;
   }
   *canAdd = true;
@@ -1316,9 +1316,6 @@ bool IsOptimizableHistoryQuery(const nsCOMArray<nsNavHistoryQuery>& aQueries,
     return false;
 
   if (aQuery->AnnotationIsNot() || !aQuery->Annotation().IsEmpty())
-    return false;
-
-  if (aQuery->UriIsPrefix() || aQuery->Uri())
     return false;
 
   if (aQuery->Folders().Length() > 0)
@@ -2467,6 +2464,13 @@ nsNavHistory::CleanupPlacesOnVisitsDelete(const nsCString& aPlaceIdsQueryString)
   );
   NS_ENSURE_SUCCESS(rv, rv);
 
+  // Hosts accumulated during the places delete are updated through a trigger
+  // (see nsPlacesTriggers.h).
+  rv = mDB->MainConn()->ExecuteSimpleSQL(
+    NS_LITERAL_CSTRING("DELETE FROM moz_updatehosts_temp")
+  );
+  NS_ENSURE_SUCCESS(rv, rv);
+
   // Invalidate frecencies of touched places, since they need recalculation.
   rv = invalidateFrecencies(aPlaceIdsQueryString);
   NS_ENSURE_SUCCESS(rv, rv);
@@ -2500,6 +2504,8 @@ nsNavHistory::RemovePages(nsIURI **aURIs, uint32_t aLength)
   for (uint32_t i = 0; i < aLength; i++) {
     int64_t placeId;
     nsAutoCString guid;
+    if (!aURIs[i])
+      continue;
     rv = GetIdForPage(aURIs[i], &placeId, guid);
     NS_ENSURE_SUCCESS(rv, rv);
     if (placeId != 0) {
@@ -2713,6 +2719,8 @@ nsNavHistory::RemovePagesByTimeframe(PRTime aBeginTime, PRTime aEndTime)
 NS_IMETHODIMP
 nsNavHistory::RemoveVisitsByTimeframe(PRTime aBeginTime, PRTime aEndTime)
 {
+  PLACES_WARN_DEPRECATED();
+
   NS_ASSERTION(NS_IsMainThread(), "This can only be called on the main thread");
 
   nsresult rv;
@@ -2785,39 +2793,6 @@ nsNavHistory::RemoveVisitsByTimeframe(PRTime aBeginTime, PRTime aEndTime)
 
   // Invalidate the cached value for whether there's history or not.
   mDaysOfHistory = -1;
-
-  return NS_OK;
-}
-
-
-// nsNavHistory::RemoveAllPages
-//
-//    This function is used to clear history.
-
-NS_IMETHODIMP
-nsNavHistory::RemoveAllPages()
-{
-  NS_ASSERTION(NS_IsMainThread(), "This can only be called on the main thread");
-
-  nsresult rv = mDB->MainConn()->ExecuteSimpleSQL(NS_LITERAL_CSTRING(
-    "DELETE FROM moz_historyvisits"
-  ));
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  // Clear the registered embed visits.
-  clearEmbedVisits();
-
-  // Update the cached value for whether there's history or not.
-  mDaysOfHistory = 0;
-
-  // Expiration will take care of orphans.
-  NOTIFY_OBSERVERS(mCanNotify, mCacheObservers, mObservers,
-                   nsINavHistoryObserver, OnClearHistory());
-
-  // Invalidate frecencies for the remaining places.  This must happen
-  // after the notification to ensure it runs enqueued to expiration.
-  rv = invalidateFrecencies(EmptyCString());
-  NS_WARN_IF_FALSE(NS_SUCCEEDED(rv), "failed to fix invalid frecencies");
 
   return NS_OK;
 }
@@ -2978,7 +2953,7 @@ NS_IMETHODIMP
 nsNavHistory::GetShutdownClient(nsIAsyncShutdownClient **_shutdownClient)
 {
   NS_ENSURE_ARG_POINTER(_shutdownClient);
-  RefPtr<nsIAsyncShutdownClient> client = mDB->GetConnectionShutdown();
+  RefPtr<nsIAsyncShutdownClient> client = mDB->GetClientsShutdown();
   MOZ_ASSERT(client);
   client.forget(_shutdownClient);
 
@@ -3090,8 +3065,7 @@ nsNavHistory::Observe(nsISupports *aSubject, const char *aTopic,
   NS_ASSERTION(NS_IsMainThread(), "This can only be called on the main thread");
   if (strcmp(aTopic, TOPIC_PROFILE_TEARDOWN) == 0 ||
       strcmp(aTopic, TOPIC_PROFILE_CHANGE) == 0 ||
-      strcmp(aTopic, TOPIC_SIMULATE_PLACES_MUST_CLOSE_1) == 0 ||
-      strcmp(aTopic, TOPIC_SIMULATE_PLACES_MUST_CLOSE_2) == 0) {
+      strcmp(aTopic, TOPIC_SIMULATE_PLACES_SHUTDOWN) == 0) {
     // These notifications are used by tests to simulate a Places shutdown.
     // They should just be forwarded to the Database handle.
     mDB->Observe(aSubject, aTopic, aData);
@@ -3359,12 +3333,7 @@ nsNavHistory::QueryToSelectClause(nsNavHistoryQuery* aQuery, // const
 
   // URI
   if (NS_SUCCEEDED(aQuery->GetHasUri(&hasIt)) && hasIt) {
-    if (aQuery->UriIsPrefix()) {
-      clause.Condition("h.url >= ").Param(":uri")
-            .Condition("h.url <= ").Param(":uri_upper");
-    }
-    else
-      clause.Condition("h.url =").Param(":uri");
+    clause.Condition("h.url =").Param(":uri");
   }
 
   // annotation
@@ -3558,15 +3527,6 @@ nsNavHistory::BindQueryClauseParameters(mozIStorageBaseStatement* statement,
       statement, NS_LITERAL_CSTRING("uri") + qIndex, aQuery->Uri()
     );
     NS_ENSURE_SUCCESS(rv, rv);
-    if (aQuery->UriIsPrefix()) {
-      nsAutoCString uriString;
-      aQuery->Uri()->GetSpec(uriString);
-      uriString.Append(char(0x7F)); // MAX_UTF8
-      rv = URIBinder::Bind(
-        statement, NS_LITERAL_CSTRING("uri_upper") + qIndex, uriString
-      );
-      NS_ENSURE_SUCCESS(rv, rv);
-    }
   }
 
   // annotation
@@ -3839,22 +3799,15 @@ nsNavHistory::CheckIsRecentEvent(RecentEventHash* hashTable,
 //
 //    This goes through our
 
-static PLDHashOperator
-ExpireNonrecentEventsCallback(nsCStringHashKey::KeyType aKey,
-                              int64_t& aData,
-                              void* userArg)
-{
-  int64_t* threshold = reinterpret_cast<int64_t*>(userArg);
-  if (aData < *threshold)
-    return PL_DHASH_REMOVE;
-  return PL_DHASH_NEXT;
-}
 void
 nsNavHistory::ExpireNonrecentEvents(RecentEventHash* hashTable)
 {
   int64_t threshold = GetNow() - RECENT_EVENT_THRESHOLD;
-  hashTable->Enumerate(ExpireNonrecentEventsCallback,
-                       reinterpret_cast<void*>(&threshold));
+  for (auto iter = hashTable->Iter(); !iter.Done(); iter.Next()) {
+    if (iter.Data() < threshold) {
+      iter.Remove();
+    }
+  }
 }
 
 

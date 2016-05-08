@@ -39,9 +39,10 @@ this.BrowserUtils = {
     //if already in safe mode restart in safe mode
     if (Services.appinfo.inSafeMode) {
       appStartup.restartInSafeMode(Ci.nsIAppStartup.eAttemptQuit | Ci.nsIAppStartup.eRestart);
-      return;
+      return undefined;
     }
     appStartup.quit(Ci.nsIAppStartup.eAttemptQuit | Ci.nsIAppStartup.eRestart);
+    return undefined;
   },
 
   /**
@@ -247,7 +248,7 @@ this.BrowserUtils = {
   },
 
   /**
-   * Return true if we can/should FAYT for this node + window (could be CPOW):
+   * Return true if we should FAYT for this node + window (could be CPOW):
    *
    * @param elt
    *        The element that is focused
@@ -270,7 +271,21 @@ this.BrowserUtils = {
         return false;
     }
 
-    if (win && !this.mimeTypeIsTextBased(win.document.contentType))
+    return true;
+  },
+
+  /**
+   * Return true if we can FAYT for this window (could be CPOW):
+   *
+   * @param win
+   *        The top level window that is focused
+   *
+   */
+  canFastFind: function(win) {
+    if (!win)
+      return false;
+
+    if (!this.mimeTypeIsTextBased(win.document.contentType))
       return false;
 
     // disable FAYT in about:blank to prevent FAYT opening unexpectedly.
@@ -280,7 +295,7 @@ this.BrowserUtils = {
 
     // disable FAYT in documents that ask for it to be disabled.
     if ((loc.protocol == "about:" || loc.protocol == "chrome:") &&
-        (win && win.document.documentElement &&
+        (win.document.documentElement &&
          win.document.documentElement.getAttribute("disablefastfind") == "true"))
       return false;
 
@@ -387,5 +402,21 @@ this.BrowserUtils = {
 
     return { text: selectionStr, docSelectionIsCollapsed: collapsed,
              linkURL: url ? url.spec : null, linkText: url ? linkText : "" };
-  }
+  },
+
+  // Iterates through every docshell in the window and calls PermitUnload.
+  canCloseWindow(window) {
+    let docShell = window.QueryInterface(Ci.nsIInterfaceRequestor)
+                         .getInterface(Ci.nsIWebNavigation);
+    let node = docShell.QueryInterface(Ci.nsIDocShellTreeItem);
+    for (let i = 0; i < node.childCount; ++i) {
+      let docShell = node.getChildAt(i).QueryInterface(Ci.nsIDocShell);
+      let contentViewer = docShell.contentViewer;
+      if (contentViewer && !contentViewer.permitUnload()) {
+        return false;
+      }
+    }
+
+    return true;
+  },
 };

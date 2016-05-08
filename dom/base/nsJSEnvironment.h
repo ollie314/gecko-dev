@@ -15,7 +15,6 @@
 #include "nsIXPConnect.h"
 #include "nsIArray.h"
 #include "mozilla/Attributes.h"
-#include "nsPIDOMWindow.h"
 #include "nsThreadUtils.h"
 #include "xpcpublic.h"
 
@@ -174,8 +173,6 @@ private:
   static bool DOMOperationCallback(JSContext *cx);
 };
 
-class nsPIDOMWindow;
-
 namespace mozilla {
 namespace dom {
 
@@ -189,7 +186,7 @@ nsScriptNameSpaceManager* GetNameSpaceManager();
 nsScriptNameSpaceManager* PeekNameSpaceManager();
 
 // Runnable that's used to do async error reporting
-class AsyncErrorReporter final : public nsRunnable
+class AsyncErrorReporter final : public mozilla::Runnable
 {
 public:
   // aWindow may be null if this error report is not associated with a window

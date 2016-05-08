@@ -27,6 +27,7 @@
  */
 
 #include "DynamicsCompressor.h"
+#include "AlignmentUtils.h"
 #include "AudioBlock.h"
 
 #include <cmath>
@@ -69,8 +70,8 @@ size_t DynamicsCompressor::sizeOfIncludingThis(mozilla::MallocSizeOf aMallocSize
         }
     }
 
-    amount += m_sourceChannels.SizeOfExcludingThis(aMallocSizeOf);
-    amount += m_destinationChannels.SizeOfExcludingThis(aMallocSizeOf);
+    amount += aMallocSizeOf(m_sourceChannels.get());
+    amount += aMallocSizeOf(m_destinationChannels.get());
     amount += m_compressor.sizeOfExcludingThis(aMallocSizeOf);
     return amount;
 }
@@ -198,7 +199,9 @@ void DynamicsCompressor::process(const AudioBlock* sourceChunk, AudioBlock* dest
         setEmphasisParameters(filterStageGain, anchor, filterStageRatio);
     }
 
-    float sourceWithVolume[WEBAUDIO_BLOCK_SIZE];
+    float sourceWithVolume[WEBAUDIO_BLOCK_SIZE + 4];
+    float* alignedSourceWithVolume = ALIGNED16(sourceWithVolume);
+    ASSERT_ALIGNED16(alignedSourceWithVolume);
 
     // Apply pre-emphasis filter.
     // Note that the final three stages are computed in-place in the destination buffer.
@@ -210,8 +213,8 @@ void DynamicsCompressor::process(const AudioBlock* sourceChunk, AudioBlock* dest
         } else {
           AudioBlockCopyChannelWithScale(m_sourceChannels[i],
                                          sourceChunk->mVolume,
-                                         sourceWithVolume);
-          sourceData = sourceWithVolume;
+                                         alignedSourceWithVolume);
+          sourceData = alignedSourceWithVolume;
         }
 
         float* destinationData = m_destinationChannels[i];
@@ -308,8 +311,8 @@ void DynamicsCompressor::setNumberOfChannels(unsigned numberOfChannels)
         m_postFilterPacks.AppendElement(new ZeroPoleFilterPack4());
     }
 
-    m_sourceChannels = new const float* [numberOfChannels];
-    m_destinationChannels = new float* [numberOfChannels];
+    m_sourceChannels = mozilla::MakeUnique<const float* []>(numberOfChannels);
+    m_destinationChannels = mozilla::MakeUnique<float* []>(numberOfChannels);
 
     m_compressor.setNumberOfChannels(numberOfChannels);
     m_numberOfChannels = numberOfChannels;

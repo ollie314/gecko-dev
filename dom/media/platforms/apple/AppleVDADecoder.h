@@ -81,6 +81,11 @@ public:
     return true;
   }
 
+  const char* GetDescriptionName() const override
+  {
+    return "apple VDA decoder";
+  }
+
   // Access from the taskqueue and the decoder's thread.
   // OutputFrame is thread-safe.
   nsresult OutputFrame(CVPixelBufferRef aImage,
@@ -120,7 +125,6 @@ protected:
   // This is used to calculate how many frames has been buffered by the decoder.
   Atomic<uint32_t> mQueuedSamples;
 
-  // For wait on mIsFlushing during Shutdown() process.
   // Protects mReorderQueue.
   Monitor mMonitor;
   // Set on reader/decode thread calling Flush() to indicate that output is

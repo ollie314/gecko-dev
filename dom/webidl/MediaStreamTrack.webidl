@@ -50,6 +50,13 @@ dictionary MediaTrackConstraintSet {
     long long browserWindow;
     boolean scrollWithPage;
     ConstrainDOMString deviceId;
+    ConstrainLong viewportOffsetX;
+    ConstrainLong viewportOffsetY;
+    ConstrainLong viewportWidth;
+    ConstrainLong viewportHeight;
+    ConstrainBoolean echoCancellation;
+    ConstrainBoolean mozNoiseSuppression;
+    ConstrainBoolean mozAutoGainControl;
 };
 
 dictionary MediaTrackConstraints : MediaTrackConstraintSet {
@@ -69,7 +76,7 @@ interface MediaStreamTrack : EventTarget {
 //  readonly    attribute boolean               remote;
 //  readonly    attribute MediaStreamTrackState readyState;
 //                attribute EventHandler          onended;
-//  MediaStreamTrack       clone ();
+    MediaStreamTrack       clone ();
     void                   stop ();
 //  MediaTrackCapabilities getCapabilities ();
 //  MediaTrackConstraints  getConstraints ();

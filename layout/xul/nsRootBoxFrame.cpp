@@ -34,7 +34,7 @@ nsIRootBox::GetRootBox(nsIPresShell* aShell)
   }
 
   if (rootFrame) {
-    rootFrame = rootFrame->GetFirstPrincipalChild();
+    rootFrame = rootFrame->PrincipalChildList().FirstChild();
   }
 
   nsIRootBox* rootBox = do_QueryFrame(rootFrame);
@@ -119,8 +119,8 @@ nsRootBoxFrame::nsRootBoxFrame(nsStyleContext* aContext):
   mPopupSetFrame = nullptr;
 
   nsCOMPtr<nsBoxLayout> layout;
-  NS_NewStackLayout(PresContext()->PresShell(), layout);
-  SetLayoutManager(layout);
+  NS_NewStackLayout(layout);
+  SetXULLayoutManager(layout);
 }
 
 void

@@ -5,7 +5,6 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #ifdef MOZ_WIDGET_QT
-#include <unistd.h> // for _exit()
 #include <QtCore/QTimer>
 #include "nsQAppInstance.h"
 #include "NestedLoopTimer.h"
@@ -33,6 +32,7 @@
 #ifdef MOZ_X11
 # include "mozilla/X11Util.h"
 #endif
+#include "mozilla/ipc/ProcessChild.h"
 #include "mozilla/plugins/PluginInstanceChild.h"
 #include "mozilla/plugins/StreamNotifyChild.h"
 #include "mozilla/plugins/BrowserStreamChild.h"
@@ -57,6 +57,7 @@
 #include "GeckoProfiler.h"
 
 using namespace mozilla;
+using namespace mozilla::ipc;
 using namespace mozilla::plugins;
 using namespace mozilla::widget;
 using mozilla::dom::CrashReporterChild;
@@ -102,13 +103,6 @@ typedef BOOL (WINAPI *GetWindowInfoPtr)(HWND hwnd, PWINDOWINFO pwi);
 static GetWindowInfoPtr sGetWindowInfoPtrStub = nullptr;
 static HWND sBrowserHwnd = nullptr;
 #endif
-
-template<>
-struct RunnableMethodTraits<PluginModuleChild>
-{
-    static void RetainCallee(PluginModuleChild* obj) { }
-    static void ReleaseCallee(PluginModuleChild* obj) { }
-};
 
 /* static */
 PluginModuleChild*
@@ -165,7 +159,8 @@ PluginModuleChild::~PluginModuleChild()
         // bridged protocol (bug 1090570). So we have to do it ourselves. This
         // code is only invoked for PluginModuleChild instances created via
         // bridging; otherwise mTransport is null.
-        XRE_GetIOMessageLoop()->PostTask(FROM_HERE, new DeleteTask<Transport>(mTransport));
+        RefPtr<DeleteTask<Transport>> task = new DeleteTask<Transport>(mTransport);
+        XRE_GetIOMessageLoop()->PostTask(task.forget());
     }
 
     if (mIsChrome) {
@@ -786,13 +781,6 @@ PluginModuleChild::RecvSetAudioSessionData(const nsID& aId,
 #endif
 }
 
-void
-PluginModuleChild::QuickExit()
-{
-    NS_WARNING("plugin process _exit()ing");
-    _exit(0);
-}
-
 PPluginModuleChild*
 PluginModuleChild::AllocPPluginModuleChild(mozilla::ipc::Transport* aTransport,
                                            base::ProcessId aOtherPid)
@@ -837,13 +825,15 @@ PluginModuleChild::ActorDestroy(ActorDestroyReason why)
         }
 
         // Destroy ourselves once we finish other teardown activities.
-        MessageLoop::current()->PostTask(FROM_HERE, new DeleteTask<PluginModuleChild>(this));
+        RefPtr<DeleteTask<PluginModuleChild>> task =
+            new DeleteTask<PluginModuleChild>(this);
+        MessageLoop::current()->PostTask(task.forget());
         return;
     }
 
     if (AbnormalShutdown == why) {
         NS_WARNING("shutting down early because of crash!");
-        QuickExit();
+        ProcessChild::QuickExit();
     }
 
     if (!mHasShutdown) {
@@ -1027,6 +1017,17 @@ _convertpoint(NPP instance,
 static void
 _urlredirectresponse(NPP instance, void* notifyData, NPBool allow);
 
+static NPError
+_initasyncsurface(NPP instance, NPSize *size,
+                  NPImageFormat format, void *initData,
+                  NPAsyncSurface *surface);
+
+static NPError
+_finalizeasyncsurface(NPP instance, NPAsyncSurface *surface);
+
+static void
+_setcurrentasyncsurface(NPP instance, NPAsyncSurface *surface, NPRect *changed);
+
 } /* namespace child */
 } /* namespace plugins */
 } /* namespace mozilla */
@@ -1088,7 +1089,10 @@ const NPNetscapeFuncs PluginModuleChild::sBrowserFuncs = {
     mozilla::plugins::child::_convertpoint,
     nullptr, // handleevent, unimplemented
     nullptr, // unfocusinstance, unimplemented
-    mozilla::plugins::child::_urlredirectresponse
+    mozilla::plugins::child::_urlredirectresponse,
+    mozilla::plugins::child::_initasyncsurface,
+    mozilla::plugins::child::_finalizeasyncsurface,
+    mozilla::plugins::child::_setcurrentasyncsurface,
 };
 
 PluginInstanceChild*
@@ -1862,6 +1866,26 @@ _urlredirectresponse(NPP instance, void* notifyData, NPBool allow)
     InstCast(instance)->NPN_URLRedirectResponse(notifyData, allow);
 }
 
+NPError
+_initasyncsurface(NPP instance, NPSize *size,
+                  NPImageFormat format, void *initData,
+                  NPAsyncSurface *surface)
+{
+    return InstCast(instance)->NPN_InitAsyncSurface(size, format, initData, surface);
+}
+
+NPError
+_finalizeasyncsurface(NPP instance, NPAsyncSurface *surface)
+{
+    return InstCast(instance)->NPN_FinalizeAsyncSurface(surface);
+}
+
+void
+_setcurrentasyncsurface(NPP instance, NPAsyncSurface *surface, NPRect *changed)
+{
+    InstCast(instance)->NPN_SetCurrentAsyncSurface(surface, changed);
+}
+
 } /* namespace child */
 } /* namespace plugins */
 } /* namespace mozilla */
@@ -2178,11 +2202,12 @@ public:
     {
     }
 
-    void Run() override
+    NS_IMETHOD Run() override
     {
         RemoveFromAsyncList();
         DebugOnly<bool> sendOk = mInstance->SendAsyncNPP_NewResult(mResult);
         MOZ_ASSERT(sendOk);
+        return NS_OK;
     }
 
 private:
@@ -2196,8 +2221,9 @@ RunAsyncNPP_New(void* aChildInstance)
     PluginInstanceChild* childInstance =
         static_cast<PluginInstanceChild*>(aChildInstance);
     NPError rv = childInstance->DoNPP_New();
-    AsyncNewResultSender* task = new AsyncNewResultSender(childInstance, rv);
-    childInstance->PostChildAsyncCall(task);
+    RefPtr<AsyncNewResultSender> task =
+        new AsyncNewResultSender(childInstance, rv);
+    childInstance->PostChildAsyncCall(task.forget());
 }
 
 bool
@@ -2524,22 +2550,20 @@ PluginModuleChild::ProcessNativeEvents() {
 #endif
 
 bool
-PluginModuleChild::RecvStartProfiler(const uint32_t& aEntries,
-                                     const double& aInterval,
-                                     nsTArray<nsCString>&& aFeatures,
-                                     nsTArray<nsCString>&& aThreadNameFilters)
+PluginModuleChild::RecvStartProfiler(const ProfilerInitParams& params)
 {
     nsTArray<const char*> featureArray;
-    for (size_t i = 0; i < aFeatures.Length(); ++i) {
-        featureArray.AppendElement(aFeatures[i].get());
+    for (size_t i = 0; i < params.features().Length(); ++i) {
+        featureArray.AppendElement(params.features()[i].get());
     }
 
     nsTArray<const char*> threadNameFilterArray;
-    for (size_t i = 0; i < aThreadNameFilters.Length(); ++i) {
-        threadNameFilterArray.AppendElement(aThreadNameFilters[i].get());
+    for (size_t i = 0; i < params.threadFilters().Length(); ++i) {
+        threadNameFilterArray.AppendElement(params.threadFilters()[i].get());
     }
 
-    profiler_start(aEntries, aInterval, featureArray.Elements(), featureArray.Length(),
+    profiler_start(params.entries(), params.interval(),
+                   featureArray.Elements(), featureArray.Length(),
                    threadNameFilterArray.Elements(), threadNameFilterArray.Length());
 
     return true;
@@ -2563,6 +2587,6 @@ PluginModuleChild::RecvGatherProfile()
         profileCString = nsCString("", 0);
     }
 
-    unused << SendProfile(profileCString);
+    Unused << SendProfile(profileCString);
     return true;
 }

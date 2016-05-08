@@ -55,14 +55,19 @@ var WebProgressListener = {
   },
 
   _setupJSON: function setupJSON(aWebProgress, aRequest) {
+    let innerWindowID = null;
     if (aWebProgress) {
-      let domWindowID;
+      let domWindowID = null;
       try {
-        domWindowID = aWebProgress && aWebProgress.DOMWindowID;
+        let utils = aWebProgress.DOMWindow.QueryInterface(Ci.nsIInterfaceRequestor)
+                                .getInterface(Ci.nsIDOMWindowUtils);
+        domWindowID = utils.outerWindowID;
+        innerWindowID = utils.currentInnerWindowID;
       } catch (e) {
         // If nsDocShell::Destroy has already been called, then we'll
-        // get NS_NOINTERFACE when trying to get the DOM window ID.
-        domWindowID = null;
+        // get NS_NOINTERFACE when trying to get the DOM window.
+        // If there is no current inner window, we'll get
+        // NS_ERROR_NOT_AVAILABLE.
       }
 
       aWebProgress = {
@@ -77,7 +82,8 @@ var WebProgressListener = {
       webProgress: aWebProgress || null,
       requestURI: this._requestSpec(aRequest, "URI"),
       originalRequestURI: this._requestSpec(aRequest, "originalURI"),
-      documentContentType: content.document && content.document.contentType
+      documentContentType: content.document && content.document.contentType,
+      innerWindowID,
     };
   },
 
@@ -115,6 +121,17 @@ var WebProgressListener = {
 
     json.stateFlags = aStateFlags;
     json.status = aStatus;
+
+    // It's possible that this state change was triggered by
+    // loading an internal error page, for which the parent
+    // will want to know some details, so we'll update it with
+    // the documentURI.
+    if (aWebProgress && aWebProgress.isTopLevel) {
+      json.documentURI = content.document.documentURIObject.spec;
+      json.charset = content.document.characterSet;
+      json.mayEnableCharacterEncodingMenu = docShell.mayEnableCharacterEncodingMenu;
+      json.inLoadURI = WebNavigation.inLoadURI;
+    }
 
     this._send("Content:StateChange", json, objects);
   },
@@ -154,6 +171,7 @@ var WebProgressListener = {
       json.mayEnableCharacterEncodingMenu = docShell.mayEnableCharacterEncodingMenu;
       json.principal = content.document.nodePrincipal;
       json.synthetic = content.document.mozSyntheticDocument;
+      json.inLoadURI = WebNavigation.inLoadURI;
 
       if (AppConstants.MOZ_CRASHREPORTER && CrashReporter.enabled) {
         let uri = aLocationURI.clone();
@@ -192,6 +210,10 @@ var WebProgressListener = {
     return true;
   },
 
+  sendLoadCallResult() {
+    sendAsyncMessage("Content:LoadURIResult");
+  },
+
   QueryInterface: function QueryInterface(aIID) {
     if (aIID.equals(Ci.nsIWebProgressListener) ||
         aIID.equals(Ci.nsIWebProgressListener2) ||
@@ -217,23 +239,16 @@ var WebNavigation =  {
     addMessageListener("WebNavigation:LoadURI", this);
     addMessageListener("WebNavigation:Reload", this);
     addMessageListener("WebNavigation:Stop", this);
-
-    // Send a CPOW for the sessionHistory object. We need to make sure
-    // it stays alive as long as the content script since CPOWs are
-    // weakly held.
-    let history = this.webNavigation.sessionHistory;
-    this._sessionHistory = history;
-    sendAsyncMessage("WebNavigation:setHistory", {}, {history: history});
-
-    addEventListener("unload", this.uninit);
-  },
-
-  uninit: function() {
-    this._sessionHistory = null;
   },
 
   get webNavigation() {
     return docShell.QueryInterface(Ci.nsIWebNavigation);
+  },
+
+  _inLoadURI: false,
+
+  get inLoadURI() {
+    return this._inLoadURI;
   },
 
   receiveMessage: function(message) {
@@ -297,8 +312,14 @@ var WebNavigation =  {
       headers = makeInputStream(headers);
     if (baseURI)
       baseURI = Services.io.newURI(baseURI, null, null);
-    this.webNavigation.loadURIWithOptions(uri, flags, referrer, referrerPolicy,
-                                          postData, headers, baseURI);
+    this._inLoadURI = true;
+    try {
+      this.webNavigation.loadURIWithOptions(uri, flags, referrer, referrerPolicy,
+                                            postData, headers, baseURI);
+    } finally {
+      this._inLoadURI = false;
+      WebProgressListener.sendLoadCallResult();
+    }
   },
 
   reload: function(flags) {
@@ -361,7 +382,6 @@ addEventListener("DOMWindowClose", function (aEvent) {
   if (!aEvent.isTrusted)
     return;
   sendAsyncMessage("DOMWindowClose");
-  aEvent.preventDefault();
 }, false);
 
 addEventListener("ImageContentLoaded", function (aEvent) {
@@ -439,13 +459,13 @@ addMessageListener("TextZoom", function (aMessage) {
 
 addEventListener("FullZoomChange", function () {
   if (ZoomManager.refreshFullZoom()) {
-    sendAsyncMessage("FullZoomChange", { value:  ZoomManager.fullZoom});
+    sendAsyncMessage("FullZoomChange", { value: ZoomManager.fullZoom });
   }
 }, false);
 
 addEventListener("TextZoomChange", function (aEvent) {
   if (ZoomManager.refreshTextZoom()) {
-    sendAsyncMessage("TextZoomChange", { value:  ZoomManager.textZoom});
+    sendAsyncMessage("TextZoomChange", { value: ZoomManager.textZoom });
   }
 }, false);
 
@@ -462,10 +482,18 @@ addMessageListener("UpdateCharacterSet", function (aMessage) {
  * Remote thumbnail request handler for PageThumbs thumbnails.
  */
 addMessageListener("Browser:Thumbnail:Request", function (aMessage) {
-  let snapshotWidth = aMessage.data.canvasWidth;
-  let snapshotHeight = aMessage.data.canvasHeight;
-  let canvas = PageThumbUtils.createCanvas(content, snapshotWidth, snapshotHeight);
-  let snapshot = PageThumbUtils.createSnapshotThumbnail(content, canvas);
+  let snapshot;
+  let args = aMessage.data.additionalArgs;
+  let fullScale = args ? args.fullScale : false;
+  if (fullScale) {
+    snapshot = PageThumbUtils.createSnapshotThumbnail(content, null, args);
+  } else {
+    let snapshotWidth = aMessage.data.canvasWidth;
+    let snapshotHeight = aMessage.data.canvasHeight;
+    snapshot =
+      PageThumbUtils.createCanvas(content, snapshotWidth, snapshotHeight);
+    PageThumbUtils.createSnapshotThumbnail(content, snapshot, args);
+  }
 
   snapshot.toBlob(function (aBlob) {
     sendAsyncMessage("Browser:Thumbnail:Response", {
@@ -499,6 +527,13 @@ addMessageListener("NetworkPrioritizer:AdjustPriority", (msg) => {
   let loadGroup = webNav.QueryInterface(Ci.nsIDocumentLoader)
                         .loadGroup.QueryInterface(Ci.nsISupportsPriority);
   loadGroup.adjustPriority(msg.data.adjustment);
+});
+
+addMessageListener("NetworkPrioritizer:SetPriority", (msg) => {
+  let webNav = docShell.QueryInterface(Ci.nsIWebNavigation);
+  let loadGroup = webNav.QueryInterface(Ci.nsIDocumentLoader)
+                        .loadGroup.QueryInterface(Ci.nsISupportsPriority);
+  loadGroup.priority = msg.data.priority;
 });
 
 var AutoCompletePopup = {
@@ -577,15 +612,31 @@ var AutoCompletePopup = {
   }
 }
 
+addMessageListener("InPermitUnload", msg => {
+  let inPermitUnload = docShell.contentViewer && docShell.contentViewer.inPermitUnload;
+  sendAsyncMessage("InPermitUnload", {id: msg.data.id, inPermitUnload});
+});
+
+addMessageListener("PermitUnload", msg => {
+  sendAsyncMessage("PermitUnload", {id: msg.data.id, kind: "start"});
+
+  let permitUnload = true;
+  if (docShell && docShell.contentViewer) {
+    permitUnload = docShell.contentViewer.permitUnload();
+  }
+
+  sendAsyncMessage("PermitUnload", {id: msg.data.id, kind: "end", permitUnload});
+});
+
 // We may not get any responses to Browser:Init if the browser element
 // is torn down too quickly.
 var outerWindowID = content.QueryInterface(Ci.nsIInterfaceRequestor)
                            .getInterface(Ci.nsIDOMWindowUtils)
                            .outerWindowID;
-var initData = sendSyncMessage("Browser:Init", {outerWindowID: outerWindowID});
-if (initData.length) {
-  docShell.useGlobalHistory = initData[0].useGlobalHistory;
-  if (initData[0].initPopup) {
-    setTimeout(() => AutoCompletePopup.init(), 0);
+sendAsyncMessage("Browser:Init", {outerWindowID: outerWindowID});
+addMessageListener("Browser:InitReceived", function onInitReceived(msg) {
+  removeMessageListener("Browser:InitReceived", onInitReceived);
+  if (msg.data.initPopup) {
+    AutoCompletePopup.init();
   }
-}
+});

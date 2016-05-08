@@ -10,7 +10,8 @@
 const {TimelineFront} = require("devtools/server/actors/timeline");
 
 add_task(function*() {
-  let doc = yield addTab(MAIN_DOMAIN + "timeline-iframe-parent.html");
+  let browser = yield addTab(MAIN_DOMAIN + "timeline-iframe-parent.html");
+  let doc = browser.contentDocument;
 
   initDebuggerServer();
   let client = new DebuggerClient(DebuggerServer.connectPipe());
@@ -18,7 +19,7 @@ add_task(function*() {
   let front = TimelineFront(client, form);
 
   info("Start timeline marker recording");
-  yield front.start();
+  yield front.start({ withMarkers: true });
 
   // Check that we get markers for a few iterations of the timer that runs in
   // the child frame.

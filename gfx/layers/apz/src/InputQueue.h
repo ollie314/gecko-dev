@@ -6,10 +6,14 @@
 #ifndef mozilla_layers_InputQueue_h
 #define mozilla_layers_InputQueue_h
 
+#include "APZUtils.h"
+#include "DragTracker.h"
+#include "InputData.h"
 #include "mozilla/EventForwards.h"
+#include "mozilla/RefPtr.h"
 #include "mozilla/UniquePtr.h"
-#include "nsAutoPtr.h"
 #include "nsTArray.h"
+#include "TouchCounter.h"
 
 namespace mozilla {
 
@@ -23,7 +27,9 @@ class AsyncPanZoomController;
 class CancelableBlockState;
 class TouchBlockState;
 class WheelBlockState;
+class DragBlockState;
 class PanGestureBlockState;
+class AsyncDragMetrics;
 
 /**
  * This class stores incoming input events, separated into "input blocks", until
@@ -61,6 +67,13 @@ public:
    */
   void SetConfirmedTargetApzc(uint64_t aInputBlockId, const RefPtr<AsyncPanZoomController>& aTargetApzc);
   /**
+   * This function is invoked to confirm that the drag block should be handled
+   * by the APZ.
+   */
+  void ConfirmDragBlock(uint64_t aInputBlockId,
+                        const RefPtr<AsyncPanZoomController>& aTargetApzc,
+                        const AsyncDragMetrics& aDragMetrics);
+  /**
    * This function should be invoked to notify the InputQueue of the touch-
    * action properties for the different touch points in an input block. The
    * input block this applies to should be specified by the |aInputBlockId|
@@ -87,6 +100,7 @@ public:
    */
   TouchBlockState* CurrentTouchBlock() const;
   WheelBlockState* CurrentWheelBlock() const;
+  DragBlockState* CurrentDragBlock() const;
   PanGestureBlockState* CurrentPanGestureBlock() const;
   /**
    * Returns true iff the pending block at the head of the queue is ready for
@@ -106,6 +120,12 @@ public:
    * Whether the current pending block allows scroll handoff.
    */
   bool AllowScrollHandoff() const;
+  /**
+   * If there is currently a drag in progress, return whether or not it was
+   * targeted at a scrollbar. If the drag was newly-created and doesn't know,
+   * use the provided |aOnScrollbar| to populate that information.
+   */
+  bool IsDragOnScrollbar(bool aOnScrollbar);
 
 private:
   ~InputQueue();
@@ -130,6 +150,10 @@ private:
                                   bool aTargetConfirmed,
                                   const MultiTouchInput& aEvent,
                                   uint64_t* aOutInputBlockId);
+  nsEventStatus ReceiveMouseInput(const RefPtr<AsyncPanZoomController>& aTarget,
+                                  bool aTargetConfirmed,
+                                  const MouseInput& aEvent,
+                                  uint64_t* aOutInputBlockId);
   nsEventStatus ReceiveScrollWheelInput(const RefPtr<AsyncPanZoomController>& aTarget,
                                         bool aTargetConfirmed,
                                         const ScrollWheelInput& aEvent,
@@ -151,13 +175,14 @@ private:
   bool MaybeHandleCurrentBlock(CancelableBlockState* block,
                                const InputData& aEvent);
 
-  void ScheduleMainThreadTimeout(const RefPtr<AsyncPanZoomController>& aTarget, uint64_t aInputBlockId);
+  void ScheduleMainThreadTimeout(const RefPtr<AsyncPanZoomController>& aTarget,
+                                 CancelableBlockState* aBlock);
   void MainThreadTimeout(const uint64_t& aInputBlockId);
   void ProcessInputBlocks();
   void UpdateActiveApzc(const RefPtr<AsyncPanZoomController>& aNewActive);
 
 private:
-  // The queue of touch blocks that have not yet been fully processed.
+  // The queue of input blocks that have not yet been fully processed.
   // This member must only be accessed on the controller/UI thread.
   nsTArray<UniquePtr<CancelableBlockState>> mInputBlockQueue;
 
@@ -166,6 +191,9 @@ private:
 
   // Track touches so we know when to clear mLastActiveApzc
   TouchCounter mTouchCounter;
+
+  // Track mouse inputs so we know if we're in a drag or not
+  DragTracker mDragTracker;
 };
 
 } // namespace layers

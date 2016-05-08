@@ -4,12 +4,27 @@
 
 "use strict";
 
+/**
+ * XXX: bug 1221488 is required to make these commands run on the server.
+ * If we want these commands to run on remote devices/connections, they need to
+ * run on the server (runAt=server). Unfortunately, cookie commands not only
+ * need to run on the server, they also need to access to the parent process to
+ * retrieve and manipulate cookies via nsICookieManager2.
+ * However, server-running commands have no way of accessing the parent process
+ * for now.
+ *
+ * So, because these cookie commands, as of today, only run in the developer
+ * toolbar (the gcli command bar), and because this toolbar is only available on
+ * a local Firefox desktop tab (not in webide or the browser toolbox), we can
+ * make the commands run on the client.
+ * This way, they'll always run in the parent process.
+ */
+
 const { Ci, Cc } = require("chrome");
 const l10n = require("gcli/l10n");
 const URL = require("sdk/url").URL;
 
 XPCOMUtils.defineLazyGetter(this, "cookieMgr", function() {
-  const { Cc, Ci } = require("chrome");
   return Cc["@mozilla.org/cookiemanager;1"].getService(Ci.nsICookieManager2);
 });
 
@@ -17,13 +32,13 @@ XPCOMUtils.defineLazyGetter(this, "cookieMgr", function() {
  * Check host value and remove port part as it is not used
  * for storing cookies.
  *
- * Parameter will usually be context.environment.document.location.host
+ * Parameter will usually be `new URL(context.environment.target.url).host`
  */
 function sanitizeHost(host) {
   if (host == null || host == "") {
     throw new Error(l10n.lookup("cookieListOutNonePage"));
   }
-  return host.split(':')[0];
+  return host.split(":")[0];
 }
 
 /**
@@ -44,11 +59,12 @@ function isCookieAtHost(cookie, host) {
     return host == null;
   }
   if (cookie.host.startsWith(".")) {
-    return host.endsWith(cookie.host);
+    return ("." + host).endsWith(cookie.host);
   }
-  else {
-    return cookie.host == host;
+  if (cookie.host === "") {
+    return host.startsWith("file://" + cookie.path);
   }
+  return cookie.host == host;
 }
 
 exports.items = [
@@ -59,14 +75,18 @@ exports.items = [
   },
   {
     item: "command",
-    runAt: "server",
+    runAt: "client",
     name: "cookie list",
     description: l10n.lookup("cookieListDesc"),
     manual: l10n.lookup("cookieListManual"),
     returnType: "cookies",
     exec: function(args, context) {
-      let host = sanitizeHost(context.environment.document.location.host);
-
+      if (context.environment.target.isRemote) {
+        throw new Error("The cookie gcli commands only work in a local tab, " +
+                        "see bug 1221488");
+      }
+      let host = new URL(context.environment.target.url).host;
+      host = sanitizeHost(host);
       let enm = cookieMgr.getCookiesFromHost(host);
 
       let cookies = [];
@@ -91,7 +111,7 @@ exports.items = [
   },
   {
     item: "command",
-    runAt: "server",
+    runAt: "client",
     name: "cookie remove",
     description: l10n.lookup("cookieRemoveDesc"),
     manual: l10n.lookup("cookieRemoveManual"),
@@ -103,15 +123,20 @@ exports.items = [
       }
     ],
     exec: function(args, context) {
-      let host = sanitizeHost(context.environment.document.location.host);
+      if (context.environment.target.isRemote) {
+        throw new Error("The cookie gcli commands only work in a local tab, " +
+                        "see bug 1221488");
+      }
+      let host = new URL(context.environment.target.url).host;
+      host = sanitizeHost(host);
       let enm = cookieMgr.getCookiesFromHost(host);
 
-      let cookies = [];
       while (enm.hasMoreElements()) {
         let cookie = enm.getNext().QueryInterface(Ci.nsICookie);
         if (isCookieAtHost(cookie, host)) {
           if (cookie.name == args.name) {
-            cookieMgr.remove(cookie.host, cookie.name, cookie.path, false);
+            cookieMgr.remove(cookie.host, cookie.name, cookie.path,
+                             false, cookie.originAttributes);
           }
         }
       }
@@ -184,7 +209,7 @@ exports.items = [
   },
   {
     item: "command",
-    runAt: "server",
+    runAt: "client",
     name: "cookie set",
     description: l10n.lookup("cookieSetDesc"),
     manual: l10n.lookup("cookieSetManual"),
@@ -239,7 +264,12 @@ exports.items = [
       }
     ],
     exec: function(args, context) {
-      let host = sanitizeHost(context.environment.document.location.host);
+      if (context.environment.target.isRemote) {
+        throw new Error("The cookie gcli commands only work in a local tab, " +
+                        "see bug 1221488");
+      }
+      let host = new URL(context.environment.target.url).host;
+      host = sanitizeHost(host);
       let time = Date.parse(args.expires) / 1000;
 
       cookieMgr.add(args.domain ? "." + args.domain : host,

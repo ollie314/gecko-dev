@@ -73,10 +73,8 @@ public:
                                 TrackID aInputTrackID) override
   {
     if (aTrackEvents & TRACK_EVENT_CREATED) {
-      nsCOMPtr<nsIRunnable> runnable =
-        NS_NewRunnableMethodWithArgs<TrackID>(
-          this, &TrackCreatedListener::DoNotifyTrackCreated, aID);
-      aGraph->DispatchToMainThreadAfterStreamStateUpdate(runnable.forget());
+      aGraph->DispatchToMainThreadAfterStreamStateUpdate(NewRunnableMethod<TrackID>(
+          this, &TrackCreatedListener::DoNotifyTrackCreated, aID));
     }
   }
 
@@ -249,8 +247,8 @@ nsDOMCameraControl::DiscardCachedCameraInstance(nsITimer* aTimer, void* aClosure
 nsDOMCameraControl::nsDOMCameraControl(uint32_t aCameraId,
                                        const CameraConfiguration& aInitialConfig,
                                        Promise* aPromise,
-                                       nsPIDOMWindow* aWindow)
-  : DOMMediaStream()
+                                       nsPIDOMWindowInner* aWindow)
+  : DOMMediaStream(aWindow, nullptr)
   , mCameraControl(nullptr)
   , mAudioChannelAgent(nullptr)
   , mGetCameraPromise(aPromise)
@@ -262,6 +260,7 @@ nsDOMCameraControl::nsDOMCameraControl(uint32_t aCameraId,
 {
   DOM_CAMERA_LOGT("%s:%d : this=%p\n", __func__, __LINE__, this);
   mInput = new CameraPreviewMediaStream(this);
+  mOwnedStream = mInput;
 
   BindToOwner(aWindow);
 
@@ -330,11 +329,6 @@ nsDOMCameraControl::nsDOMCameraControl(uint32_t aCameraId,
   // to avoid initializing the Owned and Playback streams. This is OK since
   // we are not user/DOM facing anyway.
   CreateAndAddPlaybackStreamListener(mInput);
-
-  MOZ_ASSERT(mWindow, "Shouldn't be created with a null window!");
-  if (mWindow->GetExtantDoc()) {
-    CombineWithPrincipal(mWindow->GetExtantDoc()->NodePrincipal());
-  }
 
   // Register a listener for camera events.
   mListener = new DOMCameraControlListener(this, mInput);
@@ -526,10 +520,17 @@ nsDOMCameraControl::GetCameraStream() const
 
 void
 nsDOMCameraControl::TrackCreated(TrackID aTrackID) {
+  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_RELEASE_ASSERT(mWindow, "Shouldn't have been created with a null window!");
+  nsIPrincipal* principal = mWindow->GetExtantDoc()
+                          ? mWindow->GetExtantDoc()->NodePrincipal()
+                          : nullptr;
+
   // This track is not connected through a port.
   MediaInputPort* inputPort = nullptr;
   dom::VideoStreamTrack* track =
-    new dom::VideoStreamTrack(this, aTrackID);
+    new dom::VideoStreamTrack(this, aTrackID, aTrackID,
+                              new BasicUnstoppableTrackSource(principal));
   RefPtr<TrackPort> port =
     new TrackPort(inputPort, track,
                   TrackPort::InputPortOwnership::OWNED);
@@ -1187,8 +1188,7 @@ nsDOMCameraControl::NotifyRecordingStatusChange(const nsString& aMsg)
     // Video recording doesn't output any sound, so it's not necessary to check canPlay.
     float volume = 0.0;
     bool muted = true;
-    rv = mAudioChannelAgent->NotifyStartedPlaying(nsIAudioChannelAgent::AUDIO_AGENT_DONT_NOTIFY,
-                                                  &volume, &muted);
+    rv = mAudioChannelAgent->NotifyStartedPlaying(&volume, &muted);
     if (NS_WARN_IF(NS_FAILED(rv))) {
       return rv;
     }
@@ -1275,8 +1275,6 @@ nsDOMCameraControl::OnHardwareStateChange(CameraControlListener::HardwareState a
 {
   DOM_CAMERA_LOGT("%s:%d : this=%p\n", __func__, __LINE__, this);
   MOZ_ASSERT(NS_IsMainThread());
-
-  ErrorResult ignored;
 
   switch (aState) {
     case CameraControlListener::kHardwareOpen:
@@ -1405,7 +1403,6 @@ nsDOMCameraControl::OnRecorderStateChange(CameraControlListener::RecorderState a
   DOM_CAMERA_LOGT("%s:%d : this=%p, state=%u\n", __func__, __LINE__, this, aState);
   MOZ_ASSERT(NS_IsMainThread());
 
-  ErrorResult ignored;
   nsString state;
 
   switch (aState) {

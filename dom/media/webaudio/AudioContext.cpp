@@ -34,6 +34,7 @@
 #include "MediaStreamAudioDestinationNode.h"
 #include "MediaStreamAudioSourceNode.h"
 #include "MediaStreamGraph.h"
+#include "nsContentUtils.h"
 #include "nsNetCID.h"
 #include "nsNetUtil.h"
 #include "nsPIDOMWindow.h"
@@ -59,6 +60,9 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(AudioContext)
   if (!tmp->mIsStarted) {
     NS_IMPL_CYCLE_COLLECTION_UNLINK(mActiveNodes)
   }
+  // Remove weak reference on the global window as the context is not usable
+  // without mDestination.
+  tmp->DisconnectFromWindow();
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END_INHERITED(DOMEventTargetHelper)
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(AudioContext,
@@ -74,7 +78,9 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
 
 NS_IMPL_ADDREF_INHERITED(AudioContext, DOMEventTargetHelper)
 NS_IMPL_RELEASE_INHERITED(AudioContext, DOMEventTargetHelper)
+
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION_INHERITED(AudioContext)
+  NS_INTERFACE_MAP_ENTRY(nsIMemoryReporter)
 NS_INTERFACE_MAP_END_INHERITING(DOMEventTargetHelper)
 
 static float GetSampleRateForAudioContext(bool aIsOffline, float aSampleRate)
@@ -87,7 +93,7 @@ static float GetSampleRateForAudioContext(bool aIsOffline, float aSampleRate)
   }
 }
 
-AudioContext::AudioContext(nsPIDOMWindow* aWindow,
+AudioContext::AudioContext(nsPIDOMWindowInner* aWindow,
                            bool aIsOffline,
                            AudioChannel aChannel,
                            uint32_t aNumberOfChannels,
@@ -120,27 +126,28 @@ AudioContext::AudioContext(nsPIDOMWindow* aWindow,
 nsresult
 AudioContext::Init()
 {
-  // We skip calling SetIsOnlyNodeForContext and the creation of the
-  // audioChannelAgent during mDestination's constructor, because we can only
-  // call them after mDestination has been set up.
   if (!mIsOffline) {
     nsresult rv = mDestination->CreateAudioChannelAgent();
     if (NS_WARN_IF(NS_FAILED(rv))) {
       return rv;
     }
-    mDestination->SetIsOnlyNodeForContext(true);
   }
 
   return NS_OK;
 }
 
-AudioContext::~AudioContext()
+void
+AudioContext::DisconnectFromWindow()
 {
-  nsPIDOMWindow* window = GetOwner();
+  nsPIDOMWindowInner* window = GetOwner();
   if (window) {
     window->RemoveAudioContext(this);
   }
+}
 
+AudioContext::~AudioContext()
+{
+  DisconnectFromWindow();
   UnregisterWeakMemoryReporter(this);
 }
 
@@ -168,7 +175,7 @@ AudioContext::Constructor(const GlobalObject& aGlobal,
                           AudioChannel aChannel,
                           ErrorResult& aRv)
 {
-  nsCOMPtr<nsPIDOMWindow> window = do_QueryInterface(aGlobal.GetAsSupports());
+  nsCOMPtr<nsPIDOMWindowInner> window = do_QueryInterface(aGlobal.GetAsSupports());
   if (!window) {
     aRv.Throw(NS_ERROR_FAILURE);
     return nullptr;
@@ -192,7 +199,7 @@ AudioContext::Constructor(const GlobalObject& aGlobal,
                           float aSampleRate,
                           ErrorResult& aRv)
 {
-  nsCOMPtr<nsPIDOMWindow> window = do_QueryInterface(aGlobal.GetAsSupports());
+  nsCOMPtr<nsPIDOMWindowInner> window = do_QueryInterface(aGlobal.GetAsSupports());
   if (!window) {
     aRv.Throw(NS_ERROR_FAILURE);
     return nullptr;
@@ -242,8 +249,8 @@ AudioContext::CreateBufferSource(ErrorResult& aRv)
 }
 
 already_AddRefed<AudioBuffer>
-AudioContext::CreateBuffer(JSContext* aJSContext, uint32_t aNumberOfChannels,
-                           uint32_t aLength, float aSampleRate,
+AudioContext::CreateBuffer(uint32_t aNumberOfChannels, uint32_t aLength,
+                           float aSampleRate,
                            ErrorResult& aRv)
 {
   if (!aNumberOfChannels) {
@@ -252,7 +259,7 @@ AudioContext::CreateBuffer(JSContext* aJSContext, uint32_t aNumberOfChannels,
   }
 
   return AudioBuffer::Create(this, aNumberOfChannels, aLength,
-                             aSampleRate, aJSContext, aRv);
+                             aSampleRate, aRv);
 }
 
 namespace {
@@ -362,9 +369,7 @@ AudioContext::CreateMediaElementSource(HTMLMediaElement& aMediaElement,
   if (aRv.Failed()) {
     return nullptr;
   }
-  RefPtr<MediaElementAudioSourceNode> mediaElementAudioSourceNode =
-    new MediaElementAudioSourceNode(this, stream);
-  return mediaElementAudioSourceNode.forget();
+  return MediaElementAudioSourceNode::Create(this, stream, aRv);
 }
 
 already_AddRefed<MediaStreamAudioSourceNode>
@@ -380,9 +385,7 @@ AudioContext::CreateMediaStreamSource(DOMMediaStream& aMediaStream,
     return nullptr;
   }
 
-  RefPtr<MediaStreamAudioSourceNode> mediaStreamAudioSourceNode =
-    new MediaStreamAudioSourceNode(this, &aMediaStream);
-  return mediaStreamAudioSourceNode.forget();
+  return MediaStreamAudioSourceNode::Create(this, &aMediaStream, aRv);
 }
 
 already_AddRefed<GainNode>
@@ -521,21 +524,22 @@ AudioContext::CreateOscillator(ErrorResult& aRv)
 already_AddRefed<PeriodicWave>
 AudioContext::CreatePeriodicWave(const Float32Array& aRealData,
                                  const Float32Array& aImagData,
+                                 const PeriodicWaveConstraints& aConstraints,
                                  ErrorResult& aRv)
 {
   aRealData.ComputeLengthAndData();
   aImagData.ComputeLengthAndData();
 
   if (aRealData.Length() != aImagData.Length() ||
-      aRealData.Length() == 0 ||
-      aRealData.Length() > 4096) {
+      aRealData.Length() == 0) {
     aRv.Throw(NS_ERROR_DOM_NOT_SUPPORTED_ERR);
     return nullptr;
   }
 
   RefPtr<PeriodicWave> periodicWave =
     new PeriodicWave(this, aRealData.Data(), aImagData.Data(),
-                     aImagData.Length(), aRv);
+                     aImagData.Length(), aConstraints.mDisableNormalization,
+                     aRv);
   if (aRv.Failed()) {
     return nullptr;
   }
@@ -571,7 +575,13 @@ AudioContext::DecodeAudioData(const ArrayBuffer& aBuffer,
 
   aBuffer.ComputeLengthAndData();
 
-  // Neuter the array buffer
+  if (aBuffer.IsShared()) {
+    // Throw if the object is mapping shared memory (must opt in).
+    aRv.ThrowTypeError<MSG_TYPEDARRAY_IS_SHARED>(NS_LITERAL_STRING("Argument of AudioContext.decodeAudioData"));
+    return nullptr;
+  }
+
+  // Detach the array buffer
   size_t length = aBuffer.Length();
   JS::RootedObject obj(cx, aBuffer.Obj());
 
@@ -668,8 +678,7 @@ double
 AudioContext::CurrentTime() const
 {
   MediaStream* stream = Destination()->Stream();
-  return stream->StreamTimeToSeconds(stream->GetCurrentTime() +
-                                     Destination()->ExtraCurrentTime());
+  return stream->StreamTimeToSeconds(stream->GetCurrentTime());
 }
 
 void
@@ -745,7 +754,7 @@ StateChangeTask::Run()
 }
 
 /* This runnable allows to fire the "statechange" event */
-class OnStateChangeTask final : public nsRunnable
+class OnStateChangeTask final : public Runnable
 {
 public:
   explicit OnStateChangeTask(AudioContext* aAudioContext)
@@ -755,7 +764,7 @@ public:
   NS_IMETHODIMP
   Run() override
   {
-    nsCOMPtr<nsPIDOMWindow> parent = do_QueryInterface(mAudioContext->GetParentObject());
+    nsPIDOMWindowInner* parent = mAudioContext->GetParentObject();
     if (!parent) {
       return NS_ERROR_FAILURE;
     }
@@ -979,13 +988,6 @@ AudioContext::RegisterNode(AudioNode* aNode)
 {
   MOZ_ASSERT(!mAllNodes.Contains(aNode));
   mAllNodes.PutEntry(aNode);
-  // mDestinationNode may be null when we're destroying nodes unlinked by CC.
-  // Skipping unnecessary calls after shutdown avoids RunInStableState events
-  // getting stuck in CycleCollectedJSRuntime during final cycle collection
-  // (bug 1200514).
-  if (mDestination && !mIsShutDown) {
-    mDestination->SetIsOnlyNodeForContext(mAllNodes.Count() == 1);
-  }
 }
 
 void
@@ -993,10 +995,6 @@ AudioContext::UnregisterNode(AudioNode* aNode)
 {
   MOZ_ASSERT(mAllNodes.Contains(aNode));
   mAllNodes.RemoveEntry(aNode);
-  // mDestinationNode may be null when we're destroying nodes unlinked by CC
-  if (mDestination) {
-    mDestination->SetIsOnlyNodeForContext(mAllNodes.Count() == 1);
-  }
 }
 
 JSObject*
@@ -1024,11 +1022,21 @@ AudioContext::StartRendering(ErrorResult& aRv)
 
   mIsStarted = true;
   RefPtr<Promise> promise = Promise::Create(parentObject, aRv);
+  if (aRv.Failed()) {
+    return nullptr;
+  }
   mDestination->StartRendering(promise);
 
   OnStateChanged(nullptr, AudioContextState::Running);
 
   return promise.forget();
+}
+
+unsigned long
+AudioContext::Length()
+{
+  MOZ_ASSERT(mIsOffline);
+  return mDestination->Length();
 }
 
 void

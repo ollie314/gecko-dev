@@ -29,13 +29,14 @@ LIRGeneratorX86Shared::newLTableSwitch(const LAllocation& in, const LDefinition&
 LTableSwitchV*
 LIRGeneratorX86Shared::newLTableSwitchV(MTableSwitch* tableswitch)
 {
-    return new(alloc()) LTableSwitchV(temp(), tempDouble(), temp(), tableswitch);
+    return new(alloc()) LTableSwitchV(useBox(tableswitch->getOperand(0)),
+                                      temp(), tempDouble(), temp(), tableswitch);
 }
 
 void
 LIRGeneratorX86Shared::visitGuardShape(MGuardShape* ins)
 {
-    MOZ_ASSERT(ins->obj()->type() == MIRType_Object);
+    MOZ_ASSERT(ins->obj()->type() == MIRType::Object);
 
     LGuardShape* guard = new(alloc()) LGuardShape(useRegisterAtStart(ins->obj()));
     assignSnapshot(guard, ins->bailoutKind());
@@ -46,7 +47,7 @@ LIRGeneratorX86Shared::visitGuardShape(MGuardShape* ins)
 void
 LIRGeneratorX86Shared::visitGuardObjectGroup(MGuardObjectGroup* ins)
 {
-    MOZ_ASSERT(ins->obj()->type() == MIRType_Object);
+    MOZ_ASSERT(ins->obj()->type() == MIRType::Object);
 
     LGuardObjectGroup* guard = new(alloc()) LGuardObjectGroup(useRegisterAtStart(ins->obj()));
     assignSnapshot(guard, ins->bailoutKind());
@@ -58,7 +59,7 @@ void
 LIRGeneratorX86Shared::visitPowHalf(MPowHalf* ins)
 {
     MDefinition* input = ins->input();
-    MOZ_ASSERT(input->type() == MIRType_Double);
+    MOZ_ASSERT(input->type() == MIRType::Double);
     LPowHalfD* lir = new(alloc()) LPowHalfD(useRegisterAtStart(input));
     define(lir, ins);
 }
@@ -80,6 +81,30 @@ LIRGeneratorX86Shared::lowerForShift(LInstructionHelper<1, 2, 0>* ins, MDefiniti
 }
 
 void
+LIRGeneratorX86Shared::lowerForShiftInt64(LInstructionHelper<INT64_PIECES, INT64_PIECES + 1, 0>* ins,
+                                          MDefinition* mir, MDefinition* lhs, MDefinition* rhs)
+{
+    ins->setInt64Operand(0, useInt64RegisterAtStart(lhs));
+
+    // shift operator should be constant or in register ecx
+    // x86 can't shift a non-ecx register
+    if (rhs->isConstant()) {
+        ins->setOperand(INT64_PIECES, useOrConstantAtStart(rhs));
+    } else {
+        // The operands are int64, but we only care about the lower 32 bits of
+        // the RHS. On 32-bit, the code below will load that part in ecx and
+        // will discard the upper half.
+        ensureDefined(rhs);
+        bool useAtStart = (lhs == rhs);
+        LUse use(ecx, useAtStart);
+        use.setVirtualRegister(rhs->virtualRegister());
+        ins->setOperand(INT64_PIECES, use);
+    }
+
+    defineInt64ReuseInput(ins, mir, 0);
+}
+
+void
 LIRGeneratorX86Shared::lowerForALU(LInstructionHelper<1, 1, 0>* ins, MDefinition* mir,
                                    MDefinition* input)
 {
@@ -94,6 +119,16 @@ LIRGeneratorX86Shared::lowerForALU(LInstructionHelper<1, 2, 0>* ins, MDefinition
     ins->setOperand(0, useRegisterAtStart(lhs));
     ins->setOperand(1, lhs != rhs ? useOrConstant(rhs) : useOrConstantAtStart(rhs));
     defineReuseInput(ins, mir, 0);
+}
+
+void
+LIRGeneratorX86Shared::lowerForALUInt64(LInstructionHelper<INT64_PIECES, 2 * INT64_PIECES, 0>* ins,
+                                        MDefinition* mir, MDefinition* lhs, MDefinition* rhs)
+{
+    ins->setInt64Operand(0, useInt64RegisterAtStart(lhs));
+    ins->setInt64Operand(INT64_PIECES,
+                         lhs != rhs ? useInt64OrConstant(rhs) : useInt64OrConstantAtStart(rhs));
+    defineInt64ReuseInput(ins, mir, 0);
 }
 
 template<size_t Temps>
@@ -179,7 +214,7 @@ LIRGeneratorX86Shared::lowerDivI(MDiv* div)
     // Division instructions are slow. Division by constant denominators can be
     // rewritten to use other instructions.
     if (div->rhs()->isConstant()) {
-        int32_t rhs = div->rhs()->toConstant()->value().toInt32();
+        int32_t rhs = div->rhs()->toConstant()->toInt32();
 
         // Division by powers of two can be done by shifting, and division by
         // other numbers can be done by a reciprocal multiplication technique.
@@ -226,7 +261,7 @@ LIRGeneratorX86Shared::lowerModI(MMod* mod)
     }
 
     if (mod->rhs()->isConstant()) {
-        int32_t rhs = mod->rhs()->toConstant()->value().toInt32();
+        int32_t rhs = mod->rhs()->toConstant()->toInt32();
         int32_t shift = FloorLog2(Abs(rhs));
         if (rhs != 0 && uint32_t(1) << shift == Abs(rhs)) {
             LModPowTwoI* lir = new(alloc()) LModPowTwoI(useRegisterAtStart(mod->lhs()), shift);
@@ -254,16 +289,37 @@ LIRGeneratorX86Shared::lowerModI(MMod* mod)
 }
 
 void
+LIRGeneratorX86Shared::visitAsmSelect(MAsmSelect* ins)
+{
+    if (ins->type() == MIRType::Int64) {
+        auto* lir = new(alloc()) LAsmSelectI64(useInt64RegisterAtStart(ins->trueExpr()),
+                                               useInt64(ins->falseExpr()),
+                                               useRegister(ins->condExpr())
+                                              );
+
+        defineInt64ReuseInput(lir, ins, LAsmSelectI64::TrueExprIndex);
+        return;
+    }
+
+    auto* lir = new(alloc()) LAsmSelect(useRegisterAtStart(ins->trueExpr()),
+                                        use(ins->falseExpr()),
+                                        useRegister(ins->condExpr())
+                                       );
+
+    defineReuseInput(lir, ins, LAsmSelect::TrueExprIndex);
+}
+
+void
 LIRGeneratorX86Shared::visitAsmJSNeg(MAsmJSNeg* ins)
 {
     switch (ins->type()) {
-      case MIRType_Int32:
+      case MIRType::Int32:
         defineReuseInput(new(alloc()) LNegI(useRegisterAtStart(ins->input())), ins, 0);
         break;
-      case MIRType_Float32:
+      case MIRType::Float32:
         defineReuseInput(new(alloc()) LNegF(useRegisterAtStart(ins->input())), ins, 0);
         break;
-      case MIRType_Double:
+      case MIRType::Double:
         defineReuseInput(new(alloc()) LNegD(useRegisterAtStart(ins->input())), ins, 0);
         break;
       default:
@@ -275,7 +331,7 @@ void
 LIRGeneratorX86Shared::lowerUDiv(MDiv* div)
 {
     if (div->rhs()->isConstant()) {
-        uint32_t rhs = div->rhs()->toConstant()->value().toInt32();
+        uint32_t rhs = div->rhs()->toConstant()->toInt32();
         int32_t shift = FloorLog2(rhs);
 
         LAllocation lhs = useRegisterAtStart(div->lhs());
@@ -306,7 +362,7 @@ void
 LIRGeneratorX86Shared::lowerUMod(MMod* mod)
 {
     if (mod->rhs()->isConstant()) {
-        uint32_t rhs = mod->rhs()->toConstant()->value().toInt32();
+        uint32_t rhs = mod->rhs()->toConstant()->toInt32();
         int32_t shift = FloorLog2(rhs);
 
         if (rhs != 0 && uint32_t(1) << shift == rhs) {
@@ -338,9 +394,9 @@ LIRGeneratorX86Shared::lowerUrshD(MUrsh* mir)
     MDefinition* lhs = mir->lhs();
     MDefinition* rhs = mir->rhs();
 
-    MOZ_ASSERT(lhs->type() == MIRType_Int32);
-    MOZ_ASSERT(rhs->type() == MIRType_Int32);
-    MOZ_ASSERT(mir->type() == MIRType_Double);
+    MOZ_ASSERT(lhs->type() == MIRType::Int32);
+    MOZ_ASSERT(rhs->type() == MIRType::Int32);
+    MOZ_ASSERT(mir->type() == MIRType::Double);
 
 #ifdef JS_CODEGEN_X64
     MOZ_ASSERT(ecx == rcx);
@@ -357,7 +413,7 @@ void
 LIRGeneratorX86Shared::lowerTruncateDToInt32(MTruncateToInt32* ins)
 {
     MDefinition* opd = ins->input();
-    MOZ_ASSERT(opd->type() == MIRType_Double);
+    MOZ_ASSERT(opd->type() == MIRType::Double);
 
     LDefinition maybeTemp = Assembler::HasSSE3() ? LDefinition::BogusTemp() : tempDouble();
     define(new(alloc()) LTruncateDToInt32(useRegister(opd), maybeTemp), ins);
@@ -367,7 +423,7 @@ void
 LIRGeneratorX86Shared::lowerTruncateFToInt32(MTruncateToInt32* ins)
 {
     MDefinition* opd = ins->input();
-    MOZ_ASSERT(opd->type() == MIRType_Float32);
+    MOZ_ASSERT(opd->type() == MIRType::Float32);
 
     LDefinition maybeTemp = Assembler::HasSSE3() ? LDefinition::BogusTemp() : tempFloat32();
     define(new(alloc()) LTruncateFToInt32(useRegister(opd), maybeTemp), ins);
@@ -380,8 +436,8 @@ LIRGeneratorX86Shared::lowerCompareExchangeTypedArrayElement(MCompareExchangeTyp
     MOZ_ASSERT(ins->arrayType() != Scalar::Float32);
     MOZ_ASSERT(ins->arrayType() != Scalar::Float64);
 
-    MOZ_ASSERT(ins->elements()->type() == MIRType_Elements);
-    MOZ_ASSERT(ins->index()->type() == MIRType_Int32);
+    MOZ_ASSERT(ins->elements()->type() == MIRType::Elements);
+    MOZ_ASSERT(ins->index()->type() == MIRType::Int32);
 
     const LUse elements = useRegister(ins->elements());
     const LAllocation index = useRegisterOrConstant(ins->index());
@@ -432,8 +488,8 @@ LIRGeneratorX86Shared::lowerAtomicExchangeTypedArrayElement(MAtomicExchangeTyped
 {
     MOZ_ASSERT(ins->arrayType() <= Scalar::Uint32);
 
-    MOZ_ASSERT(ins->elements()->type() == MIRType_Elements);
-    MOZ_ASSERT(ins->index()->type() == MIRType_Int32);
+    MOZ_ASSERT(ins->elements()->type() == MIRType::Elements);
+    MOZ_ASSERT(ins->index()->type() == MIRType::Int32);
 
     const LUse elements = useRegister(ins->elements());
     const LAllocation index = useRegisterOrConstant(ins->index());
@@ -452,7 +508,7 @@ LIRGeneratorX86Shared::lowerAtomicExchangeTypedArrayElement(MAtomicExchangeTyped
     LDefinition tempDef = LDefinition::BogusTemp();
     if (ins->arrayType() == Scalar::Uint32) {
         // This restriction is bug 1077305.
-        MOZ_ASSERT(ins->type() == MIRType_Double);
+        MOZ_ASSERT(ins->type() == MIRType::Double);
         tempDef = temp();
     }
 
@@ -473,8 +529,8 @@ LIRGeneratorX86Shared::lowerAtomicTypedArrayElementBinop(MAtomicTypedArrayElemen
     MOZ_ASSERT(ins->arrayType() != Scalar::Float32);
     MOZ_ASSERT(ins->arrayType() != Scalar::Float64);
 
-    MOZ_ASSERT(ins->elements()->type() == MIRType_Elements);
-    MOZ_ASSERT(ins->index()->type() == MIRType_Int32);
+    MOZ_ASSERT(ins->elements()->type() == MIRType::Elements);
+    MOZ_ASSERT(ins->index()->type() == MIRType::Int32);
 
     const LUse elements = useRegister(ins->elements());
     const LAllocation index = useRegisterOrConstant(ins->index());
@@ -591,7 +647,7 @@ LIRGeneratorX86Shared::visitSimdBinaryArith(MSimdBinaryArith* ins)
     if (ins->isCommutative())
         ReorderCommutative(&lhs, &rhs, ins);
 
-    if (ins->type() == MIRType_Int32x4) {
+    if (ins->type() == MIRType::Int32x4) {
         LSimdBinaryArithIx4* lir = new(alloc()) LSimdBinaryArithIx4();
         bool needsTemp = ins->operation() == MSimdBinaryArith::Op_mul && !MacroAssembler::HasSSE41();
         lir->setTemp(0, needsTemp ? temp(LDefinition::INT32X4) : LDefinition::BogusTemp());
@@ -599,7 +655,7 @@ LIRGeneratorX86Shared::visitSimdBinaryArith(MSimdBinaryArith* ins)
         return;
     }
 
-    MOZ_ASSERT(ins->type() == MIRType_Float32x4, "unknown simd type on binary arith operation");
+    MOZ_ASSERT(ins->type() == MIRType::Float32x4, "unknown simd type on binary arith operation");
 
     LSimdBinaryArithFx4* lir = new(alloc()) LSimdBinaryArithFx4();
 
@@ -615,7 +671,7 @@ void
 LIRGeneratorX86Shared::visitSimdSelect(MSimdSelect* ins)
 {
     MOZ_ASSERT(IsSimdType(ins->type()));
-    MOZ_ASSERT(ins->type() == MIRType_Int32x4 || ins->type() == MIRType_Float32x4,
+    MOZ_ASSERT(ins->type() == MIRType::Int32x4 || ins->type() == MIRType::Float32x4,
                "Unknown SIMD kind when doing bitwise operations");
 
     LSimdSelect* lins = new(alloc()) LSimdSelect;
@@ -638,10 +694,11 @@ LIRGeneratorX86Shared::visitSimdSplatX4(MSimdSplatX4* ins)
     LSimdSplatX4* lir = new(alloc()) LSimdSplatX4(x);
 
     switch (ins->type()) {
-      case MIRType_Int32x4:
+      case MIRType::Int32x4:
+      case MIRType::Bool32x4:
         define(lir, ins);
         break;
-      case MIRType_Float32x4:
+      case MIRType::Float32x4:
         // (Non-AVX) codegen actually wants the input and the output to be in
         // the same register, but we can't currently use defineReuseInput
         // because they have different types (scalar vs vector), so a spill slot
@@ -656,7 +713,8 @@ LIRGeneratorX86Shared::visitSimdSplatX4(MSimdSplatX4* ins)
 void
 LIRGeneratorX86Shared::visitSimdValueX4(MSimdValueX4* ins)
 {
-    if (ins->type() == MIRType_Float32x4) {
+    switch (ins->type()) {
+      case MIRType::Float32x4: {
         // Ideally, x would be used at start and reused for the output, however
         // register allocation currently doesn't permit us to tie together two
         // virtual registers with different types.
@@ -666,14 +724,19 @@ LIRGeneratorX86Shared::visitSimdValueX4(MSimdValueX4* ins)
         LAllocation w = useRegister(ins->getOperand(3));
         LDefinition t = temp(LDefinition::FLOAT32X4);
         define(new (alloc()) LSimdValueFloat32x4(x, y, z, w, t), ins);
-    } else {
-        MOZ_ASSERT(ins->type() == MIRType_Int32x4);
-
+        break;
+      }
+      case MIRType::Bool32x4:
+      case MIRType::Int32x4: {
         // No defineReuseInput => useAtStart for everyone.
         LAllocation x = useRegisterAtStart(ins->getOperand(0));
         LAllocation y = useRegisterAtStart(ins->getOperand(1));
         LAllocation z = useRegisterAtStart(ins->getOperand(2));
         LAllocation w = useRegisterAtStart(ins->getOperand(3));
         define(new(alloc()) LSimdValueInt32x4(x, y, z, w), ins);
+        break;
+      }
+      default:
+        MOZ_CRASH("Unknown SIMD kind");
     }
 }

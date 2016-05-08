@@ -143,7 +143,7 @@ public:
     PARTIAL_RELIABLE_TIMED = 2
   } Type;
 
-  MOZ_WARN_UNUSED_RESULT
+  MOZ_MUST_USE
   already_AddRefed<DataChannel> Open(const nsACString& label,
                                      const nsACString& protocol,
                                      Type type, bool inOrder,
@@ -263,13 +263,13 @@ private:
   // NOTE: while this array will auto-expand, increases in the number of
   // channels available from the stack must be negotiated!
   bool mAllocateEven;
-  nsAutoTArray<RefPtr<DataChannel>,16> mStreams;
+  AutoTArray<RefPtr<DataChannel>,16> mStreams;
   nsDeque mPending; // Holds addref'ed DataChannel's -- careful!
   // holds data that's come in before a channel is open
   nsTArray<nsAutoPtr<QueuedDataMessage> > mQueuedData;
 
   // Streams pending reset
-  nsAutoTArray<uint16_t,4> mStreamsResetting;
+  AutoTArray<uint16_t,4> mStreamsResetting;
 
   struct socket *mMasterSocket; // accessed from STS thread
   struct socket *mSocket; // cloned from mMasterSocket on successful Connect on STS thread
@@ -337,9 +337,10 @@ private:
   ~DataChannel();
 
 public:
-  void Destroy(); // when we disconnect from the connection after stream RESET
-
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(DataChannel)
+
+  // when we disconnect from the connection after stream RESET
+  void DestroyLocked();
 
   // Close this DataChannel.  Can be called multiple times.  MUST be called
   // before destroying the DataChannel (state must be CLOSED or CLOSING).
@@ -443,7 +444,7 @@ private:
 // used to dispatch notifications of incoming data to the main thread
 // Patterned on CallOnMessageAvailable in WebSockets
 // Also used to proxy other items to MainThread
-class DataChannelOnMessageAvailable : public nsRunnable
+class DataChannelOnMessageAvailable : public Runnable
 {
 public:
   enum {
@@ -455,6 +456,7 @@ public:
     ON_DATA,
     START_DEFER,
     BUFFER_LOW_THRESHOLD,
+    NO_LONGER_BUFFERED,
   };  /* types */
 
   DataChannelOnMessageAvailable(int32_t     aType,
@@ -492,11 +494,17 @@ public:
   NS_IMETHOD Run()
   {
     MOZ_ASSERT(NS_IsMainThread());
+
+    // Note: calling the listeners can indirectly cause the listeners to be
+    // made available for GC (by removing event listeners), especially for
+    // OnChannelClosed().  We hold a ref to the Channel and the listener
+    // while calling this.
     switch (mType) {
       case ON_DATA:
       case ON_CHANNEL_OPEN:
       case ON_CHANNEL_CLOSED:
       case BUFFER_LOW_THRESHOLD:
+      case NO_LONGER_BUFFERED:
         {
           MutexAutoLock lock(mChannel->mListenerLock);
           if (!mChannel->mListener) {
@@ -521,13 +529,16 @@ public:
             case BUFFER_LOW_THRESHOLD:
               mChannel->mListener->OnBufferLow(mChannel->mContext);
               break;
+            case NO_LONGER_BUFFERED:
+              mChannel->mListener->NotBuffered(mChannel->mContext);
+              break;
           }
           break;
         }
       case ON_DISCONNECTED:
         // If we've disconnected, make sure we close all the streams - from mainthread!
         mConnection->CloseAll();
-        // fall through
+        MOZ_FALLTHROUGH;
       case ON_CHANNEL_CREATED:
       case ON_CONNECTION:
         // WeakPtr - only used/modified/nulled from MainThread so we can use a WeakPtr here

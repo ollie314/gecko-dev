@@ -95,7 +95,12 @@ struct TupleImpl;
  * of an empty tuple).
  */
 template<std::size_t Index>
-struct TupleImpl<Index> {};
+struct TupleImpl<Index> {
+  bool operator==(const TupleImpl<Index>& aOther) const
+  {
+    return true;
+  }
+};
 
 /*
  * One node of the recursive inheritance hierarchy. It stores the element at
@@ -182,6 +187,10 @@ struct TupleImpl<Index, HeadT, TailT...>
     Tail(*this) = Move(Tail(aOther));
     return *this;
   }
+  bool operator==(const TupleImpl& aOther) const
+  {
+    return Head(*this) == Head(aOther) && Tail(*this) == Tail(aOther);
+  }
 private:
   HeadT mHead;  // The element stored at this index in the tuple.
 };
@@ -245,6 +254,10 @@ public:
   {
     static_cast<Impl&>(*this) = Move(aOther);
     return *this;
+  }
+  bool operator==(const Tuple& aOther) const
+  {
+    return static_cast<const Impl&>(*this) == static_cast<const Impl&>(aOther);
   }
 };
 
@@ -417,9 +430,10 @@ auto Get(Tuple<Elements...>&& aTuple)
  * auto tuple = MakeTuple(42, 0.5f, 'c');  // has type Tuple<int, float, char>
  */
 template<typename... Elements>
-Tuple<Elements...> MakeTuple(Elements&&... aElements)
+inline Tuple<typename Decay<Elements>::Type...>
+MakeTuple(Elements&&... aElements)
 {
-  return Tuple<Elements...>(Forward<Elements>(aElements)...);
+  return Tuple<typename Decay<Elements>::Type...>(Forward<Elements>(aElements)...);
 }
 
 /**
@@ -436,7 +450,8 @@ Tuple<Elements...> MakeTuple(Elements&&... aElements)
  * Tie(i, f, c) = FunctionThatReturnsATuple();
  */
 template<typename... Elements>
-Tuple<Elements&...> Tie(Elements&... aVariables)
+inline Tuple<Elements&...>
+Tie(Elements&... aVariables)
 {
   return Tuple<Elements&...>(aVariables...);
 }

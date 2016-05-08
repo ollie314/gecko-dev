@@ -20,6 +20,7 @@ if CONFIG['MOZ_PLACES']:
         'mozIAsyncLivemarks.idl',
         'mozIColorAnalyzer.idl',
         'mozIPlacesAutoComplete.idl',
+        'mozIPlacesPendingOperation.idl',
         'nsIAnnotationService.idl',
         'nsIBrowserHistory.idl',
         'nsIFaviconService.idl',
@@ -47,6 +48,7 @@ if CONFIG['MOZ_PLACES']:
         'nsNavHistoryResult.cpp',
         'nsPlacesModule.cpp',
         'PlaceInfo.cpp',
+        'Shutdown.cpp',
         'SQLFunctions.cpp',
         'VisitInfo.cpp',
     ]
@@ -65,6 +67,7 @@ if CONFIG['MOZ_PLACES']:
         'History.jsm',
         'PlacesBackups.jsm',
         'PlacesDBUtils.jsm',
+        'PlacesRemoteTabsAutocompleteProvider.jsm',
         'PlacesSearchAutocompleteProvider.jsm',
         'PlacesTransactions.jsm',
         'PlacesUtils.jsm',

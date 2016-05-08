@@ -15,6 +15,7 @@
 #include "mozilla/Assertions.h"         // for MOZ_ASSERT, etc
 #include "mozilla/Attributes.h"         // for override
 #include "mozilla/RefPtr.h"             // for RefPtr
+#include "mozilla/gfx/MatrixFwd.h"      // for Matrix4x4
 #include "mozilla/gfx/Point.h"          // for Point
 #include "mozilla/gfx/Rect.h"           // for Rect
 #include "mozilla/gfx/Types.h"          // for Filter
@@ -32,9 +33,6 @@
 #endif
 
 namespace mozilla {
-namespace gfx {
-class Matrix4x4;
-} // namespace gfx
 
 namespace layers {
 
@@ -113,6 +111,14 @@ public:
     CompositableHost::DumpTextureHost(aStream, mTextureHost);
   }
 
+  /**
+   * This does a linear tween of the passed opacity (which is assumed
+   * to be between 0.0 and 1.0). The duration of the fade is controlled
+   * by the 'layers.tiles.fade-in.duration-ms' preference. It is enabled
+   * via 'layers.tiles.fade-in.enabled'
+   */
+  float GetFadeInOpacity(float aOpacity);
+
   RefPtr<gfxSharedReadLock> mSharedLock;
   CompositableTextureHostRef mTextureHost;
   CompositableTextureHostRef mTextureHostOnWhite;
@@ -120,6 +126,7 @@ public:
   mutable CompositableTextureSourceRef mTextureSourceOnWhite;
   // This is not strictly necessary but makes debugging whole lot easier.
   TileIntPoint mTilePosition;
+  TimeStamp mFadeStart;
 };
 
 class TiledLayerBufferComposite
@@ -148,10 +155,7 @@ public:
 
   void SetCompositor(Compositor* aCompositor);
 
-  // Recycle callback for TextureHost.
-  // Used when TiledContentClient is present in client side.
-  static void RecycleCallback(TextureHost* textureHost, void* aClosure);
-
+  void AddAnimationInvalidation(nsIntRegion& aRegion);
 protected:
 
   CSSToParentLayerScale2D mFrameResolution;
@@ -268,6 +272,8 @@ public:
                     bool aDumpHtml=false) override;
 
   virtual void PrintInfo(std::stringstream& aStream, const char* aPrefix) override;
+
+  virtual void AddAnimationInvalidation(nsIntRegion& aRegion) override;
 
 private:
 

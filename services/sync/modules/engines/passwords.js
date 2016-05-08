@@ -68,8 +68,11 @@ PasswordEngine.prototype = {
         // record success.
         Svc.Prefs.set("deletePwdFxA", true);
         Svc.Prefs.reset("deletePwd"); // The old prefname we previously used.
-      } catch (ex if !Async.isShutdownException(ex)) {
-        this._log.debug("Password deletes failed: " + Utils.exceptionStr(ex));
+      } catch (ex) {
+        if (Async.isShutdownException(ex)) {
+          throw ex;
+        }
+        this._log.debug("Password deletes failed", ex);
       }
     }
   },
@@ -85,7 +88,7 @@ PasswordEngine.prototype = {
     this._store._sleep(0); // Yield back to main thread after synchronous operation.
 
     // Look for existing logins that match the hostname, but ignore the password.
-    for each (let local in logins) {
+    for (let local of logins) {
       if (login.matches(local, true) && local instanceof Ci.nsILoginMetaInfo) {
         return local.guid;
       }
@@ -233,8 +236,7 @@ PasswordStore.prototype = {
     try {
       Services.logins.addLogin(login);
     } catch(ex) {
-      this._log.debug("Adding record " + record.id +
-                      " resulted in exception " + Utils.exceptionStr(ex));
+      this._log.debug(`Adding record ${record.id} resulted in exception`, ex);
     }
   },
 
@@ -266,9 +268,7 @@ PasswordStore.prototype = {
     try {
       Services.logins.modifyLogin(loginItem, newinfo);
     } catch(ex) {
-      this._log.debug("Modifying record " + record.id +
-                      " resulted in exception " + Utils.exceptionStr(ex) +
-                      ". Not modifying.");
+      this._log.debug(`Modifying record ${record.id} resulted in exception; not modifying`, ex);
     }
   },
 

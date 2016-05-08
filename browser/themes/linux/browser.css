@@ -16,10 +16,11 @@
 
 %define forwardTransitionLength 150ms
 %define conditionalForwardWithUrlbar window:not([chromehidden~="toolbar"]) #urlbar-wrapper
-%define conditionalForwardWithUrlbarWidth 31
 
 :root {
   --backbutton-urlbar-overlap: 6px;
+  /* icon width + border + horizontal padding (without the overlap from backbutton-urlbar-overlap) */
+  --forwardbutton-width: 25px;
 
   --toolbarbutton-hover-background: rgba(255,255,255,.5) linear-gradient(rgba(255,255,255,.5), transparent);
   --toolbarbutton-hover-bordercolor: rgba(0,0,0,.25);
@@ -68,6 +69,10 @@
   background-image: linear-gradient(@toolbarHighlight@, @toolbarHighlight@);
 }
 
+#navigator-toolbox > toolbar:not(#toolbar-menubar):not(#TabsToolbar):-moz-lwtheme {
+  background-image: linear-gradient(@toolbarHighlightLWT@, @toolbarHighlightLWT@);
+}
+
 #navigator-toolbox > toolbar:not(:-moz-lwtheme):not(#toolbar-menubar):not(#TabsToolbar) {
   -moz-appearance: none;
   border-style: none;
@@ -102,7 +107,7 @@
 }
 
 #nav-bar {
-  box-shadow: 0 1px 0 @toolbarHighlight@ inset;
+  box-shadow: 0 1px 0 @navbarInsetHighlight@ inset;
   padding-top: 2px;
   padding-bottom: 2px;
 }
@@ -507,9 +512,7 @@ menuitem:not([type]):not(.menuitem-tooltip):not(.menuitem-iconic-tooltip) {
 }
 
 #subscribeToPageMenuitem:not([disabled]),
-#subscribeToPageMenupopup,
-#BMB_subscribeToPageMenuitem:not([disabled]),
-#BMB_subscribeToPageMenupopup {
+#subscribeToPageMenupopup {
   list-style-image: url("chrome://browser/skin/page-livemarks.png");
 }
 
@@ -522,12 +525,6 @@ menuitem:not([type]):not(.menuitem-tooltip):not(.menuitem-iconic-tooltip) {
 #BMB_unsortedBookmarks,
 #panelMenu_unsortedBookmarks {
   list-style-image: url("chrome://browser/skin/places/unsortedBookmarks.png");
-}
-
-#panelMenu_pocket,
-#menu_pocket,
-#BMB_pocket {
-  list-style-image: url("chrome://browser/content/pocket/panels/img/pocketmenuitem16.png");
 }
 
 #menu_openDownloads {
@@ -572,13 +569,13 @@ menuitem:not([type]):not(.menuitem-tooltip):not(.menuitem-iconic-tooltip) {
 
 /* Primary toolbar buttons */
 
-toolbar .toolbarbutton-1 > .toolbarbutton-icon,
-toolbar .toolbarbutton-1 > :-moz-any(.toolbarbutton-menubutton-button, .toolbarbutton-badge-stack) > .toolbarbutton-icon {
+:-moz-any(toolbar, .widget-overflow-list) .toolbarbutton-1 > .toolbarbutton-icon,
+:-moz-any(toolbar, .widget-overflow-list) .toolbarbutton-1 > :-moz-any(.toolbarbutton-menubutton-button, .toolbarbutton-badge-stack) > .toolbarbutton-icon {
   max-width: 16px;
 }
 
-toolbar .toolbarbutton-1:-moz-any(@primaryToolbarButtons@) > .toolbarbutton-icon,
-toolbar .toolbarbutton-1:-moz-any(@primaryToolbarButtons@) > :-moz-any(.toolbarbutton-menubutton-button, .toolbarbutton-badge-stack) > .toolbarbutton-icon,
+:-moz-any(toolbar, .widget-overflow-list) .toolbarbutton-1:-moz-any(@primaryToolbarButtons@) > .toolbarbutton-icon,
+:-moz-any(toolbar, .widget-overflow-list) .toolbarbutton-1:-moz-any(@primaryToolbarButtons@) > :-moz-any(.toolbarbutton-menubutton-button, .toolbarbutton-badge-stack) > .toolbarbutton-icon,
 #bookmarks-menu-button[cui-areatype="toolbar"] > .toolbarbutton-menubutton-dropmarker > .dropmarker-icon {
   max-width: 18px;
 }
@@ -749,7 +746,7 @@ toolbar .toolbarbutton-1:-moz-any(@primaryToolbarButtons@) > :-moz-any(.toolbarb
   padding-right: 3px;
   border-left-style: none;
   border-radius: 0;
-  max-width: @conditionalForwardWithUrlbarWidth@px;
+  max-width: calc(var(--forwardbutton-width) + var(--backbutton-urlbar-overlap));
 }
 
 @conditionalForwardWithUrlbar@:not([switchingtabs]) > #forward-button {
@@ -757,7 +754,7 @@ toolbar .toolbarbutton-1:-moz-any(@primaryToolbarButtons@) > :-moz-any(.toolbarb
 }
 
 @conditionalForwardWithUrlbar@ > #forward-button[disabled] {
-  margin-left: -@conditionalForwardWithUrlbarWidth@px;
+  margin-left: calc(0px - var(--forwardbutton-width) - var(--backbutton-urlbar-overlap));
 }
 
 @conditionalForwardWithUrlbar@:hover:not([switchingtabs]) > #forward-button[disabled] {
@@ -767,30 +764,7 @@ toolbar .toolbarbutton-1:-moz-any(@primaryToolbarButtons@) > :-moz-any(.toolbarb
 
 @conditionalForwardWithUrlbar@:not(:hover) > #forward-button[disabled] {
   /* when not hovered anymore, trigger a new transition to hide the forward button immediately */
-  margin-left: -@conditionalForwardWithUrlbarWidth@.01px;
-}
-
-/* tabview menu item */
-
-#menu_tabview {
-  list-style-image: url(chrome://browser/skin/tabview/tabview.png);
-  -moz-image-region: rect(0, 80px, 16px, 64px);
-}
-
-#menu_tabview[groups="0"] {
-  -moz-image-region: rect(0, 16px, 16px, 0);
-}
-
-#menu_tabview[groups="1"] {
-  -moz-image-region: rect(0, 32px, 16px, 16px);
-}
-
-#menu_tabview[groups="2"] {
-  -moz-image-region: rect(0, 48px, 16px, 32px);
-}
-
-#menu_tabview[groups="3"] {
-  -moz-image-region: rect(0, 64px, 16px, 48px);
+  margin-left: calc(-0.01px - var(--forwardbutton-width) - var(--backbutton-urlbar-overlap));
 }
 
 /* undo close tab menu item */
@@ -841,11 +815,11 @@ toolbar .toolbarbutton-1:-moz-any(@primaryToolbarButtons@) > :-moz-any(.toolbarb
 }
 
 /* Location bar */
-#nav-bar {
+#main-window {
   --urlbar-border-color: ThreeDShadow;
 }
 
-#nav-bar:-moz-lwtheme {
+#main-window:-moz-lwtheme {
   --urlbar-border-color: rgba(0,0,0,.3);
 }
 
@@ -893,7 +867,11 @@ toolbar .toolbarbutton-1:-moz-any(@primaryToolbarButtons@) > :-moz-any(.toolbarb
   transition: opacity 0.15s ease;
 }
 
-#navigator-toolbox:not(:hover) .urlbar-history-dropmarker {
+#urlbar-wrapper[switchingtabs] > #urlbar > .urlbar-textbox-container > .urlbar-history-dropmarker {
+  transition: none;
+}
+
+#navigator-toolbox:not(:hover) #urlbar:not([focused]) > .urlbar-textbox-container > .urlbar-history-dropmarker {
   opacity: 0;
 }
 
@@ -1118,77 +1096,110 @@ notification[value="translation"] menulist > .menulist-dropmarker {
   display: block;
 }
 
-/* Loop/ Hello browser styles */
-
-notification[value="loop-sharing-notification"] .button-menubutton-button {
-  min-width: 0;
-}
-
-notification[value="loop-sharing-notification"] .messageImage {
-  list-style-image: url(chrome://browser/skin/webRTC-shareScreen-16.png);
-}
-
 #treecolAutoCompleteImage {
   max-width : 36px;
 }
 
-.ac-result-type-bookmark,
+#PopupAutoCompleteRichResult {
+  /* The awesomebar popup should open just below the navbar bottom border. */
+  margin-top: 1px;
+}
+
+.autocomplete-richlistbox {
+  padding: 4px;
+}
+
+.autocomplete-richlistitem {
+  height: 30px;
+  min-height: 30px;
+  font: message-box;
+  border-radius: 2px;
+  border: 1px solid transparent;
+}
+
+.autocomplete-richlistitem[selected=true] {
+  background-color: Highlight;
+}
+
+.ac-title {
+  font-size: 14px;
+}
+
+.ac-tags {
+  font-size: 12px;
+}
+
+html|span.ac-tag {
+  background-color: MenuText;
+  color: Menu;
+  border-radius: 2px;
+  border: 1px solid transparent;
+  padding: 0 1px;
+}
+
+.ac-separator,
+.ac-url,
+.ac-action {
+  font-size: 12px;
+  color: -moz-nativehyperlinktext;
+}
+
+.ac-title[selected=true],
+.ac-separator[selected],
+.ac-url[selected=true],
+.ac-action[selected=true] {
+  color: inherit !important;
+}
+
+.ac-tags-text[selected] > html|span.ac-tag {
+  background-color: HighlightText;
+  color: Highlight;
+}
+
+.ac-type-icon[type=bookmark] {
+  list-style-image: url("chrome://browser/skin/urlbar-star.svg#star");
+}
+
+.ac-type-icon[type=bookmark][selected][current] {
+  list-style-image: url("chrome://browser/skin/urlbar-star.svg#star-inverted");
+}
+
 .autocomplete-treebody::-moz-tree-image(bookmark, treecolAutoCompleteImage) {
   list-style-image: url("chrome://browser/skin/places/autocomplete-star.png");
   width: 16px;
   height: 16px;
 }
 
-.ac-result-type-keyword,
-.autocomplete-treebody::-moz-tree-image(keyword, treecolAutoCompleteImage),
-richlistitem[type~="action"][actiontype="searchengine"] > .ac-title-box > .ac-site-icon {
+.ac-type-icon[type=keyword],
+.ac-site-icon[type=searchengine],
+.autocomplete-treebody::-moz-tree-image(keyword, treecolAutoCompleteImage) {
   list-style-image: url(chrome://global/skin/icons/autocomplete-search.svg#search-icon);
-  width: 16px;
-  height: 16px;
 }
 
-.ac-result-type-keyword[selected="true"],
-.autocomplete-treebody::-moz-tree-image(keyword, treecolAutoCompleteImage, selected),
-richlistitem[type~="action"][actiontype="searchengine"][selected="true"] > .ac-title-box > .ac-site-icon {
+.ac-type-icon[type=keyword][selected],
+.ac-site-icon[type=searchengine][selected],
+.autocomplete-treebody::-moz-tree-image(keyword, treecolAutoCompleteImage, selected) {
   list-style-image: url(chrome://global/skin/icons/autocomplete-search.svg#search-icon-inverted);
 }
 
-.ac-result-type-tag,
 .autocomplete-treebody::-moz-tree-image(tag, treecolAutoCompleteImage) {
   list-style-image: url("chrome://browser/skin/places/tag.png");
   width: 16px;
   height: 16px;
 }
 
-.ac-comment,
-#PopupAutoCompleteRichResult > hbox[anonid="search-suggestions-notification"] > description,
-#PopupAutoCompleteRichResult > hbox[anonid="search-suggestions-notification"] > button {
-  font-size: 1.05em;
+.ac-type-icon[type=switchtab],
+.ac-type-icon[type=remotetab] {
+  list-style-image: url("chrome://browser/skin/urlbar-tab.svg#tab");
 }
 
-.ac-extra > .ac-comment {
-  font-size: inherit;
-}
-
-.ac-url-text,
-.ac-action-text {
-  color: -moz-nativehyperlinktext;
-  font-size: 0.9em;
-}
-
-richlistitem[type~="action"][actiontype="switchtab"] > .ac-url-box > .ac-action-icon {
-  list-style-image: url("chrome://browser/skin/actionicon-tab.png");
-  padding: 0 3px;
+.ac-type-icon[type=switchtab][selected],
+.ac-type-icon[type=remotetab][selected] {
+  list-style-image: url("chrome://browser/skin/urlbar-tab.svg#tab-inverted");
 }
 
 .autocomplete-treebody::-moz-tree-cell-text(treecolAutoCompleteComment) {
   color: GrayText;
-}
-
-.ac-comment[selected="true"],
-.ac-url-text[selected="true"],
-.ac-action-text[selected="true"] {
-  color: inherit !important;
 }
 
 .autocomplete-treebody::-moz-tree-cell-text(suggesthint, treecolAutoCompleteComment),
@@ -1479,6 +1490,10 @@ richlistitem[type~="action"][actiontype="switchtab"] > .ac-url-box > .ac-action-
   background-color: Window;
 }
 
+#sidebar-header > .close-icon:not(:hover):-moz-lwtheme-brighttext {
+  background-image: -moz-image-rect(url("chrome://global/skin/icons/close.svg"), 0, 80, 16, 64);
+}
+
 .browserContainer > findbar {
   background-color: -moz-dialog;
   color: -moz-DialogText;
@@ -1559,9 +1574,15 @@ richlistitem[type~="action"][actiontype="switchtab"] > .ac-url-box > .ac-action-
 /* Tabstrip new tab button */
 .tabs-newtab-button,
 #TabsToolbar > #new-tab-button ,
-#TabsToolbar > #wrapper-new-tab-button > #new-tab-button {
-  list-style-image: url("moz-icon://stock/gtk-add?size=menu");
+#TabsToolbar > toolbarpaletteitem > #new-tab-button {
+  list-style-image: url(chrome://browser/skin/tabbrowser/newtab.svg);
   -moz-image-region: auto;
+}
+
+#TabsToolbar[brighttext] .tabs-newtab-button,
+#TabsToolbar[brighttext] > #new-tab-button,
+#TabsToolbar[brighttext] > toolbarpaletteitem > #new-tab-button {
+  list-style-image: url(chrome://browser/skin/tabbrowser/newtab-inverted.svg);
 }
 
 /* Tabbrowser arrowscrollbox arrows */
@@ -1632,7 +1653,7 @@ richlistitem[type~="action"][actiontype="switchtab"] > .ac-url-box > .ac-action-
 }
 
 .alltabs-item[busy] > .menu-iconic-left > .menu-iconic-icon {
-  list-style-image: url("chrome://global/skin/icons/loading_16.png");
+  list-style-image: url("chrome://global/skin/icons/loading.png");
 }
 
 .alltabs-item[tabIsVisible] {
@@ -1658,7 +1679,7 @@ menuitem:hover > hbox > .alltabs-endimage[soundplaying] {
 
 /* Sidebar */
 #sidebar-throbber[loading="true"] {
-  list-style-image: url("chrome://global/skin/icons/loading_16.png");
+  list-style-image: url("chrome://global/skin/icons/loading.png");
   -moz-margin-end: 4px;
 }
 
@@ -1776,7 +1797,13 @@ toolbarbutton.chevron > .toolbarbutton-icon {
 %include ../shared/fullscreen/warning.inc.css
 %include ../../../devtools/client/themes/responsivedesign.inc.css
 %include ../../../devtools/client/themes/commandline.inc.css
+
 %include ../shared/plugin-doorhanger.inc.css
+
+notification.pluginVulnerable > .notification-inner > .messageCloseButton:not(:hover) {
+  background-image: -moz-image-rect(url("chrome://global/skin/icons/close.svg"), 0, 80, 16, 64);
+}
+
 %include ../shared/login-doorhanger.inc.css
 
 %include downloads/indicator.css
@@ -1932,7 +1959,12 @@ toolbarbutton.chevron > .toolbarbutton-icon {
   width: 16px;
 }
 
+/**
+ * Override the --panel-arrowcontent-padding so the background extends
+ * to the sides and bottom of the panel.
+ */
 #UITourTooltipButtons {
+  margin-left: -10px;
   margin-bottom: -10px;
 }
 

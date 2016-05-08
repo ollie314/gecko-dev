@@ -1,6 +1,6 @@
-# This Source Code Form is subject to the terms of the Mozilla Public
-# License, v. 2.0. If a copy of the MPL was not distributed with this
-# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+/* This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 var gFxAccounts = {
 
@@ -160,19 +160,40 @@ var gFxAccounts = {
     // Since we nuked most of the migration code, this notification will fire
     // once after legacy Sync has been disconnected (and should never fire
     // again)
+    let nb = window.document.getElementById("global-notificationbox");
+
     let msg = this.strings.GetStringFromName("autoDisconnectDescription")
     let signInLabel = this.strings.GetStringFromName("autoDisconnectSignIn.label");
     let signInAccessKey = this.strings.GetStringFromName("autoDisconnectSignIn.accessKey");
     let learnMoreLink = this.fxaMigrator.learnMoreLink;
-    let note = new Weave.Notification(
-          undefined, msg, undefined, Weave.Notifications.PRIORITY_WARNING, [
-            new Weave.NotificationButton(signInLabel, signInAccessKey, () => {
-              this.openPreferences();
-            }),
-          ], learnMoreLink
-        );
-    note.title = this.SYNC_MIGRATION_NOTIFICATION_TITLE;
-    Weave.Notifications.replaceTitle(note);
+
+    let buttons = [
+      {
+        label: signInLabel,
+        accessKey: signInAccessKey,
+        callback: () => {
+          this.openPreferences();
+        }
+      }
+    ];
+
+    let fragment = document.createDocumentFragment();
+    let msgNode = document.createTextNode(msg);
+    fragment.appendChild(msgNode);
+    if (learnMoreLink) {
+      let link = document.createElement("label");
+      link.className = "text-link";
+      link.setAttribute("value", learnMoreLink.text);
+      link.href = learnMoreLink.href;
+      fragment.appendChild(link);
+    }
+
+    nb.appendNotification(fragment,
+                          this.SYNC_MIGRATION_NOTIFICATION_TITLE,
+                          undefined,
+                          nb.PRIORITY_WARNING_LOW,
+                          buttons);
+
     // ensure the hamburger menu reflects the newly disconnected state.
     this.updateAppMenuItem();
   },
@@ -211,7 +232,12 @@ var gFxAccounts = {
     // It's possible someone signed in to FxA after seeing our notification
     // about "Legacy Sync migration" (which now is actually "Legacy Sync
     // auto-disconnect") so kill that notification if it still exists.
-    Weave.Notifications.removeAll(this.SYNC_MIGRATION_NOTIFICATION_TITLE);
+    let nb = window.document.getElementById("global-notificationbox");
+    let n = nb.getNotificationWithValue(this.SYNC_MIGRATION_NOTIFICATION_TITLE);
+    if (n) {
+      nb.removeNotification(n, true);
+    }
+
     this.updateAppMenuItem();
   },
 
@@ -245,7 +271,8 @@ var gFxAccounts = {
     let defaultLabel = this.panelUIStatus.getAttribute("defaultlabel");
     let errorLabel = this.panelUIStatus.getAttribute("errorlabel");
     let unverifiedLabel = this.panelUIStatus.getAttribute("unverifiedlabel");
-    let signedInTooltiptext = this.panelUIStatus.getAttribute("signedinTooltiptext");
+    // The localization string is for the signed in text, but it's the default text as well
+    let defaultTooltiptext = this.panelUIStatus.getAttribute("signedinTooltiptext");
 
     let updateWithUserData = (userData) => {
       // Window might have been closed while fetching data.
@@ -255,12 +282,11 @@ var gFxAccounts = {
 
       // Reset the button to its original state.
       this.panelUILabel.setAttribute("label", defaultLabel);
-      this.panelUIStatus.removeAttribute("tooltiptext");
+      this.panelUIStatus.setAttribute("tooltiptext", defaultTooltiptext);
       this.panelUIFooter.removeAttribute("fxastatus");
       this.panelUIFooter.removeAttribute("fxaprofileimage");
       this.panelUIAvatar.style.removeProperty("list-style-image");
       let showErrorBadge = false;
-
       if (!this._inCustomizationMode && userData) {
         // At this point we consider the user as logged-in (but still can be in an error state)
         if (this.loginFailed) {
@@ -279,7 +305,6 @@ var gFxAccounts = {
         } else {
           this.panelUIFooter.setAttribute("fxastatus", "signedin");
           this.panelUILabel.setAttribute("label", userData.email);
-          this.panelUIStatus.setAttribute("tooltiptext", signedInTooltiptext);
         }
         if (profileInfoEnabled) {
           this.panelUIFooter.setAttribute("fxaprofileimage", "enabled");

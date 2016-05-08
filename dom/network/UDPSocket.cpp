@@ -50,7 +50,7 @@ UDPSocket::Constructor(const GlobalObject& aGlobal,
                        const UDPOptions& aOptions,
                        ErrorResult& aRv)
 {
-  nsCOMPtr<nsPIDOMWindow> ownerWindow = do_QueryInterface(aGlobal.GetAsSupports());
+  nsCOMPtr<nsPIDOMWindowInner> ownerWindow = do_QueryInterface(aGlobal.GetAsSupports());
   if (!ownerWindow) {
     aRv.Throw(NS_ERROR_FAILURE);
     return nullptr;
@@ -112,12 +112,14 @@ UDPSocket::Constructor(const GlobalObject& aGlobal,
   return socket.forget();
 }
 
-UDPSocket::UDPSocket(nsPIDOMWindow* aOwner,
+UDPSocket::UDPSocket(nsPIDOMWindowInner* aOwner,
                      const nsCString& aRemoteAddress,
                      const Nullable<uint16_t>& aRemotePort)
   : DOMEventTargetHelper(aOwner)
   , mRemoteAddress(aRemoteAddress)
   , mRemotePort(aRemotePort)
+  , mAddressReuse(false)
+  , mLoopback(false)
   , mReadyState(SocketReadyState::Opening)
 {
   MOZ_ASSERT(aOwner);
@@ -501,7 +503,9 @@ UDPSocket::InitRemote(const nsAString& aLocalAddress,
                   NS_ConvertUTF16toUTF8(aLocalAddress),
                   aLocalPort,
                   mAddressReuse,
-                  mLoopback);
+                  mLoopback,
+                  0,
+                  0);
 
   if (NS_FAILED(rv)) {
     return rv;
@@ -538,7 +542,7 @@ UDPSocket::Init(const nsString& aLocalAddress,
     return rv.StealNSResult();
   }
 
-  class OpenSocketRunnable final : public nsRunnable
+  class OpenSocketRunnable final : public Runnable
   {
   public:
     explicit OpenSocketRunnable(UDPSocket* aSocket) : mSocket(aSocket)
@@ -733,6 +737,15 @@ UDPSocket::CallListenerOpened()
   }
 
   mOpened->MaybeResolve(JS::UndefinedHandleValue);
+
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+UDPSocket::CallListenerConnected()
+{
+  // This shouldn't be called here.
+  MOZ_CRASH();
 
   return NS_OK;
 }

@@ -23,13 +23,6 @@ InitRegExpClass(JSContext* cx, HandleObject obj);
 // regular expression execution.
 enum RegExpStaticsUpdate { UpdateRegExpStatics, DontUpdateRegExpStatics };
 
-// Whether RegExp statics should be used to create a RegExp instance.
-enum RegExpStaticsUse { UseRegExpStatics, DontUseRegExpStatics };
-
-RegExpRunStatus
-ExecuteRegExp(JSContext* cx, HandleObject regexp, HandleString string,
-              MatchPairs* matches, RegExpStaticsUpdate staticsUpdate);
-
 /*
  * Legacy behavior of ExecuteRegExp(), which is baked into the JSAPI.
  *
@@ -48,17 +41,31 @@ CreateRegExpMatchResult(JSContext* cx, HandleString input, const MatchPairs& mat
                         MutableHandleValue rval);
 
 extern bool
-regexp_exec_raw(JSContext* cx, HandleObject regexp, HandleString input, MatchPairs* maybeMatches,
-                MutableHandleValue output);
+RegExpMatcher(JSContext* cx, unsigned argc, Value* vp);
 
 extern bool
-regexp_exec(JSContext* cx, unsigned argc, Value* vp);
-
-bool
-regexp_test_raw(JSContext* cx, HandleObject regexp, HandleString input, bool* result);
+RegExpMatcherRaw(JSContext* cx, HandleObject regexp, HandleString input,
+                 int32_t lastIndex, MatchPairs* maybeMatches, MutableHandleValue output);
 
 extern bool
-regexp_test(JSContext* cx, unsigned argc, Value* vp);
+RegExpSearcher(JSContext* cx, unsigned argc, Value* vp);
+
+extern bool
+RegExpSearcherRaw(JSContext* cx, HandleObject regexp, HandleString input,
+                  int32_t lastIndex, MatchPairs* maybeMatches, int32_t* result);
+
+extern bool
+RegExpTester(JSContext* cx, unsigned argc, Value* vp);
+
+extern bool
+RegExpTesterRaw(JSContext* cx, HandleObject regexp, HandleString input,
+                int32_t lastIndex, int32_t* endIndex);
+
+extern bool
+intrinsic_GetElemBaseForLambda(JSContext* cx, unsigned argc, Value* vp);
+
+extern bool
+intrinsic_GetStringDataProperty(JSContext* cx, unsigned argc, Value* vp);
 
 /*
  * The following functions are for use by self-hosted code.
@@ -81,17 +88,56 @@ extern bool
 regexp_test_no_statics(JSContext* cx, unsigned argc, Value* vp);
 
 /*
- * Behaves like RegExp(string) or RegExp(string, string), but doesn't use
- * RegExp statics.
+ * Behaves like RegExp(string) or RegExp(string, string), for self-hosted JS.
+ * pattern and flags should be string, and should be called without |new|.
  *
  * Usage: re = regexp_construct(pattern)
  *        re = regexp_construct(pattern, flags)
  */
 extern bool
-regexp_construct_no_statics(JSContext* cx, unsigned argc, Value* vp);
+regexp_construct_self_hosting(JSContext* cx, unsigned argc, Value* vp);
+
+/*
+ * Behaves like RegExp(pattern, string).
+ * pattern should be a RegExp object, and flags should be a string,
+ * and should be called without |new|.
+ * Dedicated function for RegExp.prototype.split optimized path.
+ * sticky flag is ignored.
+ */
+extern bool
+regexp_construct_no_sticky(JSContext* cx, unsigned argc, Value* vp);
 
 extern bool
 IsRegExp(JSContext* cx, HandleValue value, bool* result);
+
+extern bool
+RegExpCreate(JSContext* cx, HandleValue pattern, HandleValue flags, MutableHandleValue rval);
+
+extern bool
+RegExpPrototypeOptimizable(JSContext* cx, unsigned argc, Value* vp);
+
+extern bool
+RegExpPrototypeOptimizableRaw(JSContext* cx, JSObject* proto, uint8_t* result);
+
+extern bool
+RegExpInstanceOptimizable(JSContext* cx, unsigned argc, Value* vp);
+
+extern bool
+RegExpInstanceOptimizableRaw(JSContext* cx, JSObject* rx, JSObject* proto, uint8_t* result);
+
+extern bool
+RegExpGetSubstitution(JSContext* cx, HandleLinearString matched, HandleLinearString string,
+                      size_t position, HandleObject capturesObj, HandleLinearString replacement,
+                      size_t firstDollarIndex, MutableHandleValue rval);
+
+extern bool
+GetFirstDollarIndex(JSContext* cx, unsigned argc, Value* vp);
+
+extern bool
+GetFirstDollarIndexRaw(JSContext* cx, HandleString str, int32_t* index);
+
+extern int32_t
+GetFirstDollarIndexRawFlat(JSLinearString* text);
 
 // RegExp ClassSpec members used in RegExpObject.cpp.
 extern bool
@@ -99,6 +145,18 @@ regexp_construct(JSContext* cx, unsigned argc, Value* vp);
 extern const JSPropertySpec regexp_static_props[];
 extern const JSPropertySpec regexp_properties[];
 extern const JSFunctionSpec regexp_methods[];
+
+// Used in RegExpObject::isOriginalFlagGetter.
+extern bool
+regexp_global(JSContext* cx, unsigned argc, JS::Value* vp);
+extern bool
+regexp_ignoreCase(JSContext* cx, unsigned argc, JS::Value* vp);
+extern bool
+regexp_multiline(JSContext* cx, unsigned argc, JS::Value* vp);
+extern bool
+regexp_sticky(JSContext* cx, unsigned argc, JS::Value* vp);
+extern bool
+regexp_unicode(JSContext* cx, unsigned argc, JS::Value* vp);
 
 } /* namespace js */
 

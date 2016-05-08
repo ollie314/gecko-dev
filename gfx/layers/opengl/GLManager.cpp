@@ -6,7 +6,6 @@
 #include "GLManager.h"
 #include "CompositorOGL.h"              // for CompositorOGL
 #include "GLContext.h"                  // for GLContext
-#include "mozilla/Assertions.h"         // for MOZ_CRASH
 #include "mozilla/Attributes.h"         // for override
 #include "mozilla/RefPtr.h"             // for RefPtr
 #include "mozilla/layers/Compositor.h"  // for Compositor
@@ -63,8 +62,7 @@ private:
 GLManager::CreateGLManager(LayerManagerComposite* aManager)
 {
   if (aManager && aManager->GetCompositor()->GetBackendType() == LayersBackend::LAYERS_OPENGL) {
-    return new GLManagerCompositor(static_cast<CompositorOGL*>(
-      aManager->GetCompositor()));
+    return new GLManagerCompositor(aManager->GetCompositor()->AsCompositorOGL());
   }
   return nullptr;
 }

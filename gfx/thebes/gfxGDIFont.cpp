@@ -78,11 +78,11 @@ gfxGDIFont::CopyWithAntialiasOption(AntialiasOption anAAOption)
 }
 
 bool
-gfxGDIFont::ShapeText(gfxContext     *aContext,
+gfxGDIFont::ShapeText(DrawTarget     *aDrawTarget,
                       const char16_t *aText,
                       uint32_t        aOffset,
                       uint32_t        aLength,
-                      int32_t         aScript,
+                      Script          aScript,
                       bool            aVertical,
                       gfxShapedText  *aShapedText)
 {
@@ -98,11 +98,11 @@ gfxGDIFont::ShapeText(gfxContext     *aContext,
     // creating a "toy" font internally (see bug 544617).
     // We must check that this succeeded, otherwise we risk cairo creating the
     // wrong kind of font internally as a fallback (bug 744480).
-    if (!SetupCairoFont(aContext)) {
+    if (!SetupCairoFont(aDrawTarget)) {
         return false;
     }
 
-    return gfxFont::ShapeText(aContext, aText, aOffset, aLength, aScript,
+    return gfxFont::ShapeText(aDrawTarget, aText, aOffset, aLength, aScript,
                               aVertical, aShapedText);
 }
 
@@ -125,7 +125,7 @@ gfxGDIFont::GetSpaceGlyph()
 }
 
 bool
-gfxGDIFont::SetupCairoFont(gfxContext *aContext)
+gfxGDIFont::SetupCairoFont(DrawTarget* aDrawTarget)
 {
     if (!mMetrics) {
         Initialize();
@@ -136,7 +136,7 @@ gfxGDIFont::SetupCairoFont(gfxContext *aContext)
         // the cairo_t, precluding any further drawing.
         return false;
     }
-    cairo_set_scaled_font(aContext->GetCairo(), mScaledFont);
+    cairo_set_scaled_font(gfxFont::RefCairo(aDrawTarget), mScaledFont);
     return true;
 }
 
@@ -144,14 +144,13 @@ gfxFont::RunMetrics
 gfxGDIFont::Measure(gfxTextRun *aTextRun,
                     uint32_t aStart, uint32_t aEnd,
                     BoundingBoxType aBoundingBoxType,
-                    gfxContext *aRefContext,
+                    DrawTarget *aRefDrawTarget,
                     Spacing *aSpacing,
                     uint16_t aOrientation)
 {
     gfxFont::RunMetrics metrics =
-        gfxFont::Measure(aTextRun, aStart, aEnd,
-                         aBoundingBoxType, aRefContext, aSpacing,
-                         aOrientation);
+        gfxFont::Measure(aTextRun, aStart, aEnd, aBoundingBoxType,
+                         aRefDrawTarget, aSpacing, aOrientation);
 
     // if aBoundingBoxType is LOOSE_INK_EXTENTS
     // and the underlying cairo font may be antialiased,
@@ -360,6 +359,8 @@ gfxGDIFont::Initialize()
         }
 
         SanitizeMetrics(mMetrics, GetFontEntry()->mIsBadUnderlineFont);
+    } else {
+        mFUnitsConvFactor = 0.0; // zero-sized font: all values scale to zero
     }
 
     if (IsSyntheticBold()) {
@@ -468,7 +469,7 @@ gfxGDIFont::GetGlyph(uint32_t aUnicode, uint32_t aVarSelector)
     }
 
     if (!mGlyphIDs) {
-        mGlyphIDs = new nsDataHashtable<nsUint32HashKey,uint32_t>(64);
+        mGlyphIDs = MakeUnique<nsDataHashtable<nsUint32HashKey,uint32_t>>(64);
     }
 
     uint32_t gid;
@@ -505,7 +506,7 @@ int32_t
 gfxGDIFont::GetGlyphWidth(DrawTarget& aDrawTarget, uint16_t aGID)
 {
     if (!mGlyphWidths) {
-        mGlyphWidths = new nsDataHashtable<nsUint32HashKey,int32_t>(128);
+        mGlyphWidths = MakeUnique<nsDataHashtable<nsUint32HashKey,int32_t>>(128);
     }
 
     int32_t width;

@@ -35,6 +35,8 @@ XPCOMUtils.defineLazyModuleGetter(this, "ProfileAge",
                                   "resource://gre/modules/ProfileAge.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "UpdateUtils",
                                   "resource://gre/modules/UpdateUtils.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "WindowsRegistry",
+                                  "resource://gre/modules/WindowsRegistry.jsm");
 
 const CHANGE_THROTTLE_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -65,12 +67,20 @@ this.TelemetryEnvironment = {
     return getGlobal().onInitialized();
   },
 
+  delayedInit: function() {
+    return getGlobal().delayedInit();
+  },
+
   registerChangeListener: function(name, listener) {
     return getGlobal().registerChangeListener(name, listener);
   },
 
   unregisterChangeListener: function(name) {
     return getGlobal().unregisterChangeListener(name);
+  },
+
+  shutdown: function() {
+    return getGlobal().shutdown();
   },
 
   // Policy to use when saving preferences. Exported for using them in tests.
@@ -104,11 +114,11 @@ const DEFAULT_ENVIRONMENT_PREFS = new Map([
   ["browser.newtab.url", {what: RECORD_PREF_STATE}],
   ["browser.newtabpage.enabled", {what: RECORD_PREF_VALUE}],
   ["browser.newtabpage.enhanced", {what: RECORD_PREF_VALUE}],
-  ["browser.polaris.enabled", {what: RECORD_PREF_VALUE}],
   ["browser.shell.checkDefaultBrowser", {what: RECORD_PREF_VALUE}],
   ["browser.search.suggest.enabled", {what: RECORD_PREF_VALUE}],
   ["browser.startup.homepage", {what: RECORD_PREF_STATE}],
   ["browser.startup.page", {what: RECORD_PREF_VALUE}],
+  ["browser.tabs.animate", {what: RECORD_PREF_VALUE}],
   ["browser.urlbar.suggest.searches", {what: RECORD_PREF_VALUE}],
   ["browser.urlbar.unifiedcomplete", {what: RECORD_PREF_VALUE}],
   ["browser.urlbar.userMadeSearchSuggestionsChoice", {what: RECORD_PREF_VALUE}],
@@ -118,6 +128,7 @@ const DEFAULT_ENVIRONMENT_PREFS = new Map([
   ["dom.ipc.plugins.asyncInit.enabled", {what: RECORD_PREF_VALUE}],
   ["dom.ipc.plugins.enabled", {what: RECORD_PREF_VALUE}],
   ["dom.ipc.processCount", {what: RECORD_PREF_VALUE, requiresRestart: true}],
+  ["dom.max_script_run_time", {what: RECORD_PREF_VALUE}],
   ["experiments.manifest.uri", {what: RECORD_PREF_VALUE}],
   ["extensions.autoDisableScopes", {what: RECORD_PREF_VALUE}],
   ["extensions.enabledScopes", {what: RECORD_PREF_VALUE}],
@@ -139,7 +150,7 @@ const DEFAULT_ENVIRONMENT_PREFS = new Map([
   ["layers.componentalpha.enabled", {what: RECORD_PREF_VALUE}],
   ["layers.d3d11.disable-warp", {what: RECORD_PREF_VALUE}],
   ["layers.d3d11.force-warp", {what: RECORD_PREF_VALUE}],
-  ["layers.offmainthreadcomposition.enabled", {what: RECORD_PREF_VALUE}],
+  ["layers.offmainthreadcomposition.force-disabled", {what: RECORD_PREF_VALUE}],
   ["layers.prefer-d3d9", {what: RECORD_PREF_VALUE}],
   ["layers.prefer-opengl", {what: RECORD_PREF_VALUE}],
   ["layout.css.devPixelsPerPx", {what: RECORD_PREF_VALUE}],
@@ -166,15 +177,29 @@ const PREF_DISTRIBUTOR_CHANNEL = "app.distributor.channel";
 const PREF_HOTFIX_LASTVERSION = "extensions.hotfix.lastVersion";
 const PREF_APP_PARTNER_BRANCH = "app.partner.";
 const PREF_PARTNER_ID = "mozilla.partner.id";
-const PREF_TELEMETRY_ENABLED = "toolkit.telemetry.enabled";
 const PREF_UPDATE_ENABLED = "app.update.enabled";
 const PREF_UPDATE_AUTODOWNLOAD = "app.update.auto";
 const PREF_SEARCH_COHORT = "browser.search.cohort";
+const PREF_E10S_COHORT = "e10s.rollout.cohort";
 
 const EXPERIMENTS_CHANGED_TOPIC = "experiments-changed";
 const SEARCH_ENGINE_MODIFIED_TOPIC = "browser-search-engine-modified";
 const SEARCH_SERVICE_TOPIC = "browser-search-service";
 const COMPOSITOR_CREATED_TOPIC = "compositor:created";
+const DISTRIBUTION_CUSTOMIZATION_COMPLETE_TOPIC = "distribution-customization-complete";
+
+/**
+ * Enforces the parameter to a boolean value.
+ * @param aValue The input value.
+ * @return {Boolean|Object} If aValue is a boolean or a number, returns its truthfulness
+ *         value. Otherwise, return null.
+ */
+function enforceBoolean(aValue) {
+  if (typeof(aValue) !== "number" && typeof(aValue) !== "boolean") {
+    return null;
+  }
+  return (new Boolean(aValue)).valueOf();
+}
 
 /**
  * Get the current browser.
@@ -244,7 +269,7 @@ function getGfxField(aPropertyName, aDefault) {
   try {
     // Accessing the field may throw if |aPropertyName| does not exist.
     let gfxProp = gfxInfo[aPropertyName];
-    if (gfxProp !== "") {
+    if (gfxProp !== undefined && gfxProp !== "") {
       return gfxProp;
     }
   } catch (e) {}
@@ -261,7 +286,7 @@ function getGfxField(aPropertyName, aDefault) {
  * @return {String} The substring or null if the input string is null.
  */
 function limitStringToLength(aString, aMaxLength) {
-  if (aString === null) {
+  if (typeof(aString) !== "string") {
     return null;
   }
   return aString.substring(0, aMaxLength);
@@ -294,16 +319,17 @@ function getGfxAdapter(aSuffix = "") {
 }
 
 /**
- * Gets the service pack information on Windows platforms. This was copied from
- * nsUpdateService.js.
+ * Gets the service pack and build information on Windows platforms. The initial version
+ * was copied from nsUpdateService.js.
  *
- * @return An object containing the service pack major and minor versions.
+ * @return An object containing the service pack major and minor versions, along with the
+ *         build number.
  */
-function getServicePack() {
-  const UNKNOWN_SERVICE_PACK = {major: null, minor: null};
+function getWindowsVersionInfo() {
+  const UNKNOWN_VERSION_INFO = {servicePackMajor: null, servicePackMinor: null, buildNumber: null};
 
   if (AppConstants.platform !== "win") {
-    return UNKNOWN_SERVICE_PACK;
+    return UNKNOWN_VERSION_INFO;
   }
 
   const BYTE = ctypes.uint8_t;
@@ -344,11 +370,12 @@ function getServicePack() {
     }
 
     return {
-      major: winVer.wServicePackMajor,
-      minor: winVer.wServicePackMinor,
+      servicePackMajor: winVer.wServicePackMajor,
+      servicePackMinor: winVer.wServicePackMinor,
+      buildNumber: winVer.dwBuildNumber,
     };
   } catch (e) {
-    return UNKNOWN_SERVICE_PACK;
+    return UNKNOWN_VERSION_INFO;
   } finally {
     kernel32.close();
   }
@@ -485,7 +512,8 @@ EnvironmentAddonBuilder.prototype = {
     };
 
     let result = {
-      changed: !ObjectUtils.deepEqual(addons, this._environment._currentEnvironment.addons),
+      changed: !this._environment._currentEnvironment.addons ||
+               !ObjectUtils.deepEqual(addons, this._environment._currentEnvironment.addons),
     };
 
     if (result.changed) {
@@ -512,28 +540,37 @@ EnvironmentAddonBuilder.prototype = {
         continue;
       }
 
-      // Make sure to have valid dates.
-      let installDate = new Date(Math.max(0, addon.installDate));
-      let updateDate = new Date(Math.max(0, addon.updateDate));
+      // Weird addon data in the wild can lead to exceptions while collecting
+      // the data.
+      try {
+        // Make sure to have valid dates.
+        let installDate = new Date(Math.max(0, addon.installDate));
+        let updateDate = new Date(Math.max(0, addon.updateDate));
 
-      activeAddons[addon.id] = {
-        blocklisted: (addon.blocklistState !== Ci.nsIBlocklistService.STATE_NOT_BLOCKED),
-        description: limitStringToLength(addon.description, MAX_ADDON_STRING_LENGTH),
-        name: limitStringToLength(addon.name, MAX_ADDON_STRING_LENGTH),
-        userDisabled: addon.userDisabled,
-        appDisabled: addon.appDisabled,
-        version: limitStringToLength(addon.version, MAX_ADDON_STRING_LENGTH),
-        scope: addon.scope,
-        type: addon.type,
-        foreignInstall: addon.foreignInstall,
-        hasBinaryComponents: addon.hasBinaryComponents,
-        installDay: Utils.millisecondsToDays(installDate.getTime()),
-        updateDay: Utils.millisecondsToDays(updateDate.getTime()),
-        signedState: addon.signedState,
-      };
+        activeAddons[addon.id] = {
+          blocklisted: (addon.blocklistState !== Ci.nsIBlocklistService.STATE_NOT_BLOCKED),
+          description: limitStringToLength(addon.description, MAX_ADDON_STRING_LENGTH),
+          name: limitStringToLength(addon.name, MAX_ADDON_STRING_LENGTH),
+          userDisabled: enforceBoolean(addon.userDisabled),
+          appDisabled: addon.appDisabled,
+          version: limitStringToLength(addon.version, MAX_ADDON_STRING_LENGTH),
+          scope: addon.scope,
+          type: addon.type,
+          foreignInstall: enforceBoolean(addon.foreignInstall),
+          hasBinaryComponents: addon.hasBinaryComponents,
+          installDay: Utils.millisecondsToDays(installDate.getTime()),
+          updateDay: Utils.millisecondsToDays(updateDate.getTime()),
+          signedState: addon.signedState,
+          isSystem: addon.isSystem,
+        };
 
-      if (addon.signedState !== undefined)
-        activeAddons[addon.id].signedState = addon.signedState;
+        if (addon.signedState !== undefined)
+          activeAddons[addon.id].signedState = addon.signedState;
+
+      } catch (ex) {
+        this._environment._log.error("_getActiveAddons - An addon was discarded due to an error", ex);
+        continue;
+      }
     }
 
     return activeAddons;
@@ -560,11 +597,11 @@ EnvironmentAddonBuilder.prototype = {
         blocklisted: (theme.blocklistState !== Ci.nsIBlocklistService.STATE_NOT_BLOCKED),
         description: limitStringToLength(theme.description, MAX_ADDON_STRING_LENGTH),
         name: limitStringToLength(theme.name, MAX_ADDON_STRING_LENGTH),
-        userDisabled: theme.userDisabled,
+        userDisabled: enforceBoolean(theme.userDisabled),
         appDisabled: theme.appDisabled,
         version: limitStringToLength(theme.version, MAX_ADDON_STRING_LENGTH),
         scope: theme.scope,
-        foreignInstall: theme.foreignInstall,
+        foreignInstall: enforceBoolean(theme.foreignInstall),
         hasBinaryComponents: theme.hasBinaryComponents,
         installDay: Utils.millisecondsToDays(installDate.getTime()),
         updateDay: Utils.millisecondsToDays(updateDate.getTime()),
@@ -589,19 +626,24 @@ EnvironmentAddonBuilder.prototype = {
         continue;
       }
 
-      // Make sure to have a valid date.
-      let updateDate = new Date(Math.max(0, tag.lastModifiedTime));
+      try {
+        // Make sure to have a valid date.
+        let updateDate = new Date(Math.max(0, tag.lastModifiedTime));
 
-      activePlugins.push({
-        name: limitStringToLength(tag.name, MAX_ADDON_STRING_LENGTH),
-        version: limitStringToLength(tag.version, MAX_ADDON_STRING_LENGTH),
-        description: limitStringToLength(tag.description, MAX_ADDON_STRING_LENGTH),
-        blocklisted: tag.blocklisted,
-        disabled: tag.disabled,
-        clicktoplay: tag.clicktoplay,
-        mimeTypes: tag.getMimeTypes({}),
-        updateDay: Utils.millisecondsToDays(updateDate.getTime()),
-      });
+        activePlugins.push({
+          name: limitStringToLength(tag.name, MAX_ADDON_STRING_LENGTH),
+          version: limitStringToLength(tag.version, MAX_ADDON_STRING_LENGTH),
+          description: limitStringToLength(tag.description, MAX_ADDON_STRING_LENGTH),
+          blocklisted: tag.blocklisted,
+          disabled: tag.disabled,
+          clicktoplay: tag.clicktoplay,
+          mimeTypes: tag.getMimeTypes({}),
+          updateDay: Utils.millisecondsToDays(updateDate.getTime()),
+        });
+      } catch (ex) {
+        this._environment._log.error("_getActivePlugins - A plugin was discarded due to an error", ex);
+        continue;
+      }
     }
 
     return activePlugins;
@@ -620,16 +662,21 @@ EnvironmentAddonBuilder.prototype = {
 
     let activeGMPlugins = {};
     for (let plugin of allPlugins) {
-      // Only get GM Plugin info.
-      if (!plugin.isGMPlugin) {
+      // Only get info for active GMplugins.
+      if (!plugin.isGMPlugin || !plugin.isActive) {
         continue;
       }
 
-      activeGMPlugins[plugin.id] = {
-        version: plugin.version,
-        userDisabled: plugin.userDisabled,
-        applyBackgroundUpdates: plugin.applyBackgroundUpdates,
-      };
+      try {
+        activeGMPlugins[plugin.id] = {
+          version: plugin.version,
+          userDisabled: enforceBoolean(plugin.userDisabled),
+          applyBackgroundUpdates: plugin.applyBackgroundUpdates,
+        };
+      } catch (ex) {
+        this._environment._log.error("_getActiveGMPlugins - A GMPlugin was discarded due to an error", ex);
+        continue;
+      }
     }
 
     return activeGMPlugins;
@@ -664,6 +711,7 @@ function EnvironmentCache() {
   this._log.trace("constructor");
 
   this._shutdown = false;
+  this._delayedInitFinished = false;
 
   // A map of listeners that will be called on environment changes.
   this._changeListeners = new Map();
@@ -684,6 +732,7 @@ function EnvironmentCache() {
   this._updateSettings();
   // Fill in the default search engine, if the search provider is already initialized.
   this._updateSearchEngine();
+  this._addObservers();
 
   // Build the remaining asynchronous parts of the environment. Don't register change listeners
   // until the initial environment has been built.
@@ -698,16 +747,13 @@ function EnvironmentCache() {
     p = [ this._addonBuilder.init() ];
   }
 
-  if (AppConstants.platform !== "android") {
-    this._currentEnvironment.profile = {};
-    p.push(this._updateProfile());
-  }
+  this._currentEnvironment.profile = {};
+  p.push(this._updateProfile());
 
   let setup = () => {
     this._initTask = null;
     this._startWatchingPrefs();
     this._addonBuilder.watchForChanges();
-    this._addObservers();
     this._updateGraphicsFeatures();
     return this.currentEnvironment;
   };
@@ -743,6 +789,13 @@ EnvironmentCache.prototype = {
   },
 
   /**
+   * This gets called when the delayed init completes.
+   */
+  delayedInit: function() {
+    this._delayedInitFinished = true;
+  },
+
+  /**
    * Register a listener for environment changes.
    * @param name The name of the listener. If a new listener is registered
    *             with the same name, the old listener will be replaced.
@@ -772,6 +825,11 @@ EnvironmentCache.prototype = {
     this._changeListeners.delete(name);
   },
 
+  shutdown: function() {
+    this._log.trace("shutdown");
+    this._shutdown = true;
+  },
+
   /**
    * Only used in tests, set the preferences to watch.
    * @param aPreferences A map of preferences names and their recording policy.
@@ -796,7 +854,7 @@ EnvironmentCache.prototype = {
       if (!Preferences.isSet(pref)) {
         continue;
       }
-      
+
       // Check the policy for the preference and decide if we need to store its value
       // or whether it changed from the default value.
       let prefValue = undefined;
@@ -848,6 +906,7 @@ EnvironmentCache.prototype = {
     Services.obs.addObserver(this, SEARCH_ENGINE_MODIFIED_TOPIC, false);
     Services.obs.addObserver(this, SEARCH_SERVICE_TOPIC, false);
     Services.obs.addObserver(this, COMPOSITOR_CREATED_TOPIC, false);
+    Services.obs.addObserver(this, DISTRIBUTION_CUSTOMIZATION_COMPLETE_TOPIC, false);
   },
 
   _removeObservers: function () {
@@ -855,13 +914,16 @@ EnvironmentCache.prototype = {
     Services.obs.removeObserver(this, SEARCH_ENGINE_MODIFIED_TOPIC);
     Services.obs.removeObserver(this, SEARCH_SERVICE_TOPIC);
     Services.obs.removeObserver(this, COMPOSITOR_CREATED_TOPIC);
+    try {
+      Services.obs.removeObserver(this, DISTRIBUTION_CUSTOMIZATION_COMPLETE_TOPIC);
+    } catch(ex) {}
   },
 
   observe: function (aSubject, aTopic, aData) {
     this._log.trace("observe - aTopic: " + aTopic + ", aData: " + aData);
     switch (aTopic) {
       case SEARCH_ENGINE_MODIFIED_TOPIC:
-        if (aData != "engine-default" && aData != "engine-current") {
+        if (aData != "engine-current") {
           return;
         }
         // Record the new default search choice and send the change notification.
@@ -879,6 +941,12 @@ EnvironmentCache.prototype = {
         // least one off-main-thread-composited window. Thus we wait for the
         // first compositor to be created and then query nsIGfxInfo again.
         this._updateGraphicsFeatures();
+        break;
+      case DISTRIBUTION_CUSTOMIZATION_COMPLETE_TOPIC:
+        // Distribution customizations are applied after final-ui-startup. query
+        // partner prefs again when they are ready.
+        this._updatePartner();
+        Services.obs.removeObserver(this, aTopic);
         break;
     }
   },
@@ -960,6 +1028,13 @@ EnvironmentCache.prototype = {
   },
 
   /**
+   * Update the partner prefs.
+   */
+  _updatePartner: function() {
+    this._currentEnvironment.partner = this._getPartner();
+  },
+
+  /**
    * Get the build data in object form.
    * @return Object containing the build data.
    */
@@ -995,6 +1070,7 @@ EnvironmentCache.prototype = {
     if (AppConstants.platform === "gonk") {
       return true;
     }
+
     if (!("@mozilla.org/browser/shell-service;1" in Cc)) {
       this._log.info("_isDefaultBrowser - Could not obtain browser shell service");
       return null;
@@ -1002,11 +1078,21 @@ EnvironmentCache.prototype = {
 
     let shellService;
     try {
-      shellService = Cc["@mozilla.org/browser/shell-service;1"]
-                       .getService(Ci.nsIShellService);
+      let scope = {};
+      Cu.import("resource:///modules/ShellService.jsm", scope);
+      shellService = scope.ShellService;
     } catch (ex) {
-      this._log.error("_isDefaultBrowser - Could not obtain shell service", ex);
-      return null;
+      this._log.error("_isDefaultBrowser - Could not obtain shell service JSM");
+    }
+
+    if (!shellService) {
+      try {
+        shellService = Cc["@mozilla.org/browser/shell-service;1"]
+                         .getService(Ci.nsIShellService);
+      } catch (ex) {
+        this._log.error("_isDefaultBrowser - Could not obtain shell service", ex);
+        return null;
+      }
     }
 
     try {
@@ -1032,8 +1118,8 @@ EnvironmentCache.prototype = {
     this._currentEnvironment.settings = {
       blocklistEnabled: Preferences.get(PREF_BLOCKLIST_ENABLED, true),
       e10sEnabled: Services.appinfo.browserTabsRemoteAutostart,
-      telemetryEnabled: Preferences.get(PREF_TELEMETRY_ENABLED, false),
-      isInOptoutSample: TelemetryController.isInOptoutSample,
+      e10sCohort: Preferences.get(PREF_E10S_COHORT, "unknown"),
+      telemetryEnabled: Utils.isTelemetryEnabled,
       locale: getBrowserLocale(),
       update: {
         channel: updateChannel,
@@ -1135,7 +1221,7 @@ EnvironmentCache.prototype = {
    * not a portable device.
    */
   _getDeviceData: function () {
-    if (["gonk", "android"].indexOf(AppConstants.platform) === -1) {
+    if (!["gonk", "android"].includes(AppConstants.platform)) {
       return null;
     }
 
@@ -1158,12 +1244,26 @@ EnvironmentCache.prototype = {
       locale: getSystemLocale(),
     };
 
-    if (["gonk", "android"].indexOf(AppConstants.platform) !== -1) {
+    if (["gonk", "android"].includes(AppConstants.platform)) {
       data.kernelVersion = getSysinfoProperty("kernel_version", null);
     } else if (AppConstants.platform === "win") {
-      let servicePack = getServicePack();
-      data.servicePackMajor = servicePack.major;
-      data.servicePackMinor = servicePack.minor;
+      // The path to the "UBR" key, queried to get additional version details on Windows.
+      const WINDOWS_UBR_KEY_PATH = "SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion";
+
+      let versionInfo = getWindowsVersionInfo();
+      data.servicePackMajor = versionInfo.servicePackMajor;
+      data.servicePackMinor = versionInfo.servicePackMinor;
+      // We only need the build number and UBR if we're at or above Windows 10.
+      if (typeof(data.version) === 'string' &&
+          Services.vc.compare(data.version, "10") >= 0) {
+        data.windowsBuildNumber = versionInfo.buildNumber;
+        // Query the UBR key and only add it to the environment if it's available.
+        // |readRegKey| doesn't throw, but rather returns 'undefined' on error.
+        let ubr = WindowsRegistry.readRegKey(Ci.nsIWindowsRegKey.ROOT_KEY_LOCAL_MACHINE,
+                                             WINDOWS_UBR_KEY_PATH, "UBR",
+                                             Ci.nsIWindowsRegKey.WOW64_64);
+        data.windowsUBR = (ubr !== undefined) ? ubr : null;
+      }
       data.installYear = getSysinfoProperty("installYear", null);
     }
 
@@ -1207,7 +1307,7 @@ EnvironmentCache.prototype = {
       features: {},
     };
 
-    if (["gonk", "android", "linux"].indexOf(AppConstants.platform) === -1) {
+    if (!["gonk", "android", "linux"].includes(AppConstants.platform)) {
       let gfxInfo = Cc["@mozilla.org/gfx/info;1"].getService(Ci.nsIGfxInfo);
       try {
         gfxData.monitors = gfxInfo.getMonitors();
@@ -1237,7 +1337,7 @@ EnvironmentCache.prototype = {
     this._log.trace("_getGFXData - Two display adapters detected.");
 
     gfxData.adapters.push(getGfxAdapter("2"));
-    gfxData.adapters[1].GPUActive = getGfxField("isGPU2Active ", null);
+    gfxData.adapters[1].GPUActive = getGfxField("isGPU2Active", null);
 
     return gfxData;
   },
@@ -1272,7 +1372,7 @@ EnvironmentCache.prototype = {
 
     if (AppConstants.platform === "win") {
       data.isWow64 = getSysinfoProperty("isWow64", null);
-    } else if (["gonk", "android"].indexOf(AppConstants.platform) !== -1) {
+    } else if (["gonk", "android"].includes(AppConstants.platform)) {
       data.device = this._getDeviceData();
     }
 
@@ -1289,6 +1389,7 @@ EnvironmentCache.prototype = {
     // We are already skipping change events in _checkChanges if there is a pending change task running.
     let now = Policy.now();
     if (this._lastEnvironmentChangeDate &&
+        this._delayedInitFinished &&
         (CHANGE_THROTTLE_INTERVAL_MS >=
          (now.getTime() - this._lastEnvironmentChangeDate.getTime()))) {
       this._log.trace("_onEnvironmentChange - throttling changes, now: " + now +
@@ -1296,7 +1397,9 @@ EnvironmentCache.prototype = {
       return;
     }
 
-    this._lastEnvironmentChangeDate = now;
+    if(this._delayedInitFinished) {
+      this._lastEnvironmentChangeDate = now;
+    }
 
     for (let [name, listener] of this._changeListeners) {
       try {

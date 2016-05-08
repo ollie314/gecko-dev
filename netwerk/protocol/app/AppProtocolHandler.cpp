@@ -15,6 +15,7 @@
 #include "nsXULAppAPI.h"
 #include "nsPrincipal.h"
 #include "nsContentSecurityManager.h"
+#include "nsContentUtils.h"
 
 #include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/Preferences.h"
@@ -27,7 +28,7 @@ using namespace mozilla;
   * containing an unknown appId.
   */
 class DummyChannel : public nsIJARChannel
-                          , nsRunnable
+                          , Runnable
 {
 public:
   NS_DECL_ISUPPORTS_INHERITED
@@ -51,7 +52,7 @@ private:
   nsCOMPtr<nsILoadInfo>       mLoadInfo;
 };
 
-NS_IMPL_ISUPPORTS_INHERITED(DummyChannel, nsRunnable, nsIRequest, nsIChannel, nsIJARChannel)
+NS_IMPL_ISUPPORTS_INHERITED(DummyChannel, Runnable, nsIRequest, nsIChannel, nsIJARChannel)
 
 DummyChannel::DummyChannel() : mPending(false)
                              , mSuspendCount(0)
@@ -111,8 +112,11 @@ DummyChannel::Open2(nsIInputStream** aStream)
 
 NS_IMETHODIMP DummyChannel::AsyncOpen(nsIStreamListener* aListener, nsISupports* aContext)
 {
-  MOZ_ASSERT(!mLoadInfo || mLoadInfo->GetSecurityMode() == 0 ||
-             mLoadInfo->GetInitialSecurityCheckDone(),
+  MOZ_ASSERT(!mLoadInfo ||
+             mLoadInfo->GetSecurityMode() == 0 ||
+             mLoadInfo->GetInitialSecurityCheckDone() ||
+             (mLoadInfo->GetSecurityMode() == nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL &&
+              nsContentUtils::IsSystemPrincipal(mLoadInfo->LoadingPrincipal())),
              "security flags in loadInfo but asyncOpen2() not called");
 
   mListener = aListener;

@@ -54,16 +54,17 @@ DeadObjectProxy::delete_(JSContext* cx, HandleObject wrapper, HandleId id,
 }
 
 bool
-DeadObjectProxy::enumerate(JSContext* cx, HandleObject wrapper, MutableHandleObject objp) const
-{
-    ReportDead(cx);
-    return false;
-}
-
-bool
 DeadObjectProxy::getPrototype(JSContext* cx, HandleObject proxy, MutableHandleObject protop) const
 {
     protop.set(nullptr);
+    return true;
+}
+
+bool
+DeadObjectProxy::getPrototypeIfOrdinary(JSContext* cx, HandleObject proxy, bool* isOrdinary,
+                                        MutableHandleObject protop) const
+{
+    *isOrdinary = false;
     return true;
 }
 
@@ -151,10 +152,8 @@ DeadObjectProxy::regexp_toShared(JSContext* cx, HandleObject proxy, RegExpGuard*
 const char DeadObjectProxy::family = 0;
 const DeadObjectProxy DeadObjectProxy::singleton;
 
-
 bool
 js::IsDeadProxyObject(JSObject* obj)
 {
-    return obj->is<ProxyObject>() &&
-           obj->as<ProxyObject>().handler() == &DeadObjectProxy::singleton;
+    return IsDerivedProxyObject(obj, &DeadObjectProxy::singleton);
 }

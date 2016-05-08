@@ -10,8 +10,9 @@
 #include "MediaInfo.h"
 #include "AppleATDecoder.h"
 #include "mozilla/Logging.h"
+#include "mozilla/UniquePtr.h"
 
-extern PRLogModuleInfo* GetPDMLog();
+extern mozilla::LogModule* GetPDMLog();
 #define LOG(...) MOZ_LOG(GetPDMLog(), mozilla::LogLevel::Debug, (__VA_ARGS__))
 #define FourCC2Str(n) ((char[5]){(char)(n >> 24), (char)(n >> 16), (char)(n >> 8), (char)(n), 0})
 
@@ -73,7 +74,7 @@ AppleATDecoder::Input(MediaRawData* aSample)
 
   // Queue a task to perform the actual decoding on a separate thread.
   nsCOMPtr<nsIRunnable> runnable =
-      NS_NewRunnableMethodWithArg<RefPtr<MediaRawData>>(
+      NewRunnableMethod<RefPtr<MediaRawData>>(
         this,
         &AppleATDecoder::SubmitSample,
         RefPtr<MediaRawData>(aSample));
@@ -211,8 +212,7 @@ AppleATDecoder::DecodeSample(MediaRawData* aSample)
   const uint32_t maxDecodedSamples = MAX_AUDIO_FRAMES * channels;
 
   // Descriptions for _decompressed_ audio packets. ignored.
-  nsAutoArrayPtr<AudioStreamPacketDescription>
-    packets(new AudioStreamPacketDescription[MAX_AUDIO_FRAMES]);
+  auto packets = MakeUnique<AudioStreamPacketDescription[]>(MAX_AUDIO_FRAMES);
 
   // This API insists on having packets spoon-fed to it from a callback.
   // This structure exists only to pass our state.
@@ -220,7 +220,10 @@ AppleATDecoder::DecodeSample(MediaRawData* aSample)
     { channels, (UInt32)aSample->Size(), aSample->Data() };
 
   // Decompressed audio buffer
-  nsAutoArrayPtr<AudioDataValue> decoded(new AudioDataValue[maxDecodedSamples]);
+  AlignedAudioBuffer decoded(maxDecodedSamples);
+  if (!decoded) {
+    return NS_ERROR_OUT_OF_MEMORY;
+  }
 
   do {
     AudioBufferList decBuffer;
@@ -273,15 +276,30 @@ AppleATDecoder::DecodeSample(MediaRawData* aSample)
       duration.ToSeconds());
 #endif
 
-  nsAutoArrayPtr<AudioDataValue> data(new AudioDataValue[outputData.Length()]);
-  PodCopy(data.get(), &outputData[0], outputData.Length());
+  AudioSampleBuffer data(outputData.Elements(), outputData.Length());
+  if (!data.Data()) {
+    return NS_ERROR_OUT_OF_MEMORY;
+  }
+  if (mChannelLayout && !mAudioConverter) {
+    AudioConfig in(*mChannelLayout.get(), rate);
+    AudioConfig out(channels, rate);
+    if (!in.IsValid() || !out.IsValid()) {
+      return NS_ERROR_FAILURE;
+    }
+    mAudioConverter = MakeUnique<AudioConverter>(in, out);
+  }
+  if (mAudioConverter) {
+    MOZ_ASSERT(mAudioConverter->CanWorkInPlace());
+    data = mAudioConverter->Process(Move(data));
+  }
+
   RefPtr<AudioData> audio = new AudioData(aSample->mOffset,
-                                            aSample->mTime,
-                                            duration.ToMicroseconds(),
-                                            numFrames,
-                                            data.forget(),
-                                            channels,
-                                            rate);
+                                          aSample->mTime,
+                                          duration.ToMicroseconds(),
+                                          numFrames,
+                                          data.Forget(),
+                                          channels,
+                                          rate);
   mCallback->Output(audio);
   return NS_OK;
 }
@@ -328,14 +346,13 @@ AppleATDecoder::GetInputAudioDescription(AudioStreamBasicDescription& aDesc,
     return NS_OK;
   }
   size_t listCount = formatListSize / sizeof(AudioFormatListItem);
-  nsAutoArrayPtr<AudioFormatListItem> formatList(
-    new AudioFormatListItem[listCount]);
+  auto formatList = MakeUnique<AudioFormatListItem[]>(listCount);
 
   rv = AudioFormatGetProperty(kAudioFormatProperty_FormatList,
                               sizeof(formatInfo),
                               &formatInfo,
                               &formatListSize,
-                              formatList);
+                              formatList.get());
   if (rv) {
     return NS_OK;
   }
@@ -348,7 +365,7 @@ AppleATDecoder::GetInputAudioDescription(AudioStreamBasicDescription& aDesc,
   UInt32 indexSize = sizeof(itemIndex);
   rv = AudioFormatGetProperty(kAudioFormatProperty_FirstPlayableFormatFromList,
                               formatListSize,
-                              formatList,
+                              formatList.get(),
                               &indexSize,
                               &itemIndex);
   if (rv) {
@@ -357,6 +374,136 @@ AppleATDecoder::GetInputAudioDescription(AudioStreamBasicDescription& aDesc,
 
   aDesc = formatList[itemIndex].mASBD;
 
+  return NS_OK;
+}
+
+AudioConfig::Channel
+ConvertChannelLabel(AudioChannelLabel id)
+{
+  switch (id) {
+    case kAudioChannelLabel_Mono:
+      return AudioConfig::CHANNEL_MONO;
+    case kAudioChannelLabel_Left:
+      return AudioConfig::CHANNEL_LEFT;
+    case kAudioChannelLabel_Right:
+      return AudioConfig::CHANNEL_RIGHT;
+    case kAudioChannelLabel_Center:
+      return AudioConfig::CHANNEL_CENTER;
+    case kAudioChannelLabel_LFEScreen:
+      return AudioConfig::CHANNEL_LFE;
+    case kAudioChannelLabel_LeftSurround:
+      return AudioConfig::CHANNEL_LS;
+    case kAudioChannelLabel_RightSurround:
+      return AudioConfig::CHANNEL_RS;
+    case kAudioChannelLabel_CenterSurround:
+      return AudioConfig::CHANNEL_RCENTER;
+    case kAudioChannelLabel_RearSurroundLeft:
+      return AudioConfig::CHANNEL_RLS;
+    case kAudioChannelLabel_RearSurroundRight:
+      return AudioConfig::CHANNEL_RRS;
+    default:
+      return AudioConfig::CHANNEL_INVALID;
+  }
+}
+
+// Will set mChannelLayout if a channel layout could properly be identified
+// and is supported.
+nsresult
+AppleATDecoder::SetupChannelLayout()
+{
+  // Determine the channel layout.
+  UInt32 propertySize;
+  UInt32 size;
+  OSStatus status =
+    AudioConverterGetPropertyInfo(mConverter,
+                                  kAudioConverterOutputChannelLayout,
+                                  &propertySize, NULL);
+  if (status || !propertySize) {
+    LOG("Couldn't get channel layout property (%s)", FourCC2Str(status));
+    return NS_ERROR_FAILURE;
+  }
+
+  auto data = MakeUnique<uint8_t[]>(propertySize);
+  size = propertySize;
+  status =
+    AudioConverterGetProperty(mConverter, kAudioConverterInputChannelLayout,
+                              &size, data.get());
+  if (status || size != propertySize) {
+    LOG("Couldn't get channel layout property (%s)",
+        FourCC2Str(status));
+    return NS_ERROR_FAILURE;
+  }
+
+  AudioChannelLayout* layout =
+    reinterpret_cast<AudioChannelLayout*>(data.get());
+  AudioChannelLayoutTag tag = layout->mChannelLayoutTag;
+
+  // if tag is kAudioChannelLayoutTag_UseChannelDescriptions then the structure
+  // directly contains the the channel layout mapping.
+  // If tag is kAudioChannelLayoutTag_UseChannelBitmap then the layout will
+  // be defined via the bitmap and can be retrieved using
+  // kAudioFormatProperty_ChannelLayoutForBitmap property.
+  // Otherwise the tag itself describes the layout.
+  if (tag != kAudioChannelLayoutTag_UseChannelDescriptions) {
+    AudioFormatPropertyID property =
+      tag == kAudioChannelLayoutTag_UseChannelBitmap
+        ? kAudioFormatProperty_ChannelLayoutForBitmap
+        : kAudioFormatProperty_ChannelLayoutForTag;
+
+    if (property == kAudioFormatProperty_ChannelLayoutForBitmap) {
+      status =
+        AudioFormatGetPropertyInfo(property,
+                                   sizeof(UInt32), &layout->mChannelBitmap,
+                                   &propertySize);
+    } else {
+      status =
+        AudioFormatGetPropertyInfo(property,
+                                   sizeof(AudioChannelLayoutTag), &tag,
+                                   &propertySize);
+    }
+    if (status || !propertySize) {
+      LOG("Couldn't get channel layout property info (%s:%s)",
+          FourCC2Str(property), FourCC2Str(status));
+      return NS_ERROR_FAILURE;
+    }
+    data = MakeUnique<uint8_t[]>(propertySize);
+    layout = reinterpret_cast<AudioChannelLayout*>(data.get());
+    size = propertySize;
+
+    if (property == kAudioFormatProperty_ChannelLayoutForBitmap) {
+      status = AudioFormatGetProperty(property,
+                                      sizeof(UInt32), &layout->mChannelBitmap,
+                                      &size, layout);
+    } else {
+      status = AudioFormatGetProperty(property,
+                                      sizeof(AudioChannelLayoutTag), &tag,
+                                      &size, layout);
+    }
+    if (status || size != propertySize) {
+      LOG("Couldn't get channel layout property (%s:%s)",
+          FourCC2Str(property), FourCC2Str(status));
+      return NS_ERROR_FAILURE;
+    }
+    // We have retrieved the channel layout from the tag or bitmap.
+    // We can now directly use the channel descriptions.
+    layout->mChannelLayoutTag = kAudioChannelLayoutTag_UseChannelDescriptions;
+  }
+
+  if (layout->mNumberChannelDescriptions > MAX_AUDIO_CHANNELS ||
+      layout->mNumberChannelDescriptions != mOutputFormat.mChannelsPerFrame) {
+    LOG("Nonsensical channel layout or not matching the original channel number");
+    return NS_ERROR_FAILURE;
+  }
+
+  AudioConfig::Channel channels[MAX_AUDIO_CHANNELS];
+  for (uint32_t i = 0; i < layout->mNumberChannelDescriptions; i++) {
+    AudioChannelLabel id = layout->mChannelDescriptions[i].mChannelLabel;
+    AudioConfig::Channel channel = ConvertChannelLabel(id);
+    channels[i] = channel;
+  }
+  mChannelLayout =
+    MakeUnique<AudioConfig::ChannelLayout>(mOutputFormat.mChannelsPerFrame,
+                                           channels);
   return NS_OK;
 }
 
@@ -414,6 +561,11 @@ AppleATDecoder::SetupDecoder(MediaRawData* aSample)
     mConverter = nullptr;
     return NS_ERROR_FAILURE;
   }
+
+  if (NS_FAILED(SetupChannelLayout())) {
+    NS_WARNING("Couldn't retrieve channel layout, will use default layout");
+  }
+
   return NS_OK;
 }
 
@@ -438,9 +590,9 @@ _MetadataCallback(void* aAppleATDecoder,
       decoder->mFileStreamError = true;
       return;
     }
-    nsAutoArrayPtr<uint8_t> data(new uint8_t[size]);
+    auto data = MakeUnique<uint8_t[]>(size);
     rv = AudioFileStreamGetProperty(aStream, aProperty,
-                                    &size, data);
+                                    &size, data.get());
     if (rv) {
       LOG("Couldn't get property '%s' (%s)",
           FourCC2Str(aProperty), FourCC2Str(rv));

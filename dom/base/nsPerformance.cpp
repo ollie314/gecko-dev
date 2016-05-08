@@ -68,9 +68,11 @@ nsPerformanceTiming::nsPerformanceTiming(nsPerformance* aPerformance,
     mZeroTime = 0;
   }
 
-  // The aHttpChannel argument is null if this nsPerformanceTiming object
-  // is being used for the navigation timing (document) and has a non-null
-  // value for the resource timing (any resources within the page).
+  // The aHttpChannel argument is null if this nsPerformanceTiming object is
+  // being used for navigation timing (which is only relevant for documents).
+  // It has a non-null value if this nsPerformanceTiming object is being used
+  // for resource timing, which can include document loads, both toplevel and
+  // in subframes, and resources linked from a document.
   if (aHttpChannel) {
     mTimingAllowed = CheckAllowedOrigin(aHttpChannel, aChannel);
     bool redirectsPassCheck = false;
@@ -144,6 +146,14 @@ nsPerformanceTiming::CheckAllowedOrigin(nsIHttpChannel* aResourceChannel,
   if (!loadInfo) {
     return false;
   }
+
+  // TYPE_DOCUMENT loads have no loadingPrincipal.  And that's OK, because we
+  // never actually need to have a performance timing entry for TYPE_DOCUMENT
+  // loads.
+  if (loadInfo->GetExternalContentPolicyType() == nsIContentPolicy::TYPE_DOCUMENT) {
+    return false;
+  }
+
   nsCOMPtr<nsIPrincipal> principal = loadInfo->LoadingPrincipal();
 
   // Check if the resource is either same origin as the page that started
@@ -428,7 +438,7 @@ NS_IMPL_CYCLE_COLLECTION_TRACE_END
 NS_IMPL_ADDREF_INHERITED(nsPerformance, PerformanceBase)
 NS_IMPL_RELEASE_INHERITED(nsPerformance, PerformanceBase)
 
-nsPerformance::nsPerformance(nsPIDOMWindow* aWindow,
+nsPerformance::nsPerformance(nsPIDOMWindowInner* aWindow,
                              nsDOMNavigationTiming* aDOMTiming,
                              nsITimedChannel* aChannel,
                              nsPerformance* aParentPerformance)
@@ -483,11 +493,7 @@ nsPerformance::DispatchBufferFullEvent()
 {
   RefPtr<Event> event = NS_NewDOMEvent(this, nullptr, nullptr);
   // it bubbles, and it isn't cancelable
-  nsresult rv = event->InitEvent(NS_LITERAL_STRING("resourcetimingbufferfull"),
-                                 true, false);
-  if (NS_FAILED(rv)) {
-    return;
-  }
+  event->InitEvent(NS_LITERAL_STRING("resourcetimingbufferfull"), true, false);
   event->SetTrusted(true);
   DispatchDOMEvent(nullptr, event, nullptr, nullptr);
 }
@@ -504,12 +510,7 @@ nsPerformance::Navigation()
 DOMHighResTimeStamp
 nsPerformance::Now() const
 {
-  double nowTimeMs = GetDOMTiming()->TimeStampToDOMHighRes(TimeStamp::Now());
-  // Round down to the nearest 5us, because if the timer is too accurate people
-  // can do nasty timing attacks with it.  See similar code in the worker
-  // Performance implementation.
-  const double maxResolutionMs = 0.005;
-  return floor(nowTimeMs / maxResolutionMs) * maxResolutionMs;
+  return RoundTime(GetDOMTiming()->TimeStampToDOMHighRes(TimeStamp::Now()));
 }
 
 JSObject*
@@ -565,6 +566,25 @@ nsPerformance::AddEntry(nsIHttpChannel* channel,
     // object to get all the required timings.
     RefPtr<PerformanceResourceTiming> performanceEntry =
       new PerformanceResourceTiming(performanceTiming, this, entryName);
+
+    nsAutoCString protocol;
+    channel->GetProtocolVersion(protocol);
+    performanceEntry->SetNextHopProtocol(NS_ConvertUTF8toUTF16(protocol));
+
+    uint64_t encodedBodySize = 0;
+    channel->GetEncodedBodySize(&encodedBodySize);
+    performanceEntry->SetEncodedBodySize(encodedBodySize);
+
+    uint64_t transferSize = 0;
+    channel->GetTransferSize(&transferSize);
+    performanceEntry->SetTransferSize(transferSize);
+
+    uint64_t decodedBodySize = 0;
+    channel->GetDecodedBodySize(&decodedBodySize);
+    if (decodedBodySize == 0) {
+      decodedBodySize = encodedBodySize;
+    }
+    performanceEntry->SetDecodedBodySize(decodedBodySize);
 
     // If the initiator type had no valid value, then set it to the default
     // ("other") value.
@@ -692,12 +712,12 @@ public:
   }
 };
 
-class PrefEnabledRunnable final : public WorkerMainThreadRunnable
+class PrefEnabledRunnable final : public WorkerCheckAPIExposureOnMainThreadRunnable
 {
 public:
   PrefEnabledRunnable(WorkerPrivate* aWorkerPrivate,
                       const nsCString& aPrefName)
-    : WorkerMainThreadRunnable(aWorkerPrivate)
+    : WorkerCheckAPIExposureOnMainThreadRunnable(aWorkerPrivate)
     , mEnabled(false)
     , mPrefName(aPrefName)
   { }
@@ -735,9 +755,7 @@ nsPerformance::IsEnabled(JSContext* aCx, JSObject* aGlobal)
   RefPtr<PrefEnabledRunnable> runnable =
     new PrefEnabledRunnable(workerPrivate,
                             NS_LITERAL_CSTRING("dom.enable_user_timing"));
-  runnable->Dispatch(workerPrivate->GetJSContext());
-
-  return runnable->IsEnabled();
+  return runnable->Dispatch() && runnable->IsEnabled();
 }
 
 /* static */ bool
@@ -754,9 +772,8 @@ nsPerformance::IsObserverEnabled(JSContext* aCx, JSObject* aGlobal)
   RefPtr<PrefEnabledRunnable> runnable =
     new PrefEnabledRunnable(workerPrivate,
                             NS_LITERAL_CSTRING("dom.enable_performance_observer"));
-  runnable->Dispatch(workerPrivate->GetJSContext());
 
-  return runnable->IsEnabled();
+  return runnable->Dispatch() && runnable->IsEnabled();
 }
 
 void
@@ -766,9 +783,15 @@ nsPerformance::InsertUserEntry(PerformanceEntry* aEntry)
 
   nsAutoCString uri;
   uint64_t markCreationEpoch = 0;
+
   if (nsContentUtils::IsUserTimingLoggingEnabled() ||
       nsContentUtils::SendPerformanceTimingNotifications()) {
-    nsresult rv = GetOwner()->GetDocumentURI()->GetHost(uri);
+    nsresult rv = NS_ERROR_FAILURE;
+    nsCOMPtr<nsPIDOMWindowInner> owner = GetOwner();
+    if (owner && owner->GetDocumentURI()) {
+      rv = owner->GetDocumentURI()->GetHost(uri);
+    }
+
     if(NS_FAILED(rv)) {
       // If we have no URI, just put in "none".
       uri.AssignLiteral("none");
@@ -787,15 +810,16 @@ nsPerformance::InsertUserEntry(PerformanceEntry* aEntry)
   PerformanceBase::InsertUserEntry(aEntry);
 }
 
-DOMHighResTimeStamp
-nsPerformance::DeltaFromNavigationStart(DOMHighResTimeStamp aTime)
+TimeStamp
+nsPerformance::CreationTimeStamp() const
 {
-  // If the time we're trying to convert is equal to zero, it hasn't been set
-  // yet so just return 0.
-  if (aTime == 0) {
-    return 0;
-  }
-  return aTime - GetDOMTiming()->GetNavigationStart();
+  return GetDOMTiming()->GetNavigationStartTimeStamp();
+}
+
+DOMHighResTimeStamp
+nsPerformance::CreationTime() const
+{
+  return GetDOMTiming()->GetNavigationStart();
 }
 
 // PerformanceBase
@@ -818,7 +842,7 @@ PerformanceBase::PerformanceBase()
   MOZ_ASSERT(!NS_IsMainThread());
 }
 
-PerformanceBase::PerformanceBase(nsPIDOMWindow* aWindow)
+PerformanceBase::PerformanceBase(nsPIDOMWindowInner* aWindow)
   : DOMEventTargetHelper(aWindow)
   , mResourceTimingBufferSize(kDefaultResourceTimingBufferSize)
   , mPendingNotificationObserversTask(false)
@@ -907,6 +931,17 @@ PerformanceBase::ClearResourceTimings()
   mResourceEntries.Clear();
 }
 
+DOMHighResTimeStamp
+PerformanceBase::RoundTime(double aTime) const
+{
+  // Round down to the nearest 5us, because if the timer is too accurate people
+  // can do nasty timing attacks with it.  See similar code in the worker
+  // Performance implementation.
+  const double maxResolutionMs = 0.005;
+  return floor(aTime / maxResolutionMs) * maxResolutionMs;
+}
+
+
 void
 PerformanceBase::Mark(const nsAString& aName, ErrorResult& aRv)
 {
@@ -939,7 +974,7 @@ DOMHighResTimeStamp
 PerformanceBase::ResolveTimestampFromName(const nsAString& aName,
                                           ErrorResult& aRv)
 {
-  nsAutoTArray<RefPtr<PerformanceEntry>, 1> arr;
+  AutoTArray<RefPtr<PerformanceEntry>, 1> arr;
   DOMHighResTimeStamp ts;
   Optional<nsAString> typeParam;
   nsAutoString str;
@@ -961,7 +996,7 @@ PerformanceBase::ResolveTimestampFromName(const nsAString& aName,
     return 0;
   }
 
-  return DeltaFromNavigationStart(ts);
+  return ts - CreationTime();
 }
 
 void
@@ -1111,7 +1146,7 @@ PerformanceBase::CancelNotificationObservers()
   mPendingNotificationObserversTask = false;
 }
 
-class NotifyObserversTask final : public nsCancelableRunnable
+class NotifyObserversTask final : public CancelableRunnable
 {
 public:
   explicit NotifyObserversTask(PerformanceBase* aPerformance)
@@ -1127,7 +1162,7 @@ public:
     return NS_OK;
   }
 
-  NS_IMETHOD Cancel() override
+  nsresult Cancel() override
   {
     mPerformance->CancelNotificationObservers();
     mPerformance = nullptr;

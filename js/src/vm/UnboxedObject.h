@@ -245,7 +245,7 @@ class UnboxedPlainObject : public JSObject
                                    MutableHandleShape propp);
 
     static bool obj_defineProperty(JSContext* cx, HandleObject obj, HandleId id,
-                                   Handle<JSPropertyDescriptor> desc,
+                                   Handle<PropertyDescriptor> desc,
                                    ObjectOpResult& result);
 
     static bool obj_hasProperty(JSContext* cx, HandleObject obj, HandleId id, bool* foundp);
@@ -257,7 +257,7 @@ class UnboxedPlainObject : public JSObject
                                 HandleValue receiver, ObjectOpResult& result);
 
     static bool obj_getOwnPropertyDescriptor(JSContext* cx, HandleObject obj, HandleId id,
-                                             MutableHandle<JSPropertyDescriptor> desc);
+                                             MutableHandle<PropertyDescriptor> desc);
 
     static bool obj_deleteProperty(JSContext* cx, HandleObject obj, HandleId id,
                                    ObjectOpResult& result);
@@ -303,7 +303,7 @@ class UnboxedPlainObject : public JSObject
                                           NewObjectKind newKind, IdValuePair* properties);
 
     void fillAfterConvert(ExclusiveContext* cx,
-                          const AutoValueVector& values, size_t* valueCursor);
+                          Handle<GCVector<Value>> values, size_t* valueCursor);
 
     static void trace(JSTracer* trc, JSObject* object);
 
@@ -381,7 +381,7 @@ class UnboxedArrayObject : public JSObject
                                    MutableHandleShape propp);
 
     static bool obj_defineProperty(JSContext* cx, HandleObject obj, HandleId id,
-                                   Handle<JSPropertyDescriptor> desc,
+                                   Handle<PropertyDescriptor> desc,
                                    ObjectOpResult& result);
 
     static bool obj_hasProperty(JSContext* cx, HandleObject obj, HandleId id, bool* foundp);
@@ -393,7 +393,7 @@ class UnboxedArrayObject : public JSObject
                                 HandleValue receiver, ObjectOpResult& result);
 
     static bool obj_getOwnPropertyDescriptor(JSContext* cx, HandleObject obj, HandleId id,
-                                             MutableHandle<JSPropertyDescriptor> desc);
+                                             MutableHandle<PropertyDescriptor> desc);
 
     static bool obj_deleteProperty(JSContext* cx, HandleObject obj, HandleId id,
                                    ObjectOpResult& result);
@@ -426,7 +426,7 @@ class UnboxedArrayObject : public JSObject
     bool convertInt32ToDouble(ExclusiveContext* cx, ObjectGroup* group);
 
     void fillAfterConvert(ExclusiveContext* cx,
-                          const AutoValueVector& values, size_t* valueCursor);
+                          Handle<GCVector<Value>> values, size_t* valueCursor);
 
     static void trace(JSTracer* trc, JSObject* object);
     static void objectMoved(JSObject* obj, const JSObject* old);

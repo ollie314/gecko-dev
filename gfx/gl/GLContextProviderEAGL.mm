@@ -143,12 +143,6 @@ GLContextEAGL::IsDoubleBuffered() const
 }
 
 bool
-GLContextEAGL::SupportsRobustness() const
-{
-    return false;
-}
-
-bool
 GLContextEAGL::SwapBuffers()
 {
   PROFILER_LABEL("GLContextEAGL", "SwapBuffers",
@@ -211,7 +205,7 @@ CreateEAGLContext(bool aOffscreen, GLContextEAGL* sharedContext)
 }
 
 already_AddRefed<GLContext>
-GLContextProviderEAGL::CreateForWindow(nsIWidget* aWidget)
+GLContextProviderEAGL::CreateForWindow(nsIWidget* aWidget, bool aForceAccelerated)
 {
     RefPtr<GLContext> glContext = CreateEAGLContext(false, GetGlobalContextEAGL());
     if (!glContext) {
@@ -249,11 +243,15 @@ static RefPtr<GLContext> gGlobalContext;
 GLContext*
 GLContextProviderEAGL::GetGlobalContext()
 {
-    if (!gGlobalContext) {
-        gGlobalContext = CreateEAGLContext(true, nullptr);
-        if (!gGlobalContext ||
-            !static_cast<GLContextEAGL*>(gGlobalContext.get())->Init())
-        {
+    static bool triedToCreateContext = false;
+    if (!triedToCreateContext) {
+        triedToCreateContext = true;
+
+        MOZ_RELEASE_ASSERT(!gGlobalContext);
+        RefPtr<GLContext> temp = CreateHeadless(CreateContextFlags::NONE);
+        gGlobalContext = temp;
+
+        if (!gGlobalContext) {
             MOZ_CRASH("Failed to create global context");
         }
     }

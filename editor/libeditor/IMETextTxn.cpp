@@ -297,11 +297,13 @@ IMETextTxn::SetIMESelection(nsEditor& aEditor,
     rv = selection->Collapse(aTextNode, caretOffset);
     NS_ASSERTION(NS_SUCCEEDED(rv),
                  "Failed to set caret at the end of composition string");
+
     // If caret range isn't specified explicitly, we should hide the caret.
+    // Hiding the caret benefits a Windows build (see bug 555642 comment #6).
     aEditor.HideCaret(true);
   }
 
-  rv = selection->EndBatchChanges();
+  rv = selection->EndBatchChangesInternal();
   NS_ASSERTION(NS_SUCCEEDED(rv), "Failed to end batch changes");
 
   return rv;

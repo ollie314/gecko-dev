@@ -15,6 +15,12 @@
 #include "GeckoProfiler.h"
 #include "mozilla/gfx/MacIOSurface.h"
 
+#include <OpenGL/OpenGL.h>
+
+// When running inside a VM, creating an accelerated OpenGL context usually
+// fails. Uncomment this line to emulate that behavior.
+// #define EMULATE_VM
+
 namespace mozilla {
 namespace gl {
 
@@ -112,6 +118,7 @@ GLContextCGL::MakeCurrentImpl(bool aForce)
 
     if (mContext) {
         [mContext makeCurrentContext];
+        MOZ_ASSERT(IsCurrent());
         // Use non-blocking swap in "ASAP mode".
         // ASAP mode means that rendering is iterated as fast as possible.
         // ASAP mode is entered when layout.frame_rate=0 (requires restart).
@@ -148,12 +155,6 @@ GLContextCGL::IsDoubleBuffered() const
 }
 
 bool
-GLContextCGL::SupportsRobustness() const
-{
-    return false;
-}
-
-bool
 GLContextCGL::SwapBuffers()
 {
   PROFILER_LABEL("GLContextCGL", "SwapBuffers",
@@ -171,12 +172,23 @@ GLContextProviderCGL::CreateWrappingExisting(void*, void*)
 }
 
 static const NSOpenGLPixelFormatAttribute kAttribs_singleBuffered[] = {
+    NSOpenGLPFAAllowOfflineRenderers,
+    0
+};
+
+static const NSOpenGLPixelFormatAttribute kAttribs_singleBuffered_accel[] = {
     NSOpenGLPFAAccelerated,
     NSOpenGLPFAAllowOfflineRenderers,
     0
 };
 
 static const NSOpenGLPixelFormatAttribute kAttribs_doubleBuffered[] = {
+    NSOpenGLPFAAllowOfflineRenderers,
+    NSOpenGLPFADoubleBuffer,
+    0
+};
+
+static const NSOpenGLPixelFormatAttribute kAttribs_doubleBuffered_accel[] = {
     NSOpenGLPFAAccelerated,
     NSOpenGLPFAAllowOfflineRenderers,
     NSOpenGLPFADoubleBuffer,
@@ -222,17 +234,23 @@ CreateWithFormat(const NSOpenGLPixelFormatAttribute* attribs)
 }
 
 already_AddRefed<GLContext>
-GLContextProviderCGL::CreateForWindow(nsIWidget *aWidget)
+GLContextProviderCGL::CreateForWindow(nsIWidget *aWidget, bool aForceAccelerated)
 {
     if (!sCGLLibrary.EnsureInitialized()) {
         return nullptr;
     }
 
+#ifdef EMULATE_VM
+    if (aForceAccelerated) {
+        return nullptr;
+    }
+#endif
+
     const NSOpenGLPixelFormatAttribute* attribs;
     if (sCGLLibrary.UseDoubleBufferedWindows()) {
-        attribs = kAttribs_doubleBuffered;
+        attribs = aForceAccelerated ? kAttribs_doubleBuffered_accel : kAttribs_doubleBuffered;
     } else {
-        attribs = kAttribs_singleBuffered;
+        attribs = aForceAccelerated ? kAttribs_singleBuffered_accel : kAttribs_singleBuffered;
     }
     NSOpenGLContext* context = CreateWithFormat(attribs);
     if (!context) {
@@ -296,6 +314,9 @@ CreateOffscreenFBOContext(CreateContextFlags flags)
     RefPtr<GLContextCGL> glContext = new GLContextCGL(dummyCaps, context,
                                                         true, profile);
 
+    if (gfxPrefs::GLMultithreaded()) {
+        CGLEnable(glContext->GetCGLContext(), kCGLCEMPEngine);
+    }
     return glContext.forget();
 }
 
@@ -335,20 +356,16 @@ static RefPtr<GLContext> gGlobalContext;
 GLContext*
 GLContextProviderCGL::GetGlobalContext()
 {
-    if (!sCGLLibrary.EnsureInitialized()) {
-        return nullptr;
-    }
+    static bool triedToCreateContext = false;
+    if (!triedToCreateContext) {
+        triedToCreateContext = true;
 
-    if (!gGlobalContext) {
-        // There are bugs in some older drivers with pbuffers less
-        // than 16x16 in size; also 16x16 is POT so that we can do
-        // a FBO with it on older video cards.  A FBO context for
-        // sharing is preferred since it has no associated target.
-        gGlobalContext = CreateOffscreenFBOContext(CreateContextFlags::NONE);
-        if (!gGlobalContext || !static_cast<GLContextCGL*>(gGlobalContext.get())->Init()) {
+        MOZ_RELEASE_ASSERT(!gGlobalContext);
+        RefPtr<GLContext> temp = CreateHeadless(CreateContextFlags::NONE);
+        gGlobalContext = temp;
+
+        if (!gGlobalContext) {
             NS_WARNING("Couldn't init gGlobalContext.");
-            gGlobalContext = nullptr;
-            return nullptr;
         }
     }
 

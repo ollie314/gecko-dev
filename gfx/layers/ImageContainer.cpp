@@ -17,6 +17,8 @@
 #include "mozilla/layers/PImageContainerChild.h"
 #include "mozilla/layers/ImageClient.h"  // for ImageClient
 #include "mozilla/layers/LayersMessages.h"
+#include "mozilla/layers/SharedPlanarYCbCrImage.h"
+#include "mozilla/layers/SharedRGBImage.h"
 #include "nsISupportsUtils.h"           // for NS_IF_ADDREF
 #include "YCbCrUtils.h"                 // for YCbCr conversions
 #ifdef MOZ_WIDGET_GONK
@@ -30,14 +32,11 @@
 
 #ifdef XP_MACOSX
 #include "mozilla/gfx/QuartzSupport.h"
-#include "MacIOSurfaceImage.h"
 #endif
 
 #ifdef XP_WIN
 #include "gfxWindowsPlatform.h"
 #include <d3d10_1.h>
-#include "D3D9SurfaceImage.h"
-#include "D3D11ShareHandleImage.h"
 #endif
 
 namespace mozilla {
@@ -51,72 +50,23 @@ Atomic<int32_t> Image::sSerialCounter(0);
 
 Atomic<uint32_t> ImageContainer::sGenerationCounter(0);
 
-already_AddRefed<Image>
-ImageFactory::CreateImage(ImageFormat aFormat,
-                          const gfx::IntSize &,
-                          BufferRecycleBin *aRecycleBin)
+RefPtr<PlanarYCbCrImage>
+ImageFactory::CreatePlanarYCbCrImage(const gfx::IntSize& aScaleHint, BufferRecycleBin *aRecycleBin)
 {
-  RefPtr<Image> img;
-#ifdef MOZ_WIDGET_GONK
-  if (aFormat == ImageFormat::GRALLOC_PLANAR_YCBCR) {
-    img = new GrallocImage();
-    return img.forget();
-  }
-  if (aFormat == ImageFormat::OVERLAY_IMAGE) {
-    img = new OverlayImage();
-    return img.forget();
-  }
-#endif
-#if defined(MOZ_WIDGET_GONK) && defined(MOZ_B2G_CAMERA) && defined(MOZ_WEBRTC)
-  if (aFormat == ImageFormat::GONK_CAMERA_IMAGE) {
-    img = new GonkCameraImage();
-    return img.forget();
-  }
-#endif
-  if (aFormat == ImageFormat::PLANAR_YCBCR) {
-    img = new PlanarYCbCrImage(aRecycleBin);
-    return img.forget();
-  }
-  if (aFormat == ImageFormat::CAIRO_SURFACE) {
-    img = new CairoImage();
-    return img.forget();
-  }
-#ifdef MOZ_WIDGET_ANDROID
-  if (aFormat == ImageFormat::SURFACE_TEXTURE) {
-    img = new SurfaceTextureImage();
-    return img.forget();
-  }
-#endif
-  if (aFormat == ImageFormat::EGLIMAGE) {
-    img = new EGLImageImage();
-    return img.forget();
-  }
-#ifdef XP_MACOSX
-  if (aFormat == ImageFormat::MAC_IOSURFACE) {
-    img = new MacIOSurfaceImage();
-    return img.forget();
-  }
-#endif
-#ifdef XP_WIN
-  if (aFormat == ImageFormat::D3D11_SHARE_HANDLE_TEXTURE) {
-    img = new D3D11ShareHandleImage();
-    return img.forget();
-  }
-  if (aFormat == ImageFormat::D3D9_RGB32_TEXTURE) {
-    img = new D3D9SurfaceImage();
-    return img.forget();
-  }
-#endif
-  return nullptr;
+  return new RecyclingPlanarYCbCrImage(aRecycleBin);
 }
 
 BufferRecycleBin::BufferRecycleBin()
   : mLock("mozilla.layers.BufferRecycleBin.mLock")
+  // This member is only valid when the bin is not empty and will be properly
+  // initialized in RecycleBuffer, but initializing it here avoids static analysis
+  // noise.
+  , mRecycledBufferSize(0)
 {
 }
 
 void
-BufferRecycleBin::RecycleBuffer(uint8_t* aBuffer, uint32_t aSize)
+BufferRecycleBin::RecycleBuffer(UniquePtr<uint8_t[]> aBuffer, uint32_t aSize)
 {
   MutexAutoLock lock(mLock);
 
@@ -124,19 +74,19 @@ BufferRecycleBin::RecycleBuffer(uint8_t* aBuffer, uint32_t aSize)
     mRecycledBuffers.Clear();
   }
   mRecycledBufferSize = aSize;
-  mRecycledBuffers.AppendElement(aBuffer);
+  mRecycledBuffers.AppendElement(Move(aBuffer));
 }
 
-uint8_t*
+UniquePtr<uint8_t[]>
 BufferRecycleBin::GetBuffer(uint32_t aSize)
 {
   MutexAutoLock lock(mLock);
 
   if (mRecycledBuffers.IsEmpty() || mRecycledBufferSize != aSize)
-    return new uint8_t[aSize];
+    return MakeUnique<uint8_t[]>(aSize);
 
   uint32_t last = mRecycledBuffers.Length() - 1;
-  uint8_t* result = mRecycledBuffers[last].forget();
+  UniquePtr<uint8_t[]> result = Move(mRecycledBuffers[last]);
   mRecycledBuffers.RemoveElementAt(last);
   return result;
 }
@@ -153,7 +103,12 @@ BufferRecycleBin::GetBuffer(uint32_t aSize)
 class ImageContainerChild : public PImageContainerChild {
 public:
   explicit ImageContainerChild(ImageContainer* aImageContainer)
-    : mLock("ImageContainerChild"), mImageContainer(aImageContainer) {}
+    : mLock("ImageContainerChild")
+    , mImageContainer(aImageContainer)
+    , mImageContainerReleased(false)
+    , mIPCOpen(true)
+  {}
+
   void ForgetImageContainer()
   {
     MutexAutoLock lock(mLock);
@@ -164,7 +119,55 @@ public:
   // mImageContainer's monitor (when both need to be held).
   Mutex mLock;
   ImageContainer* mImageContainer;
+  // If mImageContainerReleased is false when we try to deallocate this actor,
+  // it means the ImageContainer is still holding a pointer to this.
+  // mImageContainerReleased must not be accessed off the ImageBridgeChild thread.
+  bool mImageContainerReleased;
+  // If mIPCOpen is false, it means the IPDL code tried to deallocate the actor
+  // before the ImageContainer released it. When this happens we don't actually
+  // delete the actor right away because the ImageContainer has a reference to
+  // it. In this case the actor will be deleted when the ImageContainer lets go
+  // of it.
+  // mIPCOpen must not be accessed off the ImageBridgeChild thread.
+  bool mIPCOpen;
 };
+
+// static
+void
+ImageContainer::DeallocActor(PImageContainerChild* aActor)
+{
+  MOZ_ASSERT(aActor);
+  MOZ_ASSERT(InImageBridgeChildThread());
+
+  auto actor = static_cast<ImageContainerChild*>(aActor);
+  if (actor->mImageContainerReleased) {
+    delete actor;
+  } else {
+    actor->mIPCOpen = false;
+  }
+}
+
+// static
+void
+ImageContainer::AsyncDestroyActor(PImageContainerChild* aActor)
+{
+  MOZ_ASSERT(aActor);
+  MOZ_ASSERT(InImageBridgeChildThread());
+
+  auto actor = static_cast<ImageContainerChild*>(aActor);
+
+  // Setting mImageContainerReleased to true means next time DeallocActor is
+  // called, the actor will be deleted.
+  actor->mImageContainerReleased = true;
+
+  if (actor->mIPCOpen && ImageBridgeChild::IsCreated() && !ImageBridgeChild::IsShutDown()) {
+    actor->SendAsyncDelete();
+  } else {
+    // The actor is already dead as far as IPDL is concerned, probably because
+    // of a channel error. We can deallocate it now.
+    DeallocActor(actor);
+  }
+}
 
 ImageContainer::ImageContainer(Mode flag)
 : mReentrantMonitor("ImageContainer.mReentrantMonitor"),
@@ -188,11 +191,6 @@ ImageContainer::ImageContainer(Mode flag)
         mImageClient = ImageBridgeChild::GetSingleton()->CreateImageClient(CompositableType::IMAGE, this).take();
         MOZ_ASSERT(mImageClient);
         break;
-      case ASYNCHRONOUS_OVERLAY:
-        mIPDLChild = new ImageContainerChild(this);
-        mImageClient = ImageBridgeChild::GetSingleton()->CreateImageClient(CompositableType::IMAGE_OVERLAY, this).take();
-        MOZ_ASSERT(mImageClient);
-        break;
       default:
         MOZ_ASSERT(false, "This flag is invalid.");
         break;
@@ -208,31 +206,37 @@ ImageContainer::~ImageContainer()
   }
 }
 
-already_AddRefed<Image>
-ImageContainer::CreateImage(ImageFormat aFormat)
+RefPtr<PlanarYCbCrImage>
+ImageContainer::CreatePlanarYCbCrImage()
 {
   ReentrantMonitorAutoEnter mon(mReentrantMonitor);
+  if (mImageClient && mImageClient->AsImageClientSingle()) {
+    return new SharedPlanarYCbCrImage(mImageClient);
+  }
+  return mImageFactory->CreatePlanarYCbCrImage(mScaleHint, mRecycleBin);
+}
+
+RefPtr<SharedRGBImage>
+ImageContainer::CreateSharedRGBImage()
+{
+  ReentrantMonitorAutoEnter mon(mReentrantMonitor);
+  if (!mImageClient || !mImageClient->AsImageClientSingle()) {
+    return nullptr;
+  }
+  return new SharedRGBImage(mImageClient);
+}
 
 #ifdef MOZ_WIDGET_GONK
-  if (aFormat == ImageFormat::OVERLAY_IMAGE) {
-    if (mImageClient && mImageClient->GetTextureInfo().mCompositableType != CompositableType::IMAGE_OVERLAY) {
-      // If this ImageContainer is async but the image type mismatch, fix it here
-      if (ImageBridgeChild::IsCreated()) {
-        ImageBridgeChild::DispatchReleaseImageClient(mImageClient);
-        mImageClient = ImageBridgeChild::GetSingleton()->CreateImageClient(
-            CompositableType::IMAGE_OVERLAY, this).take();
-      }
-    }
+RefPtr<OverlayImage>
+ImageContainer::CreateOverlayImage()
+{
+  ReentrantMonitorAutoEnter mon(mReentrantMonitor);
+  if (!mImageClient || !mImageClient->AsImageClientSingle()) {
+    return nullptr;
   }
-#endif
-  if (mImageClient) {
-    RefPtr<Image> img = mImageClient->CreateImage(aFormat);
-    if (img) {
-      return img.forget();
-    }
-  }
-  return mImageFactory->CreateImage(aFormat, mScaleHint, mRecycleBin);
+  return new OverlayImage();
 }
+#endif
 
 void
 ImageContainer::SetCurrentImageInternal(const nsTArray<NonOwningImage>& aImages)
@@ -261,6 +265,14 @@ ImageContainer::SetCurrentImageInternal(const nsTArray<NonOwningImage>& aImages)
             img.mFrameID != aImages[0].mFrameID) {
           mFrameIDsNotYetComposited.AppendElement(img.mFrameID);
         }
+      }
+
+      // Remove really old frames, assuming they'll never be composited.
+      const uint32_t maxFrames = 100;
+      if (mFrameIDsNotYetComposited.Length() > maxFrames) {
+        uint32_t dropFrames = mFrameIDsNotYetComposited.Length() - maxFrames;
+        mDroppedImageCount += dropFrames;
+        mFrameIDsNotYetComposited.RemoveElementsAt(0, dropFrames);
       }
     }
   }
@@ -331,12 +343,18 @@ ImageContainer::ClearAllImages()
 void
 ImageContainer::SetCurrentImageInTransaction(Image *aImage)
 {
+  AutoTArray<NonOwningImage,1> images;
+  images.AppendElement(NonOwningImage(aImage));
+  SetCurrentImagesInTransaction(images);
+}
+
+void
+ImageContainer::SetCurrentImagesInTransaction(const nsTArray<NonOwningImage>& aImages)
+{
   NS_ASSERTION(NS_IsMainThread(), "Should be on main thread.");
   NS_ASSERTION(!mImageClient, "Should use async image transfer with ImageBridge.");
 
-  nsAutoTArray<NonOwningImage,1> images;
-  images.AppendElement(NonOwningImage(aImage));
-  SetCurrentImageInternal(images);
+  SetCurrentImageInternal(aImages);
 }
 
 bool ImageContainer::IsAsync() const
@@ -397,16 +415,17 @@ ImageContainer::NotifyCompositeInternal(const ImageCompositeNotification& aNotif
   ++mPaintCount;
 
   if (aNotification.producerID() == mCurrentProducerID) {
-    while (!mFrameIDsNotYetComposited.IsEmpty()) {
-      if (mFrameIDsNotYetComposited[0] <= aNotification.frameID()) {
-        if (mFrameIDsNotYetComposited[0] < aNotification.frameID()) {
+    uint32_t i;
+    for (i = 0; i < mFrameIDsNotYetComposited.Length(); ++i) {
+      if (mFrameIDsNotYetComposited[i] <= aNotification.frameID()) {
+        if (mFrameIDsNotYetComposited[i] < aNotification.frameID()) {
           ++mDroppedImageCount;
         }
-        mFrameIDsNotYetComposited.RemoveElementAt(0);
       } else {
         break;
       }
     }
+    mFrameIDsNotYetComposited.RemoveElementsAt(0, i);
     for (auto& img : mCurrentImages) {
       if (img.mFrameID == aNotification.frameID()) {
         img.mComposited = true;
@@ -420,23 +439,22 @@ ImageContainer::NotifyCompositeInternal(const ImageCompositeNotification& aNotif
   }
 }
 
-PlanarYCbCrImage::PlanarYCbCrImage(BufferRecycleBin *aRecycleBin)
+PlanarYCbCrImage::PlanarYCbCrImage()
   : Image(nullptr, ImageFormat::PLANAR_YCBCR)
+  , mOffscreenFormat(SurfaceFormat::UNKNOWN)
   , mBufferSize(0)
-  , mOffscreenFormat(gfxImageFormat::Unknown)
-  , mRecycleBin(aRecycleBin)
 {
 }
 
-PlanarYCbCrImage::~PlanarYCbCrImage()
+RecyclingPlanarYCbCrImage::~RecyclingPlanarYCbCrImage()
 {
   if (mBuffer) {
-    mRecycleBin->RecycleBuffer(mBuffer.forget(), mBufferSize);
+    mRecycleBin->RecycleBuffer(Move(mBuffer), mBufferSize);
   }
 }
 
 size_t
-PlanarYCbCrImage::SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const
+RecyclingPlanarYCbCrImage::SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const
 {
   // Ignoring:
   // - mData - just wraps mBuffer
@@ -446,7 +464,7 @@ PlanarYCbCrImage::SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const
   //   - mImplData is not used
   // Not owned:
   // - mRecycleBin
-  size_t size = mBuffer.SizeOfExcludingThis(aMallocSizeOf);
+  size_t size = aMallocSizeOf(mBuffer.get());
 
   // Could add in the future:
   // - mBackendData (from base class)
@@ -454,8 +472,8 @@ PlanarYCbCrImage::SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const
   return size;
 }
 
-uint8_t*
-PlanarYCbCrImage::AllocateBuffer(uint32_t aSize)
+UniquePtr<uint8_t[]>
+RecyclingPlanarYCbCrImage::AllocateBuffer(uint32_t aSize)
 {
   return mRecycleBin->GetBuffer(aSize);
 }
@@ -484,8 +502,8 @@ CopyPlane(uint8_t *aDst, const uint8_t *aSrc,
   }
 }
 
-void
-PlanarYCbCrImage::CopyData(const Data& aData)
+bool
+RecyclingPlanarYCbCrImage::CopyData(const Data& aData)
 {
   mData = aData;
 
@@ -496,12 +514,12 @@ PlanarYCbCrImage::CopyData(const Data& aData)
   // get new buffer
   mBuffer = AllocateBuffer(size);
   if (!mBuffer)
-    return;
+    return false;
 
   // update buffer size
   mBufferSize = size;
 
-  mData.mYChannel = mBuffer;
+  mData.mYChannel = mBuffer.get();
   mData.mCbChannel = mData.mYChannel + mData.mYStride * mData.mYSize.height;
   mData.mCrChannel = mData.mCbChannel + mData.mCbCrStride * mData.mCbCrSize.height;
 
@@ -513,31 +531,27 @@ PlanarYCbCrImage::CopyData(const Data& aData)
             mData.mCbCrSize, mData.mCbCrStride, mData.mCrSkip);
 
   mSize = aData.mPicSize;
-}
-
-void
-PlanarYCbCrImage::SetData(const Data &aData)
-{
-  CopyData(aData);
+  return true;
 }
 
 gfxImageFormat
 PlanarYCbCrImage::GetOffscreenFormat()
 {
-  return mOffscreenFormat == gfxImageFormat::Unknown ?
+  return mOffscreenFormat == SurfaceFormat::UNKNOWN ?
     gfxPlatform::GetPlatform()->GetOffscreenFormat() :
     mOffscreenFormat;
 }
 
-void
-PlanarYCbCrImage::SetDataNoCopy(const Data &aData)
+bool
+PlanarYCbCrImage::AdoptData(const Data &aData)
 {
   mData = aData;
   mSize = aData.mPicSize;
+  return true;
 }
 
 uint8_t*
-PlanarYCbCrImage::AllocateAndGetNewBuffer(uint32_t aSize)
+RecyclingPlanarYCbCrImage::AllocateAndGetNewBuffer(uint32_t aSize)
 {
   // get new buffer
   mBuffer = AllocateBuffer(aSize);
@@ -545,7 +559,7 @@ PlanarYCbCrImage::AllocateAndGetNewBuffer(uint32_t aSize)
     // update buffer size
     mBufferSize = aSize;
   }
-  return mBuffer;
+  return mBuffer.get();
 }
 
 already_AddRefed<gfx::SourceSurface>
@@ -582,16 +596,24 @@ PlanarYCbCrImage::GetAsSourceSurface()
   return surface.forget();
 }
 
-CairoImage::CairoImage()
-  : Image(nullptr, ImageFormat::CAIRO_SURFACE)
+SourceSurfaceImage::SourceSurfaceImage(const gfx::IntSize& aSize, gfx::SourceSurface* aSourceSurface)
+  : Image(nullptr, ImageFormat::CAIRO_SURFACE),
+    mSize(aSize),
+    mSourceSurface(aSourceSurface)
 {}
 
-CairoImage::~CairoImage()
+SourceSurfaceImage::SourceSurfaceImage(gfx::SourceSurface* aSourceSurface)
+  : Image(nullptr, ImageFormat::CAIRO_SURFACE),
+    mSize(aSourceSurface->GetSize()),
+    mSourceSurface(aSourceSurface)
+{}
+
+SourceSurfaceImage::~SourceSurfaceImage()
 {
 }
 
 TextureClient*
-CairoImage::GetTextureClient(CompositableClient *aClient)
+SourceSurfaceImage::GetTextureClient(CompositableClient *aClient)
 {
   if (!aClient) {
     return nullptr;
@@ -609,13 +631,6 @@ CairoImage::GetTextureClient(CompositableClient *aClient)
     return nullptr;
   }
 
-
-// XXX windows' TextureClients do not hold ISurfaceAllocator,
-// recycler does not work on windows.
-#ifndef XP_WIN
-
-// XXX only gonk ensure when TextureClient is recycled,
-// TextureHost is not used by CompositableHost.
 #ifdef MOZ_WIDGET_GONK
   RefPtr<TextureClientRecycleAllocator> recycler =
     aClient->GetTextureClientRecycler();
@@ -626,8 +641,6 @@ CairoImage::GetTextureClient(CompositableClient *aClient)
                                 BackendSelector::Content,
                                 aClient->GetTextureFlags());
   }
-#endif
-
 #endif
   if (!textureClient) {
     // gfx::BackendType::NONE means default to content backend
@@ -640,11 +653,10 @@ CairoImage::GetTextureClient(CompositableClient *aClient)
     return nullptr;
   }
 
-  if (!textureClient->Lock(OpenMode::OPEN_WRITE_ONLY)) {
+  TextureClientAutoLock autoLock(textureClient, OpenMode::OPEN_WRITE_ONLY);
+  if (!autoLock.Succeeded()) {
     return nullptr;
   }
-
-  TextureClientAutoUnlock autoUnlock(textureClient);
 
   textureClient->UpdateFromSurface(surface);
 

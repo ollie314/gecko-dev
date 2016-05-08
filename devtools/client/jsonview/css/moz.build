@@ -6,18 +6,16 @@
 
 
 DevToolsModules(
-    'dom-tree.css',
+    'controls.png',
+    'controls@2x.png',
     'general.css',
     'headers-panel.css',
     'json-panel.css',
     'main.css',
     'read-only-prop.svg',
-    'reps.css',
     'search-box.css',
     'search.svg',
     'tabs.css',
     'text-panel.css',
-    'toolbar.css',
-    'twisty-closed.svg',
-    'twisty-open.svg'
+    'toolbar.css'
 )

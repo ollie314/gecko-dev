@@ -42,11 +42,10 @@ XPCVariant::XPCVariant(JSContext* cx, Value aJSVal)
         // thing, but I'm saving the cleanup here for another day. Blake thinks
         // that we should just not store the WN if we're creating a variant for
         // an outer window.
-        JS::RootedObject obj(cx, &mJSVal.toObject());
-        obj = JS_ObjectToInnerObject(cx, obj);
+        JSObject* obj = js::ToWindowIfWindowProxy(&mJSVal.toObject());
         mJSVal = JS::ObjectValue(*obj);
 
-        JSObject* unwrapped = js::CheckedUnwrap(obj, /* stopAtOuter = */ false);
+        JSObject* unwrapped = js::CheckedUnwrap(obj, /* stopAtWindowProxy = */ false);
         mReturnRawObject = !(unwrapped && IS_WN_REFLECTOR(unwrapped));
     } else
         mReturnRawObject = false;
@@ -67,7 +66,7 @@ XPCTraceableVariant::~XPCTraceableVariant()
 void XPCTraceableVariant::TraceJS(JSTracer* trc)
 {
     MOZ_ASSERT(mJSVal.isMarkable());
-    JS_CallValueTracer(trc, &mJSVal, "XPCTraceableVariant::mJSVal");
+    JS::TraceEdge(trc, &mJSVal, "XPCTraceableVariant::mJSVal");
 }
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(XPCVariant)
@@ -263,17 +262,27 @@ bool XPCVariant::InitializeData(JSContext* cx)
 
     RootedValue val(cx, GetJSVal());
 
-    if (val.isInt32())
-        return NS_SUCCEEDED(mData.SetFromInt32(val.toInt32()));
-    if (val.isDouble())
-        return NS_SUCCEEDED(mData.SetFromDouble(val.toDouble()));
-    if (val.isBoolean())
-        return NS_SUCCEEDED(mData.SetFromBool(val.toBoolean()));
+    if (val.isInt32()) {
+        mData.SetFromInt32(val.toInt32());
+        return true;
+    }
+    if (val.isDouble()) {
+        mData.SetFromDouble(val.toDouble());
+        return true;
+    }
+    if (val.isBoolean()) {
+        mData.SetFromBool(val.toBoolean());
+        return true;
+    }
     // We can't represent symbol on C++ side, so pretend it is void.
-    if (val.isUndefined() || val.isSymbol())
-        return NS_SUCCEEDED(mData.SetToVoid());
-    if (val.isNull())
-        return NS_SUCCEEDED(mData.SetToEmpty());
+    if (val.isUndefined() || val.isSymbol()) {
+        mData.SetToVoid();
+        return true;
+    }
+    if (val.isNull()) {
+        mData.SetToEmpty();
+        return true;
+    }
     if (val.isString()) {
         JSString* str = val.toString();
         if (!str)
@@ -283,8 +292,7 @@ bool XPCVariant::InitializeData(JSContext* cx)
                    "Why do we already have data?");
 
         size_t length = JS_GetStringLength(str);
-        if (!NS_SUCCEEDED(mData.AllocateWStringWithSize(length)))
-            return false;
+        mData.AllocateWStringWithSize(length);
 
         mozilla::Range<char16_t> destChars(mData.u.wstr.mWStringValue, length);
         if (!JS_CopyStringChars(cx, destChars, str))
@@ -302,8 +310,10 @@ bool XPCVariant::InitializeData(JSContext* cx)
     // Let's see if it is a xpcJSID.
 
     const nsID* id = xpc_JSObjectToID(cx, jsobj);
-    if (id)
-        return NS_SUCCEEDED(mData.SetFromID(*id));
+    if (id) {
+        mData.SetFromID(*id);
+        return true;
+    }
 
     // Let's see if it is a js array object.
 
@@ -348,9 +358,12 @@ bool XPCVariant::InitializeData(JSContext* cx)
     nsCOMPtr<nsISupports> wrapper;
     const nsIID& iid = NS_GET_IID(nsISupports);
 
-    return NS_SUCCEEDED(xpc->WrapJS(cx, jsobj,
-                                    iid, getter_AddRefs(wrapper))) &&
-           NS_SUCCEEDED(mData.SetFromInterface(iid, wrapper));
+    if (NS_FAILED(xpc->WrapJS(cx, jsobj, iid, getter_AddRefs(wrapper)))) {
+        return false;
+    }
+
+    mData.SetFromInterface(iid, wrapper);
+    return true;
 }
 
 NS_IMETHODIMP

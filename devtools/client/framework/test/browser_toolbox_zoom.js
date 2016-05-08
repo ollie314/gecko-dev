@@ -1,3 +1,5 @@
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
+/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* Any copyright is dedicated to the Public Domain.
  * http://creativecommons.org/publicdomain/zero/1.0/ */
 
@@ -43,7 +45,7 @@ function testZoomLevel(type, times, expected) {
 function sendZoomKey(id, times) {
   let key = toolbox.doc.getElementById(id).getAttribute("key");
   for (let i = 0; i < times; i++) {
-    EventUtils.synthesizeKey(key, modifiers, toolbox.doc.defaultView);
+    EventUtils.synthesizeKey(key, modifiers, toolbox.win);
   }
 }
 

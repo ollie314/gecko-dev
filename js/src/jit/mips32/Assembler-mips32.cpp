@@ -25,15 +25,15 @@ ABIArgGenerator::next(MIRType type)
 {
     Register destReg;
     switch (type) {
-      case MIRType_Int32:
-      case MIRType_Pointer:
+      case MIRType::Int32:
+      case MIRType::Pointer:
         if (GetIntArgReg(usedArgSlots_, &destReg))
             current_ = ABIArg(destReg);
         else
             current_ = ABIArg(usedArgSlots_ * sizeof(intptr_t));
         usedArgSlots_++;
         break;
-      case MIRType_Float32:
+      case MIRType::Float32:
         if (!usedArgSlots_) {
             current_ = ABIArg(f12.asSingle());
             firstArgFloatSize_ = 1;
@@ -48,7 +48,7 @@ ABIArgGenerator::next(MIRType type)
         }
         usedArgSlots_++;
         break;
-      case MIRType_Double:
+      case MIRType::Double:
         if (!usedArgSlots_) {
             current_ = ABIArg(f12);
             usedArgSlots_ = 2;
@@ -239,29 +239,18 @@ Assembler::trace(JSTracer* trc)
     }
 }
 
-int32_t
-Assembler::ExtractCodeLabelOffset(uint8_t* code) {
-    InstImm* inst = (InstImm*)code;
-    return Assembler::ExtractLuiOriValue(inst, inst->next());
-}
-
 void
-Assembler::Bind(uint8_t* rawCode, AbsoluteLabel* label, const void* address)
+Assembler::Bind(uint8_t* rawCode, CodeOffset* label, const void* address)
 {
-    if (label->used()) {
-        int32_t src = label->offset();
-        do {
-            Instruction* inst = (Instruction*) (rawCode + src);
-            uint32_t next = Assembler::ExtractLuiOriValue(inst, inst->next());
-            Assembler::UpdateLuiOriValue(inst, inst->next(), (uint32_t)address);
-            src = next;
-        } while (src != AbsoluteLabel::INVALID_OFFSET);
+    if (label->bound()) {
+        intptr_t offset = label->offset();
+        Instruction* inst = (Instruction*) (rawCode + offset);
+        Assembler::UpdateLuiOriValue(inst, inst->next(), (uint32_t)address);
     }
-    label->bind();
 }
 
 void
-Assembler::bind(InstImm* inst, uint32_t branch, uint32_t target)
+Assembler::bind(InstImm* inst, uintptr_t branch, uintptr_t target)
 {
     int32_t offset = target - branch;
     InstImm inst_bgezal = InstImm(op_regimm, zero, rt_bgezal, BOffImm16(0));
@@ -321,7 +310,7 @@ void
 Assembler::bind(RepatchLabel* label)
 {
     BufferOffset dest = nextOffset();
-    if (label->used()) {
+    if (label->used() && !oom()) {
         // If the label has a use, then change this use to refer to
         // the bound label;
         BufferOffset b(label->offset());
@@ -399,6 +388,14 @@ Assembler::WriteLuiOriInstructions(Instruction* inst0, Instruction* inst1,
 }
 
 void
+Assembler::PatchDataWithValueCheck(CodeLocationLabel label, ImmPtr newValue,
+                                   ImmPtr expectedValue)
+{
+    PatchDataWithValueCheck(label, PatchedImmPtr(newValue.value),
+                            PatchedImmPtr(expectedValue.value));
+}
+
+void
 Assembler::PatchDataWithValueCheck(CodeLocationLabel label, PatchedImmPtr newValue,
                                    PatchedImmPtr expectedValue)
 {
@@ -419,6 +416,13 @@ Assembler::PatchInstructionImmediate(uint8_t* code, PatchedImmPtr imm)
 {
     InstImm* inst = (InstImm*)code;
     Assembler::UpdateLuiOriValue(inst, inst->next(), (uint32_t)imm.value);
+}
+
+uint32_t
+Assembler::ExtractInstructionImmediate(uint8_t* code)
+{
+    InstImm* inst = (InstImm*)code;
+    return Assembler::ExtractLuiOriValue(inst, inst->next());
 }
 
 void

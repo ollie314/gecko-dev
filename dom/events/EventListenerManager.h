@@ -20,7 +20,7 @@
 class nsIDocShell;
 class nsIDOMEvent;
 class nsIEventListenerInfo;
-class nsPIDOMWindow;
+class nsPIDOMWindowInner;
 class JSTracer;
 
 struct EventTypeData;
@@ -195,6 +195,7 @@ public:
     bool mListenerIsHandler : 1;
     bool mHandlerIsString : 1;
     bool mAllEvents : 1;
+    bool mIsChrome : 1;
 
     EventListenerFlags mFlags;
 
@@ -248,11 +249,11 @@ public:
   }
   void AddEventListener(const nsAString& aType,
                         dom::EventListener* aListener,
-                        bool aUseCapture,
+                        const dom::AddEventListenerOptionsOrBoolean& aOptions,
                         bool aWantsUntrusted)
   {
     EventListenerHolder holder(aListener);
-    AddEventListener(aType, holder, aUseCapture, aWantsUntrusted);
+    AddEventListener(aType, holder, aOptions, aWantsUntrusted);
   }
   void RemoveEventListener(const nsAString& aType,
                            nsIDOMEventListener* aListener,
@@ -263,10 +264,10 @@ public:
   }
   void RemoveEventListener(const nsAString& aType,
                            dom::EventListener* aListener,
-                           bool aUseCapture)
+                           const dom::EventListenerOptionsOrBoolean& aOptions)
   {
     EventListenerHolder holder(aListener);
-    RemoveEventListener(aType, holder, aUseCapture);
+    RemoveEventListener(aType, holder, aOptions);
   }
 
   void AddListenerForAllEvents(nsIDOMEventListener* aListener,
@@ -328,7 +329,7 @@ public:
                    dom::EventTarget* aCurrentTarget,
                    nsEventStatus* aEventStatus)
   {
-    if (mListeners.IsEmpty() || aEvent->mFlags.mPropagationStopped) {
+    if (mListeners.IsEmpty() || aEvent->PropagationStopped()) {
       return;
     }
 
@@ -343,7 +344,7 @@ public:
     // Check if we already know that there is no event listener for the event.
     if (mNoListenerForEvent == aEvent->mMessage &&
         (mNoListenerForEvent != eUnidentifiedEvent ||
-         mNoListenerForEventAtom == aEvent->userType)) {
+         mNoListenerForEventAtom == aEvent->mSpecifiedEventType)) {
       return;
     }
     HandleEventInternal(aPresContext, aEvent, aDOMEvent, aCurrentTarget,
@@ -458,7 +459,16 @@ protected:
                               nsIDOMEvent* aDOMEvent,
                               dom::EventTarget* aCurrentTarget);
 
+  /**
+   * If the given EventMessage has a legacy version that we support, then this
+   * function returns that legacy version. Otherwise, this function simply
+   * returns the passed-in EventMessage.
+   */
+  EventMessage GetLegacyEventMessage(EventMessage aEventMessage) const;
+
   nsIDocShell* GetDocShellForTarget();
+
+  void ProcessApzAwareEventListenerAdd();
 
   /**
    * Compile the "inline" event listener for aListener.  The
@@ -546,8 +556,15 @@ protected:
 
   void AddEventListener(const nsAString& aType,
                         const EventListenerHolder& aListener,
+                        const dom::AddEventListenerOptionsOrBoolean& aOptions,
+                        bool aWantsUntrusted);
+  void AddEventListener(const nsAString& aType,
+                        const EventListenerHolder& aListener,
                         bool aUseCapture,
                         bool aWantsUntrusted);
+  void RemoveEventListener(const nsAString& aType,
+                           const EventListenerHolder& aListener,
+                           const dom::EventListenerOptionsOrBoolean& aOptions);
   void RemoveEventListener(const nsAString& aType,
                            const EventListenerHolder& aListener,
                            bool aUseCapture);
@@ -568,10 +585,12 @@ protected:
   void RemoveAllListeners();
   const EventTypeData* GetTypeDataForIID(const nsIID& aIID);
   const EventTypeData* GetTypeDataForEventName(nsIAtom* aName);
-  nsPIDOMWindow* GetInnerWindowForTarget();
-  already_AddRefed<nsPIDOMWindow> GetTargetAsInnerWindow() const;
+  nsPIDOMWindowInner* GetInnerWindowForTarget();
+  already_AddRefed<nsPIDOMWindowInner> GetTargetAsInnerWindow() const;
 
-  bool ListenerCanHandle(Listener* aListener, WidgetEvent* aEvent);
+  bool ListenerCanHandle(const Listener* aListener,
+                         const WidgetEvent* aEvent,
+                         EventMessage aEventMessage) const;
 
   // BE AWARE, a lot of instances of EventListenerManager will be created.
   // Therefor, we need to keep this class compact.  When you add integer

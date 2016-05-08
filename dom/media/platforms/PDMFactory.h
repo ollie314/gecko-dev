@@ -13,6 +13,8 @@ class CDMProxy;
 
 namespace mozilla {
 
+class DecoderDoctorDiagnostics;
+
 class PDMFactory final {
 public:
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(PDMFactory)
@@ -32,10 +34,12 @@ public:
   CreateDecoder(const TrackInfo& aConfig,
                 FlushableTaskQueue* aTaskQueue,
                 MediaDataDecoderCallback* aCallback,
+                DecoderDoctorDiagnostics* aDiagnostics,
                 layers::LayersBackend aLayersBackend = layers::LayersBackend::LAYERS_NONE,
                 layers::ImageContainer* aImageContainer = nullptr);
 
-  bool SupportsMimeType(const nsACString& aMimeType);
+  bool SupportsMimeType(const nsACString& aMimeType,
+                        DecoderDoctorDiagnostics* aDiagnostics) const;
 
 #ifdef MOZ_EME
   // Creates a PlatformDecoderModule that uses a CDMProxy to decrypt or
@@ -52,12 +56,16 @@ private:
   // Startup the provided PDM and add it to our list if successful.
   bool StartupPDM(PlatformDecoderModule* aPDM);
   // Returns the first PDM in our list supporting the mimetype.
-  already_AddRefed<PlatformDecoderModule> GetDecoder(const nsACString& aMimeType);
+  already_AddRefed<PlatformDecoderModule>
+  GetDecoder(const nsACString& aMimeType,
+             DecoderDoctorDiagnostics* aDiagnostics) const;
+
   already_AddRefed<MediaDataDecoder>
   CreateDecoderWithPDM(PlatformDecoderModule* aPDM,
                        const TrackInfo& aConfig,
                        FlushableTaskQueue* aTaskQueue,
                        MediaDataDecoderCallback* aCallback,
+                       DecoderDoctorDiagnostics* aDiagnostics,
                        layers::LayersBackend aLayersBackend,
                        layers::ImageContainer* aImageContainer);
 
@@ -71,6 +79,9 @@ private:
   static bool sAndroidMCDecoderEnabled;
 #endif
   static bool sGMPDecoderEnabled;
+#ifdef MOZ_FFVPX
+  static bool sFFVPXDecoderEnabled;
+#endif
 #ifdef MOZ_FFMPEG
   static bool sFFmpegDecoderEnabled;
 #endif
@@ -83,6 +94,10 @@ private:
 
   nsTArray<RefPtr<PlatformDecoderModule>> mCurrentPDMs;
   RefPtr<PlatformDecoderModule> mEMEPDM;
+
+  bool mWMFFailedToLoad = false;
+  bool mFFmpegFailedToLoad = false;
+  bool mGMPPDMFailedToStartup = false;
 };
 
 } // namespace mozilla

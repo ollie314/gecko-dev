@@ -7,6 +7,7 @@
 #include "MDNSResponderReply.h"
 #include "mozilla/Endian.h"
 #include "mozilla/Logging.h"
+#include "mozilla/ScopeExit.h"
 #include "nsComponentManagerUtils.h"
 #include "nsCOMPtr.h"
 #include "nsDebug.h"
@@ -25,19 +26,14 @@
 
 #include "nsASocketHandler.h"
 
-inline PRLogModuleInfo*
-GetOperatorLog()
-{
-  static PRLogModuleInfo* log = PR_NewLogModule("MDNSResponderOperator");
-  return log;
-}
-#undef LOG_I
-#define LOG_I(...) MOZ_LOG(GetOperatorLog(), mozilla::LogLevel::Debug, (__VA_ARGS__))
-#undef LOG_E
-#define LOG_E(...) MOZ_LOG(GetOperatorLog(), mozilla::LogLevel::Error, (__VA_ARGS__))
-
 namespace mozilla {
 namespace net {
+
+static LazyLogModule gMDNSLog("MDNSResponderOperator");
+#undef LOG_I
+#define LOG_I(...) MOZ_LOG(mozilla::net::gMDNSLog, mozilla::LogLevel::Debug, (__VA_ARGS__))
+#undef LOG_E
+#define LOG_E(...) MOZ_LOG(mozilla::net::gMDNSLog, mozilla::LogLevel::Error, (__VA_ARGS__))
 
 class MDNSResponderOperator::ServiceWatcher final
   : public nsASocketHandler
@@ -78,9 +74,8 @@ public:
     PR_Close(mFD);
     mFD = nullptr;
 
-    nsCOMPtr<nsIRunnable> ev =
-      NS_NewRunnableMethod(this, &ServiceWatcher::Deallocate);
-    mThread->Dispatch(ev, NS_DISPATCH_NORMAL);
+    mThread->Dispatch(NewRunnableMethod(this, &ServiceWatcher::Deallocate),
+                      NS_DISPATCH_NORMAL);
   }
 
   virtual void IsLocal(bool *aIsLocal) override { *aIsLocal = true; }
@@ -93,9 +88,11 @@ public:
   virtual uint64_t ByteCountSent() override { return 0; }
   virtual uint64_t ByteCountReceived() override { return 0; }
 
-  explicit ServiceWatcher(DNSServiceRef aService)
+  explicit ServiceWatcher(DNSServiceRef aService,
+                          MDNSResponderOperator* aOperator)
     : mThread(nullptr)
     , mSts(nullptr)
+    , mOperatorHolder(aOperator)
     , mService(aService)
     , mFD(nullptr)
     , mAttached(false)
@@ -151,12 +148,13 @@ private:
       DNSServiceRefDeallocate(mService);
       mService = nullptr;
     }
+    mOperatorHolder = nullptr;
   }
 
   nsresult PostEvent(void(ServiceWatcher::*func)(void))
   {
-    nsCOMPtr<nsIRunnable> ev = NS_NewRunnableMethod(this, func);
-    return gSocketTransportService->Dispatch(ev, NS_DISPATCH_NORMAL);
+    return gSocketTransportService->Dispatch(NewRunnableMethod(this, func),
+                                             NS_DISPATCH_NORMAL);
   }
 
   void OnMsgClose()
@@ -220,7 +218,7 @@ private:
     //
     if (!gSocketTransportService->CanAttachSocket()) {
       nsCOMPtr<nsIRunnable> event =
-        NS_NewRunnableMethod(this, &ServiceWatcher::OnMsgAttach);
+        NewRunnableMethod(this, &ServiceWatcher::OnMsgAttach);
 
       nsresult rv = gSocketTransportService->NotifyWhenCanAttachSocket(event);
       if (NS_FAILED(rv)) {
@@ -248,6 +246,7 @@ private:
 
   nsCOMPtr<nsIThread> mThread;
   RefPtr<nsSocketTransportService> mSts;
+  RefPtr<MDNSResponderOperator> mOperatorHolder;
   DNSServiceRef mService;
   PRFileDesc* mFD;
   bool mAttached;
@@ -285,7 +284,6 @@ MDNSResponderOperator::Start()
 nsresult
 MDNSResponderOperator::Stop()
 {
-  mThread = nullptr;
   return ResetService(nullptr);
 }
 
@@ -301,7 +299,7 @@ MDNSResponderOperator::ResetService(DNSServiceRef aService)
     }
 
     if (aService) {
-      RefPtr<ServiceWatcher> watcher = new ServiceWatcher(aService);
+      RefPtr<ServiceWatcher> watcher = new ServiceWatcher(aService, this);
       if (NS_WARN_IF(NS_FAILED(rv = watcher->Init()))) {
         return rv;
       }
@@ -450,14 +448,14 @@ RegisterOperator::Start()
     while (NS_SUCCEEDED(enumerator->HasMoreElements(&hasMoreElements)) &&
            hasMoreElements) {
       nsCOMPtr<nsISupports> element;
-      MOZ_ALWAYS_TRUE(NS_SUCCEEDED(enumerator->GetNext(getter_AddRefs(element))));
+      MOZ_ALWAYS_SUCCEEDS(enumerator->GetNext(getter_AddRefs(element)));
       nsCOMPtr<nsIProperty> property = do_QueryInterface(element);
       MOZ_ASSERT(property);
 
       nsAutoString name;
       nsCOMPtr<nsIVariant> value;
-      MOZ_ALWAYS_TRUE(NS_SUCCEEDED(property->GetName(name)));
-      MOZ_ALWAYS_TRUE(NS_SUCCEEDED(property->GetValue(getter_AddRefs(value))));
+      MOZ_ALWAYS_SUCCEEDS(property->GetName(name));
+      MOZ_ALWAYS_SUCCEEDS(property->GetValue(getter_AddRefs(value)));
 
       nsAutoCString str;
       if (NS_WARN_IF(NS_FAILED(value->GetAsACString(str)))) {
@@ -546,7 +544,17 @@ RegisterOperator::Reply(DNSServiceRef aSdRef,
   if (NS_WARN_IF(NS_FAILED(info->SetDomainName(aDomain)))) { return; }
 
   if (kDNSServiceErr_NoError == aErrorCode) {
-    mListener->OnServiceRegistered(info);
+    if (aFlags & kDNSServiceFlagsAdd) {
+      mListener->OnServiceRegistered(info);
+    } else {
+      // If a successfully-registered name later suffers a name conflict
+      // or similar problem and has to be deregistered, the callback will
+      // be invoked with the kDNSServiceFlagsAdd flag not set.
+      LOG_E("RegisterOperator::Reply: deregister");
+      if (NS_WARN_IF(NS_FAILED(Stop()))) {
+        return;
+      }
+    }
   } else {
     mListener->OnRegistrationFailed(info, aErrorCode);
   }
@@ -557,7 +565,6 @@ ResolveOperator::ResolveOperator(nsIDNSServiceInfo* aServiceInfo,
   : MDNSResponderOperator()
   , mServiceInfo(aServiceInfo)
   , mListener(aListener)
-  , mDeleteProtector()
 {
 }
 
@@ -596,15 +603,7 @@ ResolveOperator::Start()
     return NS_ERROR_FAILURE;
   }
 
-  mDeleteProtector = this;
   return ResetService(service);
-}
-
-nsresult
-ResolveOperator::Stop()
-{
-  nsresult rv = MDNSResponderOperator::Stop();
-  return rv;
 }
 
 void
@@ -620,7 +619,9 @@ ResolveOperator::Reply(DNSServiceRef aSdRef,
 {
   MOZ_ASSERT(GetThread() == NS_GetCurrentThread());
 
-  mDeleteProtector = nullptr;
+  auto guard = MakeScopeExit([this] {
+    NS_WARN_IF(NS_FAILED(Stop()));
+  });
 
   if (NS_WARN_IF(kDNSServiceErr_NoError != aErrorCode)) {
     LOG_E("ResolveOperator::Reply (%d)", aErrorCode);
@@ -689,7 +690,6 @@ GetAddrInfoOperator::GetAddrInfoOperator(nsIDNSServiceInfo* aServiceInfo,
   : MDNSResponderOperator()
   , mServiceInfo(aServiceInfo)
   , mListener(aListener)
-  , mDeleteProtector()
 {
 }
 
@@ -723,15 +723,7 @@ GetAddrInfoOperator::Start()
     return NS_ERROR_FAILURE;
   }
 
-  mDeleteProtector = this;
   return ResetService(service);
-}
-
-nsresult
-GetAddrInfoOperator::Stop()
-{
-  nsresult rv = MDNSResponderOperator::Stop();
-  return rv;
 }
 
 void
@@ -745,7 +737,9 @@ GetAddrInfoOperator::Reply(DNSServiceRef aSdRef,
 {
   MOZ_ASSERT(GetThread() == NS_GetCurrentThread());
 
-  mDeleteProtector = nullptr;
+  auto guard = MakeScopeExit([this] {
+    NS_WARN_IF(NS_FAILED(Stop()));
+  });
 
   if (NS_WARN_IF(kDNSServiceErr_NoError != aErrorCode)) {
     LOG_E("GetAddrInfoOperator::Reply (%d)", aErrorCode);
@@ -762,13 +756,20 @@ GetAddrInfoOperator::Reply(DNSServiceRef aSdRef,
   nsCOMPtr<nsIDNSServiceInfo> info = new nsDNSServiceInfo(mServiceInfo);
   if (NS_WARN_IF(NS_FAILED(info->SetAddress(addressStr)))) { return; }
 
+  /**
+   * |kDNSServiceFlagsMoreComing| means this callback will be one or more
+   * callback events later, so this instance should be kept alive until all
+   * follow-up events are processed.
+   */
+  if (aFlags & kDNSServiceFlagsMoreComing) {
+    guard.release();
+  }
+
   if (kDNSServiceErr_NoError == aErrorCode) {
     mListener->OnServiceResolved(info);
   } else {
     mListener->OnResolveFailed(info, aErrorCode);
   }
-
-  NS_WARN_IF(NS_FAILED(Stop()));
 }
 
 } // namespace net

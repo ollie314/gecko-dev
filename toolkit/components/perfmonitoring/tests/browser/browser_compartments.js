@@ -60,7 +60,7 @@ function frameScript() {
     });
   } catch (ex) {
     Cu.reportError("Error in content (setup): " + ex);
-    Cu.reportError(ex.stack);    
+    Cu.reportError(ex.stack);
   }
 }
 
@@ -311,5 +311,5 @@ add_task(function* test() {
   isShuttingDown = true;
 
   // Cleanup
-  gBrowser.removeTab(newTab);
+  gBrowser.removeTab(newTab, {skipPermitUnload: true});
 });

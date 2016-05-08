@@ -1,3 +1,5 @@
+import os
+
 HG_SHARE_BASE_DIR = "/builds/hg-shared"
 
 PYTHON_DIR = "/tools/python27"
@@ -23,9 +25,9 @@ config = {
         'hgtool.py': '%(abs_tools_dir)s/buildfarm/utils/hgtool.py',
         'gittool.py': '%(abs_tools_dir)s/buildfarm/utils/gittool.py',
         'tooltool.py': '/tools/tooltool.py',
+        "virtualenv": [PYTHON_DIR + "/bin/python", "/tools/misc-python/virtualenv.py"],
     },
 
-    "purge_minsize": 18,
     "force_clobber": True,
     'vcs_share_base': HG_SHARE_BASE_DIR,
 
@@ -36,7 +38,12 @@ config = {
     }],
 
     "upload_remote_baseuri": 'https://ftp-ssl.mozilla.org/',
+    "default_blob_upload_servers": [
+        "https://blobupload.elasticbeanstalk.com",
+    ],
+    "blob_uploader_auth_file": os.path.join(os.getcwd(), "oauth.txt"),
 
+    "virtualenv_path": '%s/venv' % os.getcwd(),
     'tools_dir': "/tools",
     'compiler_manifest': "build/gcc.manifest",
     'b2g_compiler_manifest': "build/gcc-b2g.manifest",
@@ -75,6 +82,8 @@ config = {
     ],
     "mock_files": [
         ("/home/cltbld/.ssh", "/home/mock_mozilla/.ssh"),
+        ('/home/cltbld/.hgrc', '/builds/.hgrc'),
+        ('/builds/relengapi.tok', '/builds/relengapi.tok'),
         ("/tools/tooltool.py", "/tools/tooltool.py"),
         ('/usr/local/lib/hgext', '/usr/local/lib/hgext'),
     ],

@@ -31,6 +31,9 @@
 namespace js {
 namespace jit {
 
+// How far forward/back can a jump go? Provide a generous buffer for thunks.
+static const uint32_t JumpImmediateRange = 100 * 1024;
+
 class Registers
 {
   public:
@@ -128,10 +131,10 @@ class Registers
         uintptr_t r;
     };
 
+    static const char * const RegNames[];
     static const char* GetName(Code code) {
         MOZ_ASSERT(code < Total);
-        static const char * const Names[] = REGISTERS_NAMES;
-        return Names[code];
+        return RegNames[code];
     }
     static const char* GetName(Encoding i) {
         return GetName(Code(i));
@@ -143,12 +146,12 @@ class Registers
     static const Encoding Invalid = invalid_reg;
 
     static const uint32_t Total = 32;
-    static const uint32_t Allocatable = REGISTERS_ALLOCATABLE;
+    static const uint32_t Allocatable;
 
     typedef uint32_t SetType;
     static const SetType AllMask = 0xffffffff;
     static const SetType SharedArgRegMask = (1 << a0) | (1 << a1) | (1 << a2) | (1 << a3);
-    static const SetType ArgRegMask = REGISTERS_ARGREGMASK;
+    static const SetType ArgRegMask;
 
     static const SetType VolatileMask =
         (1 << Registers::v0) |
@@ -200,11 +203,11 @@ class Registers
     static const SetType TempMask = VolatileMask & ~NonAllocatableMask;
 
     // Registers returned from a JS -> JS call.
-    static const SetType JSCallMask = REGISTERS_JSCALLMASK;
+    static const SetType JSCallMask;
 
     // Registers returned from a JS -> C call.
     static const SetType SharedCallMask = (1 << Registers::v0);
-    static const SetType CallMask = REGISTERS_CALLMASK;
+    static const SetType CallMask;
 
     static const SetType AllocatableMask = AllMask & ~NonAllocatableMask;
 
@@ -289,8 +292,7 @@ class TypedRegisterSet;
 class FloatRegisterMIPSShared
 {
   public:
-    bool isInt32x4() const { return false; }
-    bool isFloat32x4() const { return false; }
+    bool isSimd128() const { return false; }
 
     typedef FloatRegistersMIPSShared::SetType SetType;
 
@@ -306,8 +308,15 @@ class FloatRegisterMIPSShared
     }
 };
 
-uint32_t GetMIPSFlags();
-bool hasFPU();
+namespace mips_private {
+    extern uint32_t Flags;
+    extern bool hasFPU;
+    extern bool isLoongson;
+}
+
+inline uint32_t GetMIPSFlags() { return mips_private::Flags; }
+inline bool hasFPU() { return mips_private::hasFPU; }
+inline bool isLoongson() { return mips_private::isLoongson; }
 
 // MIPS doesn't have double registers that can NOT be treated as float32.
 inline bool
@@ -323,11 +332,11 @@ hasMultiAlias() {
     return true;
 }
 
-// See the comments above AsmJSMappedSize in AsmJSValidate.h for more info.
+// See MIRGenerator::foldableOffsetRange for more info.
 // TODO: Implement this for MIPS. Note that it requires Codegen to respect the
 // offset field of AsmJSHeapAccess.
-static const size_t AsmJSCheckedImmediateRange = 0;
-static const size_t AsmJSImmediateRange = 0;
+static const size_t WasmCheckedImmediateRange = 0;
+static const size_t WasmImmediateRange = 0;
 
 } // namespace jit
 } // namespace js

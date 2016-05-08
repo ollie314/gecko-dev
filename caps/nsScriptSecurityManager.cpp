@@ -11,6 +11,7 @@
 #include "xpcprivate.h"
 #include "XPCWrapper.h"
 #include "nsIAppsService.h"
+#include "nsIInputStreamChannel.h"
 #include "nsILoadContext.h"
 #include "nsIServiceManager.h"
 #include "nsIScriptObjectPrincipal.h"
@@ -27,6 +28,7 @@
 #include "nsXPIDLString.h"
 #include "nsCRT.h"
 #include "nsCRTGlue.h"
+#include "nsDocShell.h"
 #include "nsError.h"
 #include "nsDOMCID.h"
 #include "nsIXPConnect.h"
@@ -259,13 +261,25 @@ uint16_t
 nsScriptSecurityManager::AppStatusForPrincipal(nsIPrincipal *aPrin)
 {
     uint32_t appId = aPrin->GetAppId();
-    bool inMozBrowser = aPrin->GetIsInBrowserElement();
+
+    // After bug 1238160, the principal no longer knows how to answer "is this a
+    // browser element", which is really what this code path wants. Currently,
+    // desktop is the only platform where we intend to disable isolation on a
+    // browser frame, so non-desktop should be able to assume that
+    // inIsolatedMozBrowser is true for all mozbrowser frames.  Additionally,
+    // apps are no longer used on desktop, so appId is always NO_APP_ID.  We use
+    // a release assertion in nsFrameLoader::OwnerIsIsolatedMozBrowserFrame so
+    // that platforms with apps can assume inIsolatedMozBrowser is true for all
+    // mozbrowser frames.
+    bool inIsolatedMozBrowser = aPrin->GetIsInIsolatedMozBrowserElement();
+
     NS_WARN_IF_FALSE(appId != nsIScriptSecurityManager::UNKNOWN_APP_ID,
                      "Asking for app status on a principal with an unknown app id");
     // Installed apps have a valid app id (not NO_APP_ID or UNKNOWN_APP_ID)
     // and they are not inside a mozbrowser.
     if (appId == nsIScriptSecurityManager::NO_APP_ID ||
-        appId == nsIScriptSecurityManager::UNKNOWN_APP_ID || inMozBrowser)
+        appId == nsIScriptSecurityManager::UNKNOWN_APP_ID ||
+        inIsolatedMozBrowser)
     {
         return nsIPrincipal::APP_STATUS_NOT_INSTALLED;
     }
@@ -290,8 +304,13 @@ nsScriptSecurityManager::AppStatusForPrincipal(nsIPrincipal *aPrin)
 
     // The app could contain a cross-origin iframe - make sure that the content
     // is actually same-origin with the app.
-    MOZ_ASSERT(inMozBrowser == false, "Checked this above");
-    OriginAttributes attrs(appId, false);
+    MOZ_ASSERT(inIsolatedMozBrowser == false, "Checked this above");
+    nsAutoCString suffix;
+    PrincipalOriginAttributes attrs;
+    NS_ENSURE_TRUE(attrs.PopulateFromOrigin(NS_ConvertUTF16toUTF8(appOrigin), suffix),
+                   nsIPrincipal::APP_STATUS_NOT_INSTALLED);
+    attrs.mAppId = appId;
+    attrs.mInIsolatedMozBrowser = false;
     nsCOMPtr<nsIPrincipal> appPrin = BasePrincipal::CreateCodebasePrincipal(appURI, attrs);
     NS_ENSURE_TRUE(appPrin, nsIPrincipal::APP_STATUS_NOT_INSTALLED);
     return aPrin->Equals(appPrin) ? status
@@ -311,6 +330,23 @@ NS_IMETHODIMP
 nsScriptSecurityManager::GetChannelResultPrincipal(nsIChannel* aChannel,
                                                    nsIPrincipal** aPrincipal)
 {
+  return GetChannelResultPrincipal(aChannel, aPrincipal,
+                                   /*aIgnoreSandboxing*/ false);
+}
+
+nsresult
+nsScriptSecurityManager::GetChannelResultPrincipalIfNotSandboxed(nsIChannel* aChannel,
+                                                                 nsIPrincipal** aPrincipal)
+{
+  return GetChannelResultPrincipal(aChannel, aPrincipal,
+                                   /*aIgnoreSandboxing*/ true);
+}
+
+nsresult
+nsScriptSecurityManager::GetChannelResultPrincipal(nsIChannel* aChannel,
+                                                   nsIPrincipal** aPrincipal,
+                                                   bool aIgnoreSandboxing)
+{
     NS_PRECONDITION(aChannel, "Must have channel!");
     nsCOMPtr<nsISupports> owner;
     aChannel->GetOwner(getter_AddRefs(owner));
@@ -325,15 +361,33 @@ nsScriptSecurityManager::GetChannelResultPrincipal(nsIChannel* aChannel,
     nsCOMPtr<nsILoadInfo> loadInfo;
     aChannel->GetLoadInfo(getter_AddRefs(loadInfo));
     if (loadInfo) {
-        if (loadInfo->GetLoadingSandboxed()) {
-            RefPtr<nsNullPrincipal> prin =
-              nsNullPrincipal::CreateWithInheritedAttributes(loadInfo->LoadingPrincipal());
-            NS_ENSURE_TRUE(prin, NS_ERROR_FAILURE);
+        if (!aIgnoreSandboxing && loadInfo->GetLoadingSandboxed()) {
+            RefPtr<nsNullPrincipal> prin;
+            if (loadInfo->LoadingPrincipal()) {
+              prin =
+                nsNullPrincipal::CreateWithInheritedAttributes(loadInfo->LoadingPrincipal());
+            } else {
+              NeckoOriginAttributes nAttrs;
+              loadInfo->GetOriginAttributes(&nAttrs);
+              PrincipalOriginAttributes pAttrs;
+              pAttrs.InheritFromNecko(nAttrs);
+              prin = nsNullPrincipal::Create(pAttrs);
+            }
             prin.forget(aPrincipal);
             return NS_OK;
         }
 
-        if (loadInfo->GetForceInheritPrincipal()) {
+        bool forceInterit = loadInfo->GetForceInheritPrincipal();
+        if (aIgnoreSandboxing && !forceInterit) {
+          // Check if SEC_FORCE_INHERIT_PRINCIPAL was dropped because of
+          // sandboxing:
+          if (loadInfo->GetLoadingSandboxed() &&
+              (loadInfo->GetSecurityFlags() &
+               nsILoadInfo::SEC_FORCE_INHERIT_PRINCIPAL_WAS_DROPPED)) {
+            forceInterit = true;
+          }
+        }
+        if (forceInterit) {
             NS_ADDREF(*aPrincipal = loadInfo->TriggeringPrincipal());
             return NS_OK;
         }
@@ -362,7 +416,7 @@ nsScriptSecurityManager::GetChannelResultPrincipal(nsIChannel* aChannel,
 }
 
 nsresult
-nsScriptSecurityManager::MaybeSetAddonIdFromURI(OriginAttributes& aAttrs, nsIURI* aURI)
+nsScriptSecurityManager::MaybeSetAddonIdFromURI(PrincipalOriginAttributes& aAttrs, nsIURI* aURI)
 {
   nsAutoCString scheme;
   nsresult rv = aURI->GetScheme(scheme);
@@ -401,11 +455,34 @@ nsScriptSecurityManager::GetChannelURIPrincipal(nsIChannel* aChannel,
     nsCOMPtr<nsILoadContext> loadContext;
     NS_QueryNotificationCallbacks(aChannel, loadContext);
 
-    if (loadContext) {
-        return GetLoadContextCodebasePrincipal(uri, loadContext, aPrincipal);
+    nsCOMPtr<nsILoadInfo> loadInfo;
+    aChannel->GetLoadInfo(getter_AddRefs(loadInfo));
+    nsContentPolicyType contentPolicyType = nsIContentPolicy::TYPE_INVALID;
+    if (loadInfo) {
+      contentPolicyType = loadInfo->GetExternalContentPolicyType();
     }
 
-    OriginAttributes attrs(UNKNOWN_APP_ID, false);
+    PrincipalOriginAttributes attrs;
+    if (nsIContentPolicy::TYPE_DOCUMENT == contentPolicyType ||
+        nsIContentPolicy::TYPE_SUBDOCUMENT == contentPolicyType) {
+      // If it's document or sub-document, inherit originAttributes from
+      // the document.
+      if (loadContext) {
+        DocShellOriginAttributes docShellAttrs;
+        loadContext->GetOriginAttributes(docShellAttrs);
+        attrs.InheritFromDocShellToDoc(docShellAttrs, uri);
+      }
+    } else {
+      // Inherit origin attributes from loading principal if any.
+      nsCOMPtr<nsIPrincipal> loadingPrincipal;
+      if (loadInfo) {
+        loadInfo->GetLoadingPrincipal(getter_AddRefs(loadingPrincipal));
+      }
+      if (loadingPrincipal) {
+        attrs = BasePrincipal::Cast(loadingPrincipal)->OriginAttributesRef();
+      }
+    }
+
     rv = MaybeSetAddonIdFromURI(attrs, uri);
     NS_ENSURE_SUCCESS(rv, rv);
     nsCOMPtr<nsIPrincipal> prin = BasePrincipal::CreateCodebasePrincipal(uri, attrs);
@@ -430,7 +507,6 @@ nsScriptSecurityManager::IsSystemPrincipal(nsIPrincipal* aPrincipal,
 ////////////////////////////////////
 NS_IMPL_ISUPPORTS(nsScriptSecurityManager,
                   nsIScriptSecurityManager,
-                  nsIChannelEventSink,
                   nsIObserver)
 
 ///////////////////////////////////////////////////
@@ -472,6 +548,8 @@ nsScriptSecurityManager::ContentSecurityPolicyPermitsJSAction(JSContext *cx)
             if (const char *file = scriptFilename.get()) {
                 CopyUTF8toUTF16(nsDependentCString(file), fileName);
             }
+        } else {
+            MOZ_ASSERT(!JS_IsExceptionPending(cx));
         }
         csp->LogViolationDetails(nsIContentSecurityPolicy::VIOLATION_TYPE_EVAL,
                                  fileName,
@@ -565,7 +643,7 @@ static nsresult
 DenyAccessIfURIHasFlags(nsIURI* aURI, uint32_t aURIFlags)
 {
     NS_PRECONDITION(aURI, "Must have URI!");
-    
+
     bool uriHasFlags;
     nsresult rv =
         NS_URIChainHasFlags(aURI, aURIFlags, &uriHasFlags);
@@ -605,6 +683,42 @@ EqualOrSubdomain(nsIURI* aProbeArg, nsIURI* aBase)
         rv = probe->SetHost(newHost);
         NS_ENSURE_SUCCESS(rv, false);
     }
+}
+
+static bool
+AllSchemesMatch(nsIURI* aURI, nsIURI* aOtherURI)
+{
+    nsCOMPtr<nsINestedURI> nestedURI = do_QueryInterface(aURI);
+    nsCOMPtr<nsINestedURI> nestedOtherURI = do_QueryInterface(aOtherURI);
+    auto stringComparator = nsCaseInsensitiveCStringComparator();
+    if (!nestedURI && !nestedOtherURI) {
+        // Neither of the URIs is nested, compare their schemes directly:
+        nsAutoCString scheme, otherScheme;
+        aURI->GetScheme(scheme);
+        aOtherURI->GetScheme(otherScheme);
+        return scheme.Equals(otherScheme, stringComparator);
+    }
+    while (nestedURI && nestedOtherURI) {
+        nsCOMPtr<nsIURI> currentURI = do_QueryInterface(nestedURI);
+        nsCOMPtr<nsIURI> currentOtherURI = do_QueryInterface(nestedOtherURI);
+        nsAutoCString scheme, otherScheme;
+        currentURI->GetScheme(scheme);
+        currentOtherURI->GetScheme(otherScheme);
+        if (!scheme.Equals(otherScheme, stringComparator)) {
+            return false;
+        }
+
+        nestedURI->GetInnerURI(getter_AddRefs(currentURI));
+        nestedOtherURI->GetInnerURI(getter_AddRefs(currentOtherURI));
+        nestedURI = do_QueryInterface(currentURI);
+        nestedOtherURI = do_QueryInterface(currentOtherURI);
+    }
+    if (!!nestedURI != !!nestedOtherURI) {
+        // If only one of the scheme chains runs out at one point, clearly the chains
+        // aren't of the same length, so we bail:
+        return false;
+    }
+    return true;
 }
 
 NS_IMETHODIMP
@@ -663,7 +777,7 @@ nsScriptSecurityManager::CheckLoadURIWithPrincipal(nsIPrincipal* aPrincipal,
                  "must have a URI!");
         return NS_ERROR_UNEXPECTED;
     }
-    
+
     // Automatic loads are not allowed from certain protocols.
     if (aFlags & nsIScriptSecurityManager::LOAD_IS_AUTOMATIC_DOCUMENT_REPLACEMENT) {
         nsresult rv =
@@ -707,14 +821,30 @@ nsScriptSecurityManager::CheckLoadURIWithPrincipal(nsIPrincipal* aPrincipal,
     rv = sourceBaseURI->GetScheme(sourceScheme);
     if (NS_FAILED(rv)) return rv;
 
+    // When comparing schemes, if the relevant pref is set, view-source URIs
+    // are reachable from same-protocol (so e.g. file: can link to
+    // view-source:file). This is required for reftests.
+    static bool sViewSourceReachableFromInner = false;
+    static bool sCachedViewSourcePref = false;
+    if (!sCachedViewSourcePref) {
+        sCachedViewSourcePref = true;
+        mozilla::Preferences::AddBoolVarCache(&sViewSourceReachableFromInner,
+            "security.view-source.reachable-from-inner-protocol");
+    }
+
+    bool targetIsViewSource = false;
+
     if (sourceScheme.LowerCaseEqualsLiteral(NS_NULLPRINCIPAL_SCHEME)) {
         // A null principal can target its own URI.
         if (sourceURI == aTargetURI) {
             return NS_OK;
         }
     }
-    else if (targetScheme.Equals(sourceScheme,
-                                 nsCaseInsensitiveCStringComparator()))
+    else if (AllSchemesMatch(sourceURI, aTargetURI) ||
+             (sViewSourceReachableFromInner &&
+              sourceScheme.EqualsIgnoreCase(targetScheme.get()) &&
+              NS_SUCCEEDED(aTargetURI->SchemeIs("view-source", &targetIsViewSource)) &&
+              targetIsViewSource))
     {
         // every scheme can access another URI from the same scheme,
         // as long as they don't represent null principals...
@@ -763,7 +893,7 @@ nsScriptSecurityManager::CheckLoadURIWithPrincipal(nsIPrincipal* aPrincipal,
     // at the flags for our one URI.
 
     // Check for system target URI
-    rv = DenyAccessIfURIHasFlags(targetBaseURI,
+    rv = DenyAccessIfURIHasFlags(aTargetURI,
                                  nsIProtocolHandler::URI_DANGEROUS_TO_LOAD);
     if (NS_FAILED(rv)) {
         // Deny access, since the origin principal is not system
@@ -831,7 +961,7 @@ nsScriptSecurityManager::CheckLoadURIWithPrincipal(nsIPrincipal* aPrincipal,
     }
 
     // Check for target URI pointing to a file
-    rv = NS_URIChainHasFlags(targetBaseURI,
+    rv = NS_URIChainHasFlags(aTargetURI,
                              nsIProtocolHandler::URI_IS_LOCAL_FILE,
                              &hasFlags);
     NS_ENSURE_SUCCESS(rv, rv);
@@ -881,7 +1011,7 @@ nsScriptSecurityManager::CheckLoadURIWithPrincipal(nsIPrincipal* aPrincipal,
             console->LogStringMessage(message.get());
         }
     }
-    
+
     return NS_OK;
 }
 
@@ -988,7 +1118,7 @@ bool
 nsScriptSecurityManager::ScriptAllowed(JSObject *aGlobal)
 {
     MOZ_ASSERT(aGlobal);
-    MOZ_ASSERT(JS_IsGlobalObject(aGlobal) || js::IsOuterObject(aGlobal));
+    MOZ_ASSERT(JS_IsGlobalObject(aGlobal) || js::IsWindowProxy(aGlobal));
 
     // Check the bits on the compartment private.
     return xpc::Scriptability::Get(aGlobal).Allowed();
@@ -1008,7 +1138,7 @@ NS_IMETHODIMP
 nsScriptSecurityManager::GetSimpleCodebasePrincipal(nsIURI* aURI,
                                                     nsIPrincipal** aPrincipal)
 {
-  OriginAttributes attrs(UNKNOWN_APP_ID, false);
+  PrincipalOriginAttributes attrs(UNKNOWN_APP_ID, false);
   nsCOMPtr<nsIPrincipal> prin = BasePrincipal::CreateCodebasePrincipal(aURI, attrs);
   prin.forget(aPrincipal);
   return *aPrincipal ? NS_OK : NS_ERROR_FAILURE;
@@ -1018,7 +1148,7 @@ NS_IMETHODIMP
 nsScriptSecurityManager::GetNoAppCodebasePrincipal(nsIURI* aURI,
                                                    nsIPrincipal** aPrincipal)
 {
-  OriginAttributes attrs(NO_APP_ID, false);
+  PrincipalOriginAttributes attrs(NO_APP_ID, false);
   nsCOMPtr<nsIPrincipal> prin = BasePrincipal::CreateCodebasePrincipal(aURI, attrs);
   prin.forget(aPrincipal);
   return *aPrincipal ? NS_OK : NS_ERROR_FAILURE;
@@ -1035,7 +1165,7 @@ NS_IMETHODIMP
 nsScriptSecurityManager::CreateCodebasePrincipal(nsIURI* aURI, JS::Handle<JS::Value> aOriginAttributes,
                                                  JSContext* aCx, nsIPrincipal** aPrincipal)
 {
-  OriginAttributes attrs;
+  PrincipalOriginAttributes attrs;
   if (!aOriginAttributes.isObject() || !attrs.Init(aCx, aOriginAttributes)) {
       return NS_ERROR_INVALID_ARG;
   }
@@ -1065,12 +1195,11 @@ NS_IMETHODIMP
 nsScriptSecurityManager::CreateNullPrincipal(JS::Handle<JS::Value> aOriginAttributes,
                                              JSContext* aCx, nsIPrincipal** aPrincipal)
 {
-  OriginAttributes attrs;
+  PrincipalOriginAttributes attrs;
   if (!aOriginAttributes.isObject() || !attrs.Init(aCx, aOriginAttributes)) {
       return NS_ERROR_INVALID_ARG;
   }
   nsCOMPtr<nsIPrincipal> prin = nsNullPrincipal::Create(attrs);
-  NS_ENSURE_TRUE(prin, NS_ERROR_FAILURE);
   prin.forget(aPrincipal);
   return NS_OK;
 }
@@ -1093,13 +1222,13 @@ nsScriptSecurityManager::CreateExpandedPrincipal(nsIPrincipal** aPrincipalArray,
 NS_IMETHODIMP
 nsScriptSecurityManager::GetAppCodebasePrincipal(nsIURI* aURI,
                                                  uint32_t aAppId,
-                                                 bool aInMozBrowser,
+                                                 bool aInIsolatedMozBrowser,
                                                  nsIPrincipal** aPrincipal)
 {
   NS_ENSURE_TRUE(aAppId != nsIScriptSecurityManager::UNKNOWN_APP_ID,
                  NS_ERROR_INVALID_ARG);
 
-  OriginAttributes attrs(aAppId, aInMozBrowser);
+  PrincipalOriginAttributes attrs(aAppId, aInIsolatedMozBrowser);
   nsCOMPtr<nsIPrincipal> prin = BasePrincipal::CreateCodebasePrincipal(aURI, attrs);
   prin.forget(aPrincipal);
   return *aPrincipal ? NS_OK : NS_ERROR_FAILURE;
@@ -1111,9 +1240,12 @@ nsScriptSecurityManager::
                                   nsILoadContext* aLoadContext,
                                   nsIPrincipal** aPrincipal)
 {
-  OriginAttributes attrs;
-  bool result = attrs.CopyFromLoadContext(aLoadContext);
+  DocShellOriginAttributes docShellAttrs;
+  bool result = aLoadContext->GetOriginAttributes(docShellAttrs);;
   NS_ENSURE_TRUE(result, NS_ERROR_FAILURE);
+
+  PrincipalOriginAttributes attrs;
+  attrs.InheritFromDocShellToDoc(docShellAttrs, aURI);
 
   nsresult rv = MaybeSetAddonIdFromURI(attrs, aURI);
   NS_ENSURE_SUCCESS(rv, rv);
@@ -1127,10 +1259,8 @@ nsScriptSecurityManager::GetDocShellCodebasePrincipal(nsIURI* aURI,
                                                       nsIDocShell* aDocShell,
                                                       nsIPrincipal** aPrincipal)
 {
-  OriginAttributes attrs;
-  nsDocShell* docShell= nsDocShell::Cast(aDocShell);
-  bool result = attrs.CopyFromLoadContext(docShell);
-  NS_ENSURE_TRUE(result, NS_ERROR_FAILURE);
+  PrincipalOriginAttributes attrs;
+  attrs.InheritFromDocShellToDoc(nsDocShell::Cast(aDocShell)->GetOriginAttributes(), aURI);
 
   nsresult rv = MaybeSetAddonIdFromURI(attrs, aURI);
   NS_ENSURE_SUCCESS(rv, rv);
@@ -1233,41 +1363,6 @@ nsScriptSecurityManager::CanGetService(JSContext *cx,
     SetPendingException(cx, errorMsg.get());
     return NS_ERROR_DOM_XPCONNECT_ACCESS_DENIED;
 }
-
-/////////////////////////////////////////////
-// Method implementing nsIChannelEventSink //
-/////////////////////////////////////////////
-NS_IMETHODIMP
-nsScriptSecurityManager::AsyncOnChannelRedirect(nsIChannel* oldChannel, 
-                                                nsIChannel* newChannel,
-                                                uint32_t redirFlags,
-                                                nsIAsyncVerifyRedirectCallback *cb)
-{
-    nsCOMPtr<nsIPrincipal> oldPrincipal;
-    GetChannelResultPrincipal(oldChannel, getter_AddRefs(oldPrincipal));
-
-    nsCOMPtr<nsIURI> newURI;
-    newChannel->GetURI(getter_AddRefs(newURI));
-    nsCOMPtr<nsIURI> newOriginalURI;
-    newChannel->GetOriginalURI(getter_AddRefs(newOriginalURI));
-
-    NS_ENSURE_STATE(oldPrincipal && newURI && newOriginalURI);
-
-    const uint32_t flags =
-        nsIScriptSecurityManager::LOAD_IS_AUTOMATIC_DOCUMENT_REPLACEMENT |
-        nsIScriptSecurityManager::DISALLOW_SCRIPT;
-    nsresult rv = CheckLoadURIWithPrincipal(oldPrincipal, newURI, flags);
-    if (NS_SUCCEEDED(rv) && newOriginalURI != newURI) {
-        rv = CheckLoadURIWithPrincipal(oldPrincipal, newOriginalURI, flags);
-    }
-
-    if (NS_FAILED(rv))
-        return rv;
-
-    cb->OnRedirectVerifyCallback(NS_OK);
-    return NS_OK;
-}
-
 
 /////////////////////////////////////
 // Method implementing nsIObserver //
@@ -1523,7 +1618,7 @@ nsScriptSecurityManager::InitPrefs()
 namespace mozilla {
 
 void
-GetJarPrefix(uint32_t aAppId, bool aInMozBrowser, nsACString& aJarPrefix)
+GetJarPrefix(uint32_t aAppId, bool aInIsolatedMozBrowser, nsACString& aJarPrefix)
 {
   MOZ_ASSERT(aAppId != nsIScriptSecurityManager::UNKNOWN_APP_ID);
 
@@ -1534,14 +1629,14 @@ GetJarPrefix(uint32_t aAppId, bool aInMozBrowser, nsACString& aJarPrefix)
   aJarPrefix.Truncate();
 
   // Fallback.
-  if (aAppId == nsIScriptSecurityManager::NO_APP_ID && !aInMozBrowser) {
+  if (aAppId == nsIScriptSecurityManager::NO_APP_ID && !aInIsolatedMozBrowser) {
     return;
   }
 
   // aJarPrefix = appId + "+" + { 't', 'f' } + "+";
   aJarPrefix.AppendInt(aAppId);
   aJarPrefix.Append('+');
-  aJarPrefix.Append(aInMozBrowser ? 't' : 'f');
+  aJarPrefix.Append(aInIsolatedMozBrowser ? 't' : 'f');
   aJarPrefix.Append('+');
 
   return;
@@ -1551,12 +1646,12 @@ GetJarPrefix(uint32_t aAppId, bool aInMozBrowser, nsACString& aJarPrefix)
 
 NS_IMETHODIMP
 nsScriptSecurityManager::GetJarPrefix(uint32_t aAppId,
-                                      bool aInMozBrowser,
+                                      bool aInIsolatedMozBrowser,
                                       nsACString& aJarPrefix)
 {
   MOZ_ASSERT(aAppId != nsIScriptSecurityManager::UNKNOWN_APP_ID);
 
-  mozilla::GetJarPrefix(aAppId, aInMozBrowser, aJarPrefix);
+  mozilla::GetJarPrefix(aAppId, aInIsolatedMozBrowser, aJarPrefix);
   return NS_OK;
 }
 

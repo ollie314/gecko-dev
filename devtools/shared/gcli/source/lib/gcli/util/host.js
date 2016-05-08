@@ -60,13 +60,6 @@ exports.Highlighter = Highlighter;
 /**
  * See docs in lib/gcli/util/host.js
  */
-exports.spawn = function(context, spawnSpec) {
-  throw new Error('Not supported');
-};
-
-/**
- * See docs in lib/gcli/util/host.js
- */
 exports.exec = function(task) {
   return Task.spawn(task);
 };
@@ -116,7 +109,7 @@ exports.staticRequire = function(requistingModule, name) {
     return new Promise(function(resolve, reject) {
       var filename = resourceDirName(requistingModule.id) + '/' + name;
       filename = filename.replace(/\/\.\//g, '/');
-      filename = 'resource://devtools/' + filename;
+      filename = 'resource://devtools/shared/gcli/source/lib/' + filename;
 
       var xhr = Cc['@mozilla.org/xmlextras/xmlhttprequest;1']
                   .createInstance(Ci.nsIXMLHttpRequest);

@@ -11,7 +11,6 @@
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/MessagePortList.h"
 #include "nsCycleCollectionParticipant.h"
-#include "nsIDOMMessageEvent.h"
 
 namespace mozilla {
 namespace dom {
@@ -19,14 +18,8 @@ namespace dom {
 struct MessageEventInit;
 class MessagePort;
 class MessagePortList;
-class OwningWindowProxyOrMessagePortOrClient;
+class OwningWindowProxyOrMessagePort;
 class WindowProxyOrMessagePort;
-
-namespace workers {
-
-class ServiceWorkerClient;
-
-} // namespace workers
 
 /**
  * Implements the MessageEvent event, used for cross-document messaging and
@@ -35,8 +28,7 @@ class ServiceWorkerClient;
  * See http://www.whatwg.org/specs/web-apps/current-work/#messageevent for
  * further details.
  */
-class MessageEvent final : public Event,
-                           public nsIDOMMessageEvent
+class MessageEvent final : public Event
 {
 public:
   MessageEvent(EventTarget* aOwner,
@@ -46,8 +38,6 @@ public:
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS_INHERITED(MessageEvent, Event)
 
-  NS_DECL_NSIDOMMESSAGEEVENT
-
   // Forward to base class
   NS_FORWARD_TO_EVENT
 
@@ -55,8 +45,9 @@ public:
 
   void GetData(JSContext* aCx, JS::MutableHandle<JS::Value> aData,
                ErrorResult& aRv);
-
-  void GetSource(Nullable<OwningWindowProxyOrMessagePortOrClient>& aValue) const;
+  void GetOrigin(nsAString&) const;
+  void GetLastEventId(nsAString&) const;
+  void GetSource(Nullable<OwningWindowProxyOrMessagePort>& aValue) const;
 
   MessagePortList* GetPorts()
   {
@@ -68,9 +59,7 @@ public:
   // Non WebIDL methods
   void SetSource(mozilla::dom::MessagePort* aPort);
 
-  void SetSource(workers::ServiceWorkerClient* aClient);
-
-  void SetSource(nsPIDOMWindow* aWindow)
+  void SetSource(nsPIDOMWindowInner* aWindow)
   {
     mWindowSource = aWindow;
   }
@@ -91,8 +80,7 @@ public:
                         bool aCancelable, JS::Handle<JS::Value> aData,
                         const nsAString& aOrigin, const nsAString& aLastEventId,
                         const Nullable<WindowProxyOrMessagePort>& aSource,
-                        const Nullable<Sequence<OwningNonNull<MessagePort>>>& aPorts,
-                        ErrorResult& aRv);
+                        const Nullable<Sequence<OwningNonNull<MessagePort>>>& aPorts);
 
 protected:
   ~MessageEvent();
@@ -101,9 +89,8 @@ private:
   JS::Heap<JS::Value> mData;
   nsString mOrigin;
   nsString mLastEventId;
-  nsCOMPtr<nsIDOMWindow> mWindowSource;
+  RefPtr<nsPIDOMWindowInner> mWindowSource;
   RefPtr<MessagePort> mPortSource;
-  RefPtr<workers::ServiceWorkerClient> mClientSource;
   RefPtr<MessagePortList> mPorts;
 };
 

@@ -21,15 +21,13 @@ sys.path.insert(1, os.path.dirname(sys.path[0]))
 from mozprocess import ProcessHandler
 
 from mozharness.base.log import FATAL
-from mozharness.base.script import BaseScript, PostScriptRun
+from mozharness.base.script import BaseScript, PostScriptRun, PreScriptAction
 from mozharness.base.vcs.vcsbase import VCSMixin
 from mozharness.mozilla.blob_upload import BlobUploadMixin, blobupload_config_options
 from mozharness.mozilla.mozbase import MozbaseMixin
 from mozharness.mozilla.buildbot import TBPL_WORST_LEVEL_TUPLE
 from mozharness.mozilla.testing.testbase import TestingMixin, testing_config_options
 from mozharness.mozilla.testing.unittest import EmulatorMixin
-
-from mozharness.mozilla.testing.device import ADBDeviceHandler
 
 
 class AndroidEmulatorTest(BlobUploadMixin, TestingMixin, EmulatorMixin, VCSMixin, BaseScript, MozbaseMixin):
@@ -145,6 +143,8 @@ class AndroidEmulatorTest(BlobUploadMixin, TestingMixin, EmulatorMixin, VCSMixin
             abs_dirs['abs_work_dir'], 'blobber_upload_dir')
         dirs['abs_emulator_dir'] = os.path.join(
             abs_dirs['abs_work_dir'], 'emulator')
+        dirs['abs_mochitest_dir'] = os.path.join(
+            dirs['abs_test_install_dir'], 'mochitest')
 
         if self.config.get("developer_mode"):
             dirs['abs_avds_dir'] = os.path.join(
@@ -157,6 +157,19 @@ class AndroidEmulatorTest(BlobUploadMixin, TestingMixin, EmulatorMixin, VCSMixin
                 abs_dirs[key] = dirs[key]
         self.abs_dirs = abs_dirs
         return self.abs_dirs
+
+    @PreScriptAction('create-virtualenv')
+    def _pre_create_virtualenv(self, action):
+        dirs = self.query_abs_dirs()
+
+        if os.path.isdir(dirs['abs_mochitest_dir']):
+            # mochitest is the only thing that needs this
+            requirements = os.path.join(dirs['abs_mochitest_dir'],
+                        'websocketprocessbridge',
+                        'websocketprocessbridge_requirements.txt')
+
+            self.register_virtualenv_module(requirements=[requirements],
+                                            two_pass=True)
 
     def _build_arg(self, option, value):
         """
@@ -477,7 +490,6 @@ class AndroidEmulatorTest(BlobUploadMixin, TestingMixin, EmulatorMixin, VCSMixin
          - the stdout where the output is going to
          - the suite name that is associated
         """
-        dirs = self.query_abs_dirs()
         cmd = self._build_command(self.emulators[emulator_index], suite_name)
 
         try:
@@ -681,8 +693,7 @@ class AndroidEmulatorTest(BlobUploadMixin, TestingMixin, EmulatorMixin, VCSMixin
                 self._download_robocop_apk()
                 break
 
-        self.mkdir_p(dirs['abs_xre_dir'])
-        self._download_unzip(self.host_utils_url, dirs['abs_xre_dir'])
+        self.download_unzip(self.host_utils_url, dirs['abs_xre_dir'])
 
     def install(self):
         assert self.installer_path is not None, \
@@ -700,10 +711,6 @@ class AndroidEmulatorTest(BlobUploadMixin, TestingMixin, EmulatorMixin, VCSMixin
             }
             config = dict(config.items() + self.config.items())
 
-            self.info("Creating ADBDevicHandler for %s with config %s" % (emulator["name"], config))
-            dh = ADBDeviceHandler(config=config, log_obj=self.log_obj, script_obj=self)
-            dh.device_id = emulator['device_id']
-
             # Wait for Android to finish booting
             completed = None
             retries = 0
@@ -718,15 +725,29 @@ class AndroidEmulatorTest(BlobUploadMixin, TestingMixin, EmulatorMixin, VCSMixin
             if completed != '1':
                 self.warning('Retries exhausted waiting for Android boot.')
 
+            cmd = [self.adb_path, '-s', emulator['device_id'], 'shell', 'getprop', 'ro.build.version.sdk']
+            p = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+            out, err = p.communicate()
+            sdk_level = out
+
             # Install Fennec
             self.info("Installing Fennec for %s" % emulator["name"])
-            dh.install_app(self.installer_path)
+            if int(sdk_level) >= 23:
+                cmd = [self.adb_path, '-s', emulator['device_id'], 'install', '-r', '-g', self.installer_path]
+            else:
+                cmd = [self.adb_path, '-s', emulator['device_id'], 'install', '-r', self.installer_path]
+            p = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+            out, err = p.communicate()
 
             # Install the robocop apk if required
             if suite_name.startswith('robocop'):
                 self.info("Installing Robocop for %s" % emulator["name"])
-                config['device_package_name'] = self.config["robocop_package_name"]
-                dh.install_app(self.robocop_path)
+                if int(sdk_level) >= 23:
+                    cmd = [self.adb_path, '-s', emulator['device_id'], 'install', '-r', '-g', self.robocop_path]
+                else:
+                    cmd = [self.adb_path, '-s', emulator['device_id'], 'install', '-r', self.robocop_path]
+                p = subprocess.Popen(cmd, stdout=subprocess.PIPE)
+                out, err = p.communicate()
 
             self.info("Finished installing apps for %s" % emulator["name"])
 

@@ -3,20 +3,12 @@
 
 package org.mozilla.android.sync.test;
 
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertFalse;
-import static org.junit.Assert.assertTrue;
-import static org.junit.Assert.fail;
-
-import java.io.IOException;
-import java.util.ArrayList;
-
 import org.json.simple.JSONArray;
 import org.json.simple.JSONObject;
-import org.json.simple.parser.ParseException;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mozilla.gecko.background.db.Tab;
+import org.mozilla.gecko.background.testhelpers.TestRunner;
 import org.mozilla.gecko.sync.CryptoRecord;
 import org.mozilla.gecko.sync.ExtendedJSONObject;
 import org.mozilla.gecko.sync.NonObjectJSONException;
@@ -26,14 +18,21 @@ import org.mozilla.gecko.sync.repositories.domain.HistoryRecord;
 import org.mozilla.gecko.sync.repositories.domain.Record;
 import org.mozilla.gecko.sync.repositories.domain.RecordParseException;
 import org.mozilla.gecko.sync.repositories.domain.TabsRecord;
-import org.robolectric.RobolectricGradleTestRunner;
 
-@RunWith(RobolectricGradleTestRunner.class)
+import java.io.IOException;
+import java.util.ArrayList;
+
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
+
+@RunWith(TestRunner.class)
 public class TestRecord {
 
   @SuppressWarnings("static-method")
   @Test
-  public void testQueryRecord() throws NonObjectJSONException, IOException, ParseException {
+  public void testQueryRecord() throws NonObjectJSONException, IOException {
     final String expectedGUID = "Bl3n3gpKag3s";
     final String testRecord =
         "{\"id\":\"" + expectedGUID + "\"," +
@@ -193,7 +192,7 @@ public class TestRecord {
                   " \"urlHistory\":[\"http://mxr.mozilla.org/mozilla-central/source/browser/base/content/syncSetup.js#72\"]," +
                   " \"icon\":\"http://mxr.mozilla.org/mxr.png\"," +
                   " \"lastUsed\":\"1306374531\"}";
-    Tab tab = TabsRecord.tabFromJSONObject(ExtendedJSONObject.parseJSONObject(json).object);
+    Tab tab = TabsRecord.tabFromJSONObject(new ExtendedJSONObject(json).object);
 
     assertEquals("mozilla-central mozilla/browser/base/content/syncSetup.js", tab.title);
     assertEquals("http://mxr.mozilla.org/mxr.png", tab.icon);
@@ -204,7 +203,7 @@ public class TestRecord {
         " \"urlHistory\":[\"http://example.com\"]," +
         " \"icon\":\"\"," +
         " \"lastUsed\":0}";
-    Tab zero = TabsRecord.tabFromJSONObject(ExtendedJSONObject.parseJSONObject(zeroJSON).object);
+    Tab zero = TabsRecord.tabFromJSONObject(new ExtendedJSONObject(zeroJSON).object);
 
     assertEquals("a", zero.title);
     assertEquals("", zero.icon);
@@ -280,7 +279,7 @@ public class TestRecord {
       super("abcdefghijkl", "bookmarks", 1234, false);
     }
 
-    public void doTest() throws NonObjectJSONException, IOException, ParseException {
+    public void doTest() throws NonObjectJSONException, IOException {
       this.initFromPayload(new ExtendedJSONObject(payload));
       assertEquals("abcdefghijkl",      this.guid);              // Ignores payload.
       assertEquals("livemark",          this.type);
@@ -297,7 +296,7 @@ public class TestRecord {
   }
 
   @Test
-  public void testUnusualBookmarkRecords() throws NonObjectJSONException, IOException, ParseException {
+  public void testUnusualBookmarkRecords() throws NonObjectJSONException, IOException {
     PayloadBookmarkRecord record = new PayloadBookmarkRecord();
     record.doTest();
   }

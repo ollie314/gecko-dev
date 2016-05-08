@@ -46,7 +46,7 @@ typedef nsTWeakRef<class nsPluginNativeWindowWin> PluginWindowWeakRef;
 /**
  *  PLEvent handling code
  */
-class PluginWindowEvent : public nsRunnable {
+class PluginWindowEvent : public Runnable {
 public:
   PluginWindowEvent();
   void Init(const PluginWindowWeakRef &ref, HWND hWnd, UINT msg, WPARAM wParam,
@@ -159,7 +159,7 @@ static bool ProcessFlashMessageDelayed(nsPluginNativeWindowWin * aWin, nsNPAPIPl
   return false;
 }
 
-class nsDelayedPopupsEnabledEvent : public nsRunnable
+class nsDelayedPopupsEnabledEvent : public Runnable
 {
 public:
   nsDelayedPopupsEnabledEvent(nsNPAPIPluginInstance *inst)
@@ -575,13 +575,11 @@ nsPluginNativeWindowWin::GetPluginWindowEvent(HWND aWnd, UINT aMsg, WPARAM aWPar
   if (!mCachedPluginWindowEvent)
   {
     event = new PluginWindowEvent();
-    if (!event) return nullptr;
     mCachedPluginWindowEvent = event;
   }
   else if (mCachedPluginWindowEvent->InUse())
   {
     event = new PluginWindowEvent();
-    if (!event) return nullptr;
   }
   else
   {
@@ -739,8 +737,7 @@ nsresult PLUG_NewPluginNativeWindow(nsPluginNativeWindow ** aPluginNativeWindow)
   NS_ENSURE_ARG_POINTER(aPluginNativeWindow);
 
   *aPluginNativeWindow = new nsPluginNativeWindowWin();
-
-  return *aPluginNativeWindow ? NS_OK : NS_ERROR_OUT_OF_MEMORY;
+  return NS_OK;
 }
 
 nsresult PLUG_DeletePluginNativeWindow(nsPluginNativeWindow * aPluginNativeWindow)

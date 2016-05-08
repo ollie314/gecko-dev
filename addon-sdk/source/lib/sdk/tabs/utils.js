@@ -11,10 +11,11 @@ module.metadata = {
 // NOTE: This file should only deal with xul/native tabs
 
 
-const { Ci } = require('chrome');
+const { Ci, Cu } = require('chrome');
 const { defer } = require("../lang/functional");
 const { windows, isBrowser } = require('../window/utils');
 const { isPrivateBrowsingSupported } = require('../self');
+const { ShimWaiver } = Cu.import("resource://gre/modules/ShimWaiver.jsm");
 
 // Bug 834961: ignore private windows when they are not supported
 function getWindows() {
@@ -137,7 +138,8 @@ function openTab(window, url, options) {
     return window.BrowserApp.addTab(url, {
       selected: options.inBackground ? false : true,
       pinned: options.isPinned || false,
-      isPrivate: options.isPrivate || false
+      isPrivate: options.isPrivate || false,
+      parentId: window.BrowserApp.selectedTab.id
     });
   }
 
@@ -261,6 +263,16 @@ function getTabForContentWindow(window) {
   return getTabs().find(tab => getTabContentWindow(tab) === window.top) || null;
 }
 exports.getTabForContentWindow = getTabForContentWindow;
+
+// only sdk/selection.js is relying on shims
+function getTabForContentWindowNoShim(window) {
+  function getTabContentWindowNoShim(tab) {
+    let browser = getBrowserForTab(tab);
+    return ShimWaiver.getProperty(browser, "contentWindow");
+  }
+  return getTabs().find(tab => getTabContentWindowNoShim(tab) === window.top) || null;
+}
+exports.getTabForContentWindowNoShim = getTabForContentWindowNoShim;
 
 function getTabURL(tab) {
   return String(getBrowserForTab(tab).currentURI.spec);

@@ -17,14 +17,19 @@
 #include "AudioContext.h"
 #include "AudioBuffer.h"
 #include "nsAutoPtr.h"
+#include "nsContentUtils.h"
 #include "nsIScriptObjectPrincipal.h"
 #include "nsIScriptError.h"
 #include "nsMimeTypes.h"
 #include "VideoUtils.h"
 #include "WebAudioUtils.h"
 #include "mozilla/dom/Promise.h"
+#include "mozilla/Telemetry.h"
+#include "nsPrintfCString.h"
 
 namespace mozilla {
+
+extern LazyLogModule gMediaDecoderLog;
 
 NS_IMPL_CYCLE_COLLECTION_CLASS(WebAudioDecodeJob)
 
@@ -50,7 +55,7 @@ NS_IMPL_CYCLE_COLLECTION_UNROOT_NATIVE(WebAudioDecodeJob, Release)
 
 using namespace dom;
 
-class ReportResultTask final : public nsRunnable
+class ReportResultTask final : public Runnable
 {
 public:
   ReportResultTask(WebAudioDecodeJob& aDecodeJob,
@@ -89,7 +94,7 @@ enum class PhaseEnum : int
   Done
 };
 
-class MediaDecodeTask final : public nsRunnable
+class MediaDecodeTask final : public Runnable
 {
 public:
   MediaDecodeTask(const char* aContentType, uint8_t* aBuffer,
@@ -117,7 +122,7 @@ private:
       mDecodeJob.OnFailure(aErrorCode);
     } else {
       // Take extra care to cleanup on the main thread
-      NS_DispatchToMainThread(NS_NewRunnableMethod(this, &MediaDecodeTask::Cleanup));
+      NS_DispatchToMainThread(NewRunnableMethod(this, &MediaDecodeTask::Cleanup));
 
       nsCOMPtr<nsIRunnable> event =
         new ReportResultTask(mDecodeJob, &WebAudioDecodeJob::OnFailure, aErrorCode);
@@ -140,7 +145,6 @@ private:
     MOZ_ASSERT(NS_IsMainThread());
     // MediaDecoderReader expects that BufferDecoder is alive.
     // Destruct MediaDecoderReader first.
-    mDecoderReader->BreakCycles();
     mDecoderReader = nullptr;
     mBufferDecoder = nullptr;
     JS_free(nullptr, mBuffer);
@@ -266,6 +270,23 @@ MediaDecodeTask::OnMetadataRead(MetadataHolder* aMetadata)
     ReportFailureOnMainThread(WebAudioDecodeJob::NoAudio);
     return;
   }
+
+  nsCString codec;
+  if (!mMediaInfo.mAudio.GetAsAudioInfo()->mMimeType.IsEmpty()) {
+    codec = nsPrintfCString("webaudio; %s", mMediaInfo.mAudio.GetAsAudioInfo()->mMimeType.get());
+  } else {
+    codec = nsPrintfCString("webaudio;resource; %s", mContentType.get());
+  }
+
+  nsCOMPtr<nsIRunnable> task = NS_NewRunnableFunction([codec]() -> void {
+    MOZ_ASSERT(!codec.IsEmpty());
+    MOZ_LOG(gMediaDecoderLog,
+            LogLevel::Debug,
+            ("Telemetry (WebAudio) MEDIA_CODEC_USED= '%s'", codec.get()));
+    Telemetry::Accumulate(Telemetry::ID::MEDIA_CODEC_USED, codec);
+  });
+  AbstractThread::MainThread()->Dispatch(task.forget());
+
   RequestSample();
 }
 
@@ -448,18 +469,12 @@ WebAudioDecodeJob::AllocateBuffer()
   MOZ_ASSERT(!mOutput);
   MOZ_ASSERT(NS_IsMainThread());
 
-  AutoJSAPI jsapi;
-  if (NS_WARN_IF(!jsapi.Init(mContext->GetOwner()))) {
-    return false;
-  }
-  JSContext* cx = jsapi.cx();
-
   // Now create the AudioBuffer
   ErrorResult rv;
   uint32_t channelCount = mBuffer->GetChannels();
   mOutput = AudioBuffer::Create(mContext, channelCount,
                                 mWriteIndex, mContext->SampleRate(),
-                                mBuffer.forget(), cx, rv);
+                                mBuffer.forget(), rv);
   return !rv.Failed();
 }
 
@@ -527,15 +542,17 @@ WebAudioDecodeJob::OnSuccess(ErrorCode aErrorCode)
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(aErrorCode == NoError);
 
-  // Ignore errors in calling the callback, since there is not much that we can
-  // do about it here.
-  ErrorResult rv;
   if (mSuccessCallback) {
+    ErrorResult rv;
     mSuccessCallback->Call(*mOutput, rv);
+    // Ignore errors in calling the callback, since there is not much that we can
+    // do about it here.
+    rv.SuppressException();
   }
   mPromise->MaybeResolve(mOutput);
 
   mContext->RemoveFromDecodeQueue(this);
+
 }
 
 void
@@ -546,7 +563,7 @@ WebAudioDecodeJob::OnFailure(ErrorCode aErrorCode)
   const char* errorMessage;
   switch (aErrorCode) {
   case NoError:
-    MOZ_ASSERT(false, "Who passed NoError to OnFailure?");
+    MOZ_FALLTHROUGH_ASSERT("Who passed NoError to OnFailure?");
     // Fall through to get some sort of a sane error message if this actually
     // happens at runtime.
   case UnknownError:
@@ -563,9 +580,8 @@ WebAudioDecodeJob::OnFailure(ErrorCode aErrorCode)
     break;
   }
 
-  nsCOMPtr<nsPIDOMWindow> pWindow = do_QueryInterface(mContext->GetParentObject());
   nsIDocument* doc = nullptr;
-  if (pWindow) {
+  if (nsPIDOMWindowInner* pWindow = mContext->GetParentObject()) {
     doc = pWindow->GetExtantDoc();
   }
   nsContentUtils::ReportToConsole(nsIScriptError::errorFlag,
@@ -577,8 +593,7 @@ WebAudioDecodeJob::OnFailure(ErrorCode aErrorCode)
   // Ignore errors in calling the callback, since there is not much that we can
   // do about it here.
   if (mFailureCallback) {
-    ErrorResult rv;
-    mFailureCallback->Call(rv);
+    mFailureCallback->Call();
   }
 
   mPromise->MaybeReject(NS_ERROR_DOM_ENCODING_NOT_SUPPORTED_ERR);
@@ -590,7 +605,7 @@ size_t
 WebAudioDecodeJob::SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const
 {
   size_t amount = 0;
-  amount += mContentType.SizeOfExcludingThisMustBeUnshared(aMallocSizeOf);
+  amount += mContentType.SizeOfExcludingThisIfUnshared(aMallocSizeOf);
   if (mSuccessCallback) {
     amount += mSuccessCallback->SizeOfIncludingThis(aMallocSizeOf);
   }
@@ -600,7 +615,9 @@ WebAudioDecodeJob::SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const
   if (mOutput) {
     amount += mOutput->SizeOfIncludingThis(aMallocSizeOf);
   }
-  amount += mBuffer->SizeOfIncludingThis(aMallocSizeOf);
+  if (mBuffer) {
+    amount += mBuffer->SizeOfIncludingThis(aMallocSizeOf);
+  }
   return amount;
 }
 

@@ -128,12 +128,13 @@ function testSameOriginCredentials() {
     var request = makeRequest(test);
     console.log(request.url);
     fetch(request).then(function(res) {
-      testResponse(res, test);
-      if (i < tests.length-1) {
-        runATest(tests, i+1);
-      } else {
-        finalPromiseResolve();
-      }
+      testResponse(res, test).then(function() {
+        if (i < tests.length-1) {
+          runATest(tests, i+1);
+        } else {
+          finalPromiseResolve();
+        }
+      });
     }, function(e) {
       ok(!test.pass, "Expected test to fail " + test.toSource());
       ok(e instanceof TypeError, "Test should fail " + test.toSource());
@@ -201,6 +202,18 @@ function testModeCors() {
                  headers: { "Content-Type": "foo/bar",
                             "Accept": "foo/bar",
                             "Accept-Language": "sv-SE" },
+                 noAllowPreflight: 1,
+               },
+
+               { pass: 0,
+                 method: "GET",
+                 headers: { "Content-Type": "foo/bar, text/plain" },
+                 noAllowPreflight: 1,
+               },
+
+               { pass: 0,
+                 method: "GET",
+                 headers: { "Content-Type": "foo/bar, text/plain, garbage" },
                  noAllowPreflight: 1,
                },
 
@@ -349,6 +362,16 @@ function testModeCors() {
                             "Accept-Language": "sv-SE" },
                  noAllowPreflight: 1,
                },
+               { pass: 0,
+                 method: "HEAD",
+                 headers: { "Content-Type": "foo/bar, text/plain" },
+                 noAllowPreflight: 1,
+               },
+               { pass: 0,
+                 method: "HEAD",
+                 headers: { "Content-Type": "foo/bar, text/plain, garbage" },
+                 noAllowPreflight: 1,
+               },
 
                // HEAD with custom headers
                { pass: 1,
@@ -424,6 +447,18 @@ function testModeCors() {
                  headers: { "Content-Type": "text/plain",
                             "Accept": "foo/bar",
                             "Accept-Language": "sv-SE" },
+                 noAllowPreflight: 1,
+               },
+               { pass: 0,
+                 method: "POST",
+                 body: "hi there",
+                 headers: { "Content-Type": "foo/bar, text/plain" },
+                 noAllowPreflight: 1,
+               },
+               { pass: 0,
+                 method: "POST",
+                 body: "hi there",
+                 headers: { "Content-Type": "foo/bar, text/plain, garbage" },
                  noAllowPreflight: 1,
                },
 
@@ -722,7 +757,7 @@ function testModeCors() {
       }
       req.url += "&headers=" + escape(test.headers.toSource());
       reqHeaders =
-        escape([name for (name in test.headers)]
+        escape(Object.keys(test.headers)
                .filter(isUnsafeHeader)
                .map(String.toLowerCase)
                .sort()
@@ -1058,12 +1093,13 @@ function testCrossOriginCredentials() {
     var test = tests[i];
     var request = makeRequest(test);
     fetch(request).then(function(res) {
-      testResponse(res, test);
-      if (i < tests.length-1) {
-        runATest(tests, i+1);
-      } else {
-        finalPromiseResolve();
-      }
+      testResponse(res, test).then(function() {
+        if (i < tests.length-1) {
+          runATest(tests, i+1);
+        } else {
+          finalPromiseResolve();
+        }
+      });
     }, function(e) {
       ok(!test.pass, "Expected test failure for " + test.toSource());
       ok(e instanceof TypeError, "Exception should be TypeError for " + test.toSource());
@@ -1079,7 +1115,123 @@ function testCrossOriginCredentials() {
   return finalPromise;
 }
 
-function testRedirects() {
+function testModeNoCorsCredentials() {
+  var cookieStr = "type=chocolatechip";
+  var tests = [
+              {
+                // Initialize by setting a cookie.
+                pass: 1,
+                setCookie: cookieStr,
+                withCred: "include",
+              },
+              {
+                pass: 1,
+                noCookie: 1,
+                withCred: "omit",
+              },
+              {
+                pass: 1,
+                noCookie: 1,
+                withCred: "same-origin",
+              },
+              {
+                pass: 1,
+                cookie: cookieStr,
+                withCred: "include",
+              },
+              {
+                pass: 1,
+                cookie: cookieStr,
+                withCred: "omit",
+                status: 500,
+              },
+              {
+                pass: 1,
+                cookie: cookieStr,
+                withCred: "same-origin",
+                status: 500,
+              },
+              {
+                pass: 1,
+                noCookie: 1,
+                withCred: "include",
+                status: 500,
+              },
+              ];
+
+  var finalPromiseResolve, finalPromiseReject;
+  var finalPromise = new Promise(function(res, rej) {
+    finalPromiseResolve = res;
+    finalPromiseReject = rej;
+  });
+
+  function makeRequest(test) {
+    req = {
+      url : "http://example.org" + corsServerPath + "a+b",
+      withCred: test.withCred,
+    };
+
+    if (test.setCookie)
+      req.url += "&setCookie=" + escape(test.setCookie);
+    if (test.cookie)
+      req.url += "&cookie=" + escape(test.cookie);
+    if (test.noCookie)
+      req.url += "&noCookie";
+
+    return new Request(req.url, { method: 'GET',
+                                  mode: 'no-cors',
+                                  credentials: req.withCred });
+  }
+
+  function testResponse(res, test) {
+    is(res.type, 'opaque', 'wrong response type for ' + test.toSource());
+
+    // Get unfiltered response
+    var chromeResponse = SpecialPowers.wrap(res);
+    var unfiltered = chromeResponse.cloneUnfiltered();
+
+    var status = test.status ? test.status : 200;
+    is(unfiltered.status, status, "wrong status in test for " + test.toSource());
+    return unfiltered.text().then(function(v) {
+      if (status === 200) {
+        is(v, "<res>hello pass</res>\n",
+         "wrong text in test for " + test.toSource());
+      }
+    });
+  }
+
+  function runATest(tests, i) {
+    if (typeof SpecialPowers !== 'object') {
+      finalPromiseResolve();
+      return;
+    }
+
+    var test = tests[i];
+    var request = makeRequest(test);
+    fetch(request).then(function(res) {
+      testResponse(res, test).then(function() {
+        if (i < tests.length-1) {
+          runATest(tests, i+1);
+        } else {
+          finalPromiseResolve();
+        }
+      });
+    }, function(e) {
+      ok(!test.pass, "Expected test to fail " + test.toSource());
+      ok(e instanceof TypeError, "Test should fail " + test.toSource());
+      if (i < tests.length-1) {
+        runATest(tests, i+1);
+      } else {
+        finalPromiseResolve();
+      }
+    });
+  }
+
+  runATest(tests, 0);
+  return finalPromise;
+}
+
+function testCORSRedirects() {
   var origin = "http://mochi.test:8888";
 
   var tests = [
@@ -1249,6 +1401,20 @@ function testRedirects() {
                     },
                     ],
            },
+           { pass: 1,
+             method: "POST",
+             body: "hi there",
+             headers: { "Content-Type": "text/plain",
+                        "my-header": "myValue",
+                      },
+             hops: [{ server: "http://mochi.test:8888",
+                    },
+                    { server: "http://example.com",
+                      allowOrigin: origin,
+                      allowHeaders: "my-header",
+                    },
+                    ],
+           },
            { pass: 0,
              method: "POST",
              body: "hi there",
@@ -1260,6 +1426,7 @@ function testRedirects() {
                     { server: "http://example.com",
                       allowOrigin: origin,
                       allowHeaders: "my-header",
+                      noAllowPreflight: 1,
                     },
                     ],
            },
@@ -1281,12 +1448,24 @@ function testRedirects() {
                     }
                     ],
            },
+           { pass: 1,
+             method: "DELETE",
+             hops: [{ server: "http://mochi.test:8888",
+                    },
+                    { server: "http://example.com",
+                      allowOrigin: origin,
+                      allowMethods: "DELETE",
+                    },
+                    ],
+           },
            { pass: 0,
              method: "DELETE",
              hops: [{ server: "http://mochi.test:8888",
                     },
                     { server: "http://example.com",
                       allowOrigin: origin,
+                      allowMethods: "DELETE",
+                      noAllowPreflight: 1,
                     },
                     ],
            },
@@ -1296,9 +1475,11 @@ function testRedirects() {
                     },
                     { server: "http://test1.example.com",
                       allowOrigin: origin,
+                      allowMethods: "DELETE",
                     },
                     { server: "http://test2.example.com",
                       allowOrigin: origin,
+                      allowMethods: "DELETE",
                     },
                     ],
            },
@@ -1320,9 +1501,11 @@ function testRedirects() {
              method: "DELETE",
              hops: [{ server: "http://example.com",
                       allowOrigin: origin,
+                      allowMethods: "DELETE",
                     },
                     { server: "http://sub1.test1.mochi.test:8888",
                       allowOrigin: origin,
+                      allowMethods: "DELETE",
                     },
                     ],
            },
@@ -1379,6 +1562,10 @@ function testRedirects() {
       body: test.body,
     };
 
+    if (test.headers) {
+      req.url += "&headers=" + escape(test.headers.toSource());
+    }
+
     if (test.pass) {
       if (test.body)
         req.url += "&body=" + escape(test.body);
@@ -1418,6 +1605,113 @@ function testRedirects() {
   return Promise.all(fetches);
 }
 
+function testNoCORSRedirects() {
+  var origin = "http://mochi.test:8888";
+
+  var tests = [
+           { pass: 1,
+             method: "GET",
+             hops: [{ server: "http://example.com",
+                    },
+                    ],
+           },
+           { pass: 1,
+             method: "GET",
+             hops: [{ server: origin,
+                    },
+                    { server: "http://example.com",
+                    },
+                    ],
+           },
+           { pass: 1,
+             method: "GET",
+             // Must use a simple header due to no-cors header restrictions.
+             headers: { "accept-language": "en-us",
+                      },
+             hops: [{ server: origin,
+                    },
+                    { server: "http://example.com",
+                    },
+                    ],
+           },
+           { pass: 1,
+             method: "GET",
+             hops: [{ server: origin,
+                    },
+                    { server: "http://example.com",
+                    },
+                    { server: origin,
+                    }
+                    ],
+           },
+           { pass: 1,
+             method: "POST",
+             body: 'upload body here',
+             hops: [{ server: origin
+                    },
+                    { server: "http://example.com",
+                    },
+                    ],
+           },
+           { pass: 0,
+             method: "DELETE",
+             hops: [{ server: origin
+                    },
+                    { server: "http://example.com",
+                    },
+                    ],
+           },
+           ];
+
+  var fetches = [];
+  for (test of tests) {
+    req = {
+      url: test.hops[0].server + corsServerPath + "hop=1&hops=" +
+           escape(test.hops.toSource()),
+      method: test.method,
+      headers: test.headers,
+      body: test.body,
+    };
+
+    if (test.headers) {
+      req.url += "&headers=" + escape(test.headers.toSource());
+    }
+
+    if (test.pass) {
+      if (test.body)
+        req.url += "&body=" + escape(test.body);
+    }
+
+    fetches.push((function(req, test) {
+      return new Promise(function(resolve, reject) {
+        resolve(new Request(req.url, { mode: 'no-cors',
+                                       method: req.method,
+                                       headers: req.headers,
+                                       body: req.body }));
+      }).then(function(request) {
+        return fetch(request);
+      }).then(function(res) {
+        ok(test.pass, "Expected test to pass for " + test.toSource());
+        // All requests are cross-origin no-cors, we should always have
+        // an opaque response here.  All values on the opaque response
+        // should be hidden.
+        is(res.type, 'opaque', 'wrong response type for ' + test.toSource());
+        is(res.status, 0, "wrong status in test for " + test.toSource());
+        is(res.statusText, "", "wrong status text for " + test.toSource());
+        is(res.url, '', 'wrong response url for ' + test.toSource());
+        return res.text().then(function(v) {
+          is(v, "", "wrong responseText in test for " + test.toSource());
+        });
+      }, function(e) {
+        ok(!test.pass, "Expected test failure for " + test.toSource());
+        ok(e instanceof TypeError, "Exception should be TypeError for " + test.toSource());
+      });
+    })(req, test));
+  }
+
+  return Promise.all(fetches);
+}
+
 function testReferrer() {
   var referrer;
   if (self && self.location) {
@@ -1446,7 +1740,9 @@ function runTest() {
     .then(testModeCors)
     .then(testSameOriginCredentials)
     .then(testCrossOriginCredentials)
-    .then(testRedirects)
+    .then(testModeNoCorsCredentials)
+    .then(testCORSRedirects)
+    .then(testNoCORSRedirects)
     .then(testReferrer)
     // Put more promise based tests here.
 }

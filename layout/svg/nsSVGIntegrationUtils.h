@@ -9,13 +9,13 @@
 #include "gfxMatrix.h"
 #include "gfxRect.h"
 #include "nsAutoPtr.h"
+#include "nsRegionFwd.h"
 
 class gfxContext;
 class gfxDrawable;
 class nsDisplayList;
 class nsDisplayListBuilder;
 class nsIFrame;
-class nsIntRegion;
 
 struct nsRect;
 
@@ -129,6 +129,7 @@ public:
   static void
   PaintFramesWithEffects(gfxContext& aCtx,
                          nsIFrame* aFrame, const nsRect& aDirtyRect,
+                         const nsRect& aBorderArea,
                          nsDisplayListBuilder* aBuilder,
                          mozilla::layers::LayerManager* aManager);
 

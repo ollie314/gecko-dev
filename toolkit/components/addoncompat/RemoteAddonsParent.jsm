@@ -22,6 +22,8 @@ XPCOMUtils.defineLazyModuleGetter(this, "Prefetcher",
 XPCOMUtils.defineLazyModuleGetter(this, "CompatWarning",
                                   "resource://gre/modules/CompatWarning.jsm");
 
+Cu.permitCPOWsInScope(this);
+
 // Similar to Python. Returns dict[key] if it exists. Otherwise,
 // sets dict[key] to default_ and returns default_.
 function setDefault(dict, key, default_)
@@ -84,6 +86,7 @@ var NotificationTracker = {
     if (msg.name == "Addons:GetNotifications") {
       return this._paths;
     }
+    return undefined;
   }
 };
 NotificationTracker.init();
@@ -134,6 +137,7 @@ var ContentPolicyParent = {
         return this.shouldLoad(aMessage.data, aMessage.objects);
         break;
     }
+    return undefined;
   },
 
   shouldLoad: function(aData, aObjects) {
@@ -231,6 +235,7 @@ var AboutProtocolParent = {
         return this.openChannel(msg);
         break;
     }
+    return undefined;
   },
 
   getURIFlags: function(msg) {
@@ -241,6 +246,7 @@ var AboutProtocolParent = {
       return module.getURIFlags(uri);
     } catch (e) {
       Cu.reportError(e);
+      return undefined;
     }
   },
 
@@ -271,7 +277,7 @@ var AboutProtocolParent = {
       } else {
         channel.loadGroup = null;
       }
-      let stream = channel.open();
+      let stream = channel.open2();
       let data = NetUtil.readInputStreamToString(stream, stream.available(), {});
       return {
         data: data,
@@ -279,6 +285,7 @@ var AboutProtocolParent = {
       };
     } catch (e) {
       Cu.reportError(e);
+      return undefined;
     }
   },
 };
@@ -580,15 +587,15 @@ EventTargetParent.init();
 var filteringListeners = new WeakMap();
 function makeFilteringListener(eventType, listener)
 {
-  if (filteringListeners.has(listener)) {
-    return filteringListeners.get(listener);
-  }
-
   // Some events are actually targeted at the <browser> element
   // itself, so we only handle the ones where know that won't happen.
   let eventTypes = ["mousedown", "mouseup", "click"];
   if (eventTypes.indexOf(eventType) == -1) {
     return listener;
+  }
+
+  if (filteringListeners.has(listener)) {
+    return filteringListeners.get(listener);
   }
 
   function filter(event) {
@@ -798,6 +805,14 @@ RemoteBrowserElementInterposition.getters.docShell = function(addon, target) {
   return remoteChromeGlobal.docShell;
 };
 
+RemoteBrowserElementInterposition.getters.sessionHistory = function(addon, target) {
+  CompatWarning.warn("Direct access to browser.sessionHistory will no longer " +
+                     "work in the chrome process.",
+                     addon, CompatWarning.warnings.content);
+
+  return getSessionHistory(target);
+}
+
 // We use this in place of the real browser.contentWindow if we
 // haven't yet received a CPOW for the child process's window. This
 // happens if the tab has just started loading.
@@ -843,7 +858,17 @@ function getContentDocument(addon, browser)
     return doc;
   }
 
-  return browser.contentDocumentAsCPOW;
+  return browser.contentWindowAsCPOW.document;
+}
+
+function getSessionHistory(browser) {
+  let remoteChromeGlobal = RemoteAddonsParent.browserToGlobal.get(browser);
+  if (!remoteChromeGlobal) {
+    CompatWarning.warn("CPOW for the remote browser docShell hasn't been received yet.");
+    // We may not have any messages from this tab yet.
+    return null;
+  }
+  return remoteChromeGlobal.docShell.QueryInterface(Ci.nsIWebNavigation).sessionHistory;
 }
 
 RemoteBrowserElementInterposition.getters.contentDocument = function(addon, target) {
@@ -872,6 +897,17 @@ TabBrowserElementInterposition.getters.contentDocument = function(addon, target)
 
   let browser = target.selectedBrowser;
   return getContentDocument(addon, browser);
+};
+
+TabBrowserElementInterposition.getters.sessionHistory = function(addon, target) {
+  CompatWarning.warn("Direct access to gBrowser.sessionHistory will no " +
+                     "longer work in the chrome process.",
+                     addon, CompatWarning.warnings.content);
+  let browser = target.selectedBrowser;
+  if (!browser.isRemoteBrowser) {
+    return browser.sessionHistory;
+  }
+  return getSessionHistory(browser);
 };
 
 // This function returns a wrapper around an
@@ -955,6 +991,29 @@ ChromeWindowInterposition.getters._content = function(addon, target) {
   return browser.contentWindowAsCPOW;
 };
 
+var RemoteWebNavigationInterposition = new Interposition("RemoteWebNavigation");
+
+RemoteWebNavigationInterposition.getters.sessionHistory = function(addon, target) {
+  CompatWarning.warn("Direct access to webNavigation.sessionHistory will no longer " +
+                     "work in the chrome process.",
+                     addon, CompatWarning.warnings.content);
+
+  if (target instanceof Ci.nsIDocShell) {
+    // We must have a non-remote browser, so we can go ahead
+    // and just return the real sessionHistory.
+    return target.sessionHistory;
+  }
+
+  let impl = target.wrappedJSObject;
+  if (!impl) {
+    return null;
+  }
+
+  let browser = impl._browser;
+
+  return getSessionHistory(browser);
+}
+
 var RemoteAddonsParent = {
   init: function() {
     let mm = Cc["@mozilla.org/globalmessagemanager;1"].getService(Ci.nsIMessageListenerManager);
@@ -977,6 +1036,7 @@ var RemoteAddonsParent = {
     register(Ci.nsIComponentRegistrar, ComponentRegistrarInterposition);
     register(Ci.nsIObserverService, ObserverInterposition);
     register(Ci.nsIXPCComponents_Utils, ComponentsUtilsInterposition);
+    register(Ci.nsIWebNavigation, RemoteWebNavigationInterposition);
 
     return result;
   },

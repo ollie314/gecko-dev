@@ -22,7 +22,7 @@ import android.content.Intent;
 import android.content.res.Resources;
 import android.text.TextUtils;
 
-import com.jayway.android.robotium.solo.Solo;
+import com.robotium.solo.Solo;
 
 /**
  * A base test class for Robocop (UI-centric) tests. This and the related classes attempt to
@@ -56,23 +56,6 @@ abstract class UITest extends BaseRobocopTest
         // Ensure Robocop tests have access to network, and are run with Display powered on.
         throwIfHttpGetFails();
         throwIfScreenNotOn();
-    }
-
-    @Override
-    protected void runTest() throws Throwable {
-        try {
-            super.runTest();
-        } catch (Throwable t) {
-            // save screenshot -- written to /mnt/sdcard/Robotium-Screenshots
-            // as <filename>.jpg
-            mSolo.takeScreenshot("robocop-screenshot-"+getClass().getName());
-            if (mAsserter != null) {
-                mAsserter.dumpLog("Exception caught during test!", t);
-                mAsserter.ok(false, "Exception caught", t.toString());
-            }
-            // re-throw to continue bail-out
-            throw t;
-        }
     }
 
     private void initComponents() {

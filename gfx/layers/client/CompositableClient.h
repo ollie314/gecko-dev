@@ -23,7 +23,6 @@ namespace mozilla {
 namespace layers {
 
 class CompositableClient;
-class BufferTextureClient;
 class ImageBridgeChild;
 class ImageContainer;
 class CompositableForwarder;
@@ -136,7 +135,7 @@ public:
 
   LayersBackend GetCompositorBackendType() const;
 
-  already_AddRefed<BufferTextureClient>
+  already_AddRefed<TextureClient>
   CreateBufferTextureClient(gfx::SurfaceFormat aFormat,
                             gfx::IntSize aSize,
                             gfx::BackendType aMoz2dBackend = gfx::BackendType::NONE,
@@ -156,7 +155,9 @@ public:
 
   void Destroy();
 
-  bool IsDestroyed() { return mDestroyed; }
+  static bool DestroyFallback(PCompositableChild* aActor);
+
+  bool IsConnected() const;
 
   PCompositableChild* GetIPDLActor() const;
 
@@ -193,6 +194,12 @@ public:
    * in low-memory conditions.
    */
   virtual void ClearCachedResources();
+
+  /**
+   * Shrink memory usage.
+   * Called when "memory-pressure" is observed.
+   */
+  virtual void HandleMemoryPressure();
 
   /**
    * Should be called when deataching a TextureClient from a Compositable, because
@@ -234,11 +241,10 @@ public:
                                 TextureDumpMode aCompress);
 protected:
   CompositableChild* mCompositableChild;
-  CompositableForwarder* mForwarder;
+  RefPtr<CompositableForwarder> mForwarder;
   // Some layers may want to enforce some flags to all their textures
   // (like disallowing tiling)
   TextureFlags mTextureFlags;
-  bool mDestroyed;
   RefPtr<TextureClientRecycleAllocator> mTextureClientRecycler;
 
   friend class CompositableChild;

@@ -59,9 +59,8 @@ NS_IMPL_ISUPPORTS_INHERITED0(RootAccessible, DocAccessible)
 // Constructor/destructor
 
 RootAccessible::
-  RootAccessible(nsIDocument* aDocument, nsIContent* aRootContent,
-                 nsIPresShell* aPresShell) :
-  DocAccessibleWrap(aDocument, aRootContent, aPresShell)
+  RootAccessible(nsIDocument* aDocument, nsIPresShell* aPresShell) :
+  DocAccessibleWrap(aDocument, aPresShell)
 {
   mType = eRootType;
 }
@@ -452,8 +451,10 @@ RootAccessible::ProcessDOMEvent(nsIDOMEvent* aDOMEvent)
   }
   else if (accessible->NeedsDOMUIEvent() &&
            eventType.EqualsLiteral("ValueChange")) {
-     targetDocument->FireDelayedEvent(nsIAccessibleEvent::EVENT_VALUE_CHANGE,
-                                      accessible);
+    uint32_t event = accessible->HasNumericValue()
+      ? nsIAccessibleEvent::EVENT_VALUE_CHANGE
+      : nsIAccessibleEvent::EVENT_TEXT_VALUE_CHANGE;
+     targetDocument->FireDelayedEvent(event, accessible);
   }
 #ifdef DEBUG_DRAGDROPSTART
   else if (eventType.EqualsLiteral("mouseover")) {
@@ -483,12 +484,10 @@ RootAccessible::RelationByType(RelationType aType)
   if (!mDocumentNode || aType != RelationType::EMBEDS)
     return DocAccessibleWrap::RelationByType(aType);
 
-  nsPIDOMWindow* rootWindow = mDocumentNode->GetWindow();
-  if (rootWindow) {
-    nsCOMPtr<nsIDOMWindow> contentWindow = nsGlobalWindow::Cast(rootWindow)->GetContent();
-    nsCOMPtr<nsPIDOMWindow> piWindow = do_QueryInterface(contentWindow);
-    if (piWindow) {
-      nsCOMPtr<nsIDocument> contentDocumentNode = piWindow->GetDoc();
+  if (nsPIDOMWindowOuter* rootWindow = mDocumentNode->GetWindow()) {
+    nsCOMPtr<nsPIDOMWindowOuter> contentWindow = nsGlobalWindow::Cast(rootWindow)->GetContent();
+    if (contentWindow) {
+      nsCOMPtr<nsIDocument> contentDocumentNode = contentWindow->GetDoc();
       if (contentDocumentNode) {
         DocAccessible* contentDocument =
           GetAccService()->GetDocAccessible(contentDocumentNode);

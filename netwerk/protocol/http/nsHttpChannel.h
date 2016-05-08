@@ -9,12 +9,12 @@
 
 #include "HttpBaseChannel.h"
 #include "nsTArray.h"
-#include "nsIPackagedAppChannelListener.h"
 #include "nsICachingChannel.h"
 #include "nsICacheEntry.h"
 #include "nsICacheEntryOpenCallback.h"
 #include "nsIDNSListener.h"
 #include "nsIApplicationCacheChannel.h"
+#include "nsIChannelWithDivertableParentListener.h"
 #include "nsIProtocolProxyCallback.h"
 #include "nsIHttpAuthenticableChannel.h"
 #include "nsIAsyncVerifyRedirectCallback.h"
@@ -22,6 +22,7 @@
 #include "nsIThreadRetargetableStreamListener.h"
 #include "nsWeakReference.h"
 #include "TimingStruct.h"
+#include "ADivertableParentChannel.h"
 #include "AutoClose.h"
 #include "nsIStreamListener.h"
 #include "nsISupportsPrimitives.h"
@@ -60,7 +61,6 @@ public:
 class nsHttpChannel final : public HttpBaseChannel
                           , public HttpAsyncAborter<nsHttpChannel>
                           , public nsIStreamListener
-                          , public nsIPackagedAppChannelListener
                           , public nsICachingChannel
                           , public nsICacheEntryOpenCallback
                           , public nsITransportEventSink
@@ -73,12 +73,12 @@ class nsHttpChannel final : public HttpBaseChannel
                           , public nsIDNSListener
                           , public nsSupportsWeakReference
                           , public nsICorsPreflightCallback
+                          , public nsIChannelWithDivertableParentListener
 {
 public:
     NS_DECL_ISUPPORTS_INHERITED
     NS_DECL_NSIREQUESTOBSERVER
     NS_DECL_NSISTREAMLISTENER
-    NS_DECL_NSIPACKAGEDAPPCHANNELLISTENER
     NS_DECL_NSITHREADRETARGETABLESTREAMLISTENER
     NS_DECL_NSICACHEINFOCHANNEL
     NS_DECL_NSICACHINGCHANNEL
@@ -91,6 +91,7 @@ public:
     NS_DECL_NSIASYNCVERIFYREDIRECTCALLBACK
     NS_DECL_NSITHREADRETARGETABLEREQUEST
     NS_DECL_NSIDNSLISTENER
+    NS_DECL_NSICHANNELWITHDIVERTABLEPARENTLISTENER
     NS_DECLARE_STATIC_IID_ACCESSOR(NS_HTTPCHANNEL_IID)
 
     // nsIHttpAuthenticableChannel. We can't use
@@ -122,6 +123,9 @@ public:
 
     nsresult OnPush(const nsACString &uri, Http2PushedStream *pushedStream);
 
+    static bool IsRedirectStatus(uint32_t status);
+
+
     // Methods HttpBaseChannel didn't implement for us or that we override.
     //
     // nsIRequest
@@ -132,6 +136,8 @@ public:
     NS_IMETHOD GetSecurityInfo(nsISupports **aSecurityInfo) override;
     NS_IMETHOD AsyncOpen(nsIStreamListener *listener, nsISupports *aContext) override;
     NS_IMETHOD AsyncOpen2(nsIStreamListener *aListener) override;
+    // nsIHttpChannel
+    NS_IMETHOD GetEncodedBodySize(uint64_t *aEncodedBodySize) override;
     // nsIHttpChannelInternal
     NS_IMETHOD SetupFallbackChannel(const char *aFallbackKey) override;
     NS_IMETHOD ForceIntercepted(uint64_t aInterceptionID) override;
@@ -264,10 +270,11 @@ private:
     nsresult Connect();
     void     SpeculativeConnect();
     nsresult SetupTransaction();
-    void     SetupTransactionSchedulingContext();
+    void     SetupTransactionRequestContext();
     nsresult CallOnStartRequest();
     nsresult ProcessResponse();
-    nsresult ContinueProcessResponse(nsresult);
+    nsresult ContinueProcessResponse1(nsresult);
+    nsresult ContinueProcessResponse2(nsresult);
     nsresult ProcessNormal();
     nsresult ContinueProcessNormal(nsresult);
     void     ProcessAltService();
@@ -295,7 +302,9 @@ private:
     void     HandleAsyncFallback();
     nsresult ContinueHandleAsyncFallback(nsresult);
     nsresult PromptTempRedirect();
-    virtual  nsresult SetupReplacementChannel(nsIURI *, nsIChannel *, bool preserveMethod) override;
+    virtual  nsresult SetupReplacementChannel(nsIURI *, nsIChannel *,
+                                              bool preserveMethod,
+                                              uint32_t redirectFlags) override;
 
     // proxy specific methods
     nsresult ProxyFailover();
@@ -359,6 +368,22 @@ private:
     nsresult ProcessSecurityHeaders();
 
     /**
+     * Taking care of the Content-Signature header and fail the channel if
+     * the signature verification fails or is required but the header is not
+     * present.
+     * This sets mListener to ContentVerifier, which buffers the entire response
+     * before verifying the Content-Signature header. If the verification is
+     * successful, the load proceeds as usual. If the verification fails, a
+     * NS_ERROR_INVALID_SIGNATURE is thrown and a fallback loaded in nsDocShell
+     */
+    nsresult ProcessContentSignatureHeader(nsHttpResponseHead *aResponseHead);
+
+    /**
+     * A function that will, if the feature is enabled, send security reports.
+     */
+    void ProcessSecurityReport(nsresult status);
+
+    /**
      * A function to process a single security header (STS or PKP), assumes
      * some basic sanity checks have been applied to the channel. Called
      * from ProcessSecurityHeaders.
@@ -393,7 +418,7 @@ private:
     void UpdateAggregateCallbacks();
 
     static bool HasQueryString(nsHttpRequestHead::ParsedMethodType method, nsIURI * uri);
-    bool ResponseWouldVary(nsICacheEntry* entry) const;
+    bool ResponseWouldVary(nsICacheEntry* entry);
     bool IsResumable(int64_t partialLen, int64_t contentLength,
                      bool ignoreMissingPartialLen = false) const;
     nsresult MaybeSetupByteRangeRequest(int64_t partialLen, int64_t contentLength,
@@ -407,6 +432,8 @@ private:
     void SetPushedStream(Http2PushedStream *stream);
 
     void MaybeWarnAboutAppCache();
+
+    void SetLoadGroupUserAgentOverride();
 
 private:
     nsCOMPtr<nsICancelable>           mProxyRequest;
@@ -469,6 +496,10 @@ private:
     uint32_t                          mTransactionReplaced      : 1;
     uint32_t                          mAuthRetryPending         : 1;
     uint32_t                          mProxyAuthPending         : 1;
+    // Set if before the first authentication attempt a custom authorization
+    // header has been set on the channel.  This will make that custom header
+    // go to the server instead of any cached credentials.
+    uint32_t                          mCustomAuthHeader         : 1;
     uint32_t                          mResuming                 : 1;
     uint32_t                          mInitedCacheEntry         : 1;
     // True if we are loading a fallback cache entry from the
@@ -497,6 +528,9 @@ private:
     uint32_t                          mIsPartialRequest : 1;
     // true iff there is AutoRedirectVetoNotifier on the stack
     uint32_t                          mHasAutoRedirectVetoNotifier : 1;
+    // consumers set this to true to use cache pinning, this has effect
+    // only when the channel is in an app context (load context has an appid)
+    uint32_t                          mPinCacheContent : 1;
     // Whether fetching the content is meant to be handled by the
     // packaged app service, which behaves like a caching layer.
     // Upon successfully fetching the package, the resource will be placed in
@@ -526,6 +560,7 @@ private:
     // If non-null, warnings should be reported to this object.
     HttpChannelSecurityWarningReporter* mWarningReporter;
 
+    RefPtr<ADivertableParentChannel> mParentChannel;
 protected:
     virtual void DoNotifyListenerCleanup() override;
 

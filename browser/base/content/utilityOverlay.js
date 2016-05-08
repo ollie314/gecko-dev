@@ -1,13 +1,17 @@
-# -*- indent-tabs-mode: nil; js-indent-level: 4 -*-
-# This Source Code Form is subject to the terms of the Mozilla Public
-# License, v. 2.0. If a copy of the MPL was not distributed with this
-# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 // Services = object with smart getters for common XPCOM services
+Components.utils.import("resource://gre/modules/AppConstants.jsm");
 Components.utils.import("resource://gre/modules/Services.jsm");
 Components.utils.import("resource://gre/modules/XPCOMUtils.jsm");
 Components.utils.import("resource://gre/modules/PrivateBrowsingUtils.jsm");
 Components.utils.import("resource:///modules/RecentWindow.jsm");
+
+XPCOMUtils.defineLazyModuleGetter(this, "ShellService",
+                                  "resource:///modules/ShellService.jsm");
 
 XPCOMUtils.defineLazyServiceGetter(this, "aboutNewTabService",
                                    "@mozilla.org/browser/aboutnewtab-service;1",
@@ -110,8 +114,8 @@ function openUILink(url, event, aIgnoreButton, aIgnoreAlt, aAllowThirdPartyFixup
  *
  * Middle-clicking is the same as Ctrl+clicking (it opens a new tab).
  *
- * Exceptions: 
- * - Alt is ignored for menu items selected using the keyboard so you don't accidentally save stuff.  
+ * Exceptions:
+ * - Alt is ignored for menu items selected using the keyboard so you don't accidentally save stuff.
  *    (Currently, the Alt isn't sent here at all for menu items, but that will change in bug 126189.)
  * - Alt is hard to use in context menus, because pressing Alt closes the menu.
  * - Alt can't be used on the bookmarks toolbar because Alt is used for "treat this as something draggable".
@@ -136,11 +140,8 @@ function whereToOpenLink( e, ignoreButton, ignoreAlt )
 
   // Don't do anything special with right-mouse clicks.  They're probably clicks on context menu items.
 
-#ifdef XP_MACOSX
-  if (meta || (middle && middleUsesTabs))
-#else
-  if (ctrl || (middle && middleUsesTabs))
-#endif
+  var metaKey = AppConstants.platform == "macosx" ? meta : ctrl;
+  if (metaKey || (middle && middleUsesTabs))
     return shift ? "tabshifted" : "tab";
 
   if (alt && getBoolPref("browser.altClickSave", false))
@@ -219,6 +220,7 @@ function openLinkIn(url, where, params) {
   var aNoReferrer           = params.noReferrer;
   var aAllowPopups          = !!params.allowPopups;
   var aUserContextId        = params.userContextId;
+  var aIndicateErrorPageLoad = params.indicateErrorPageLoad;
 
   if (where == "save") {
     if (!aInitiatingDoc) {
@@ -338,6 +340,9 @@ function openLinkIn(url, where, params) {
     if (aAllowPopups) {
       flags |= Ci.nsIWebNavigation.LOAD_FLAGS_ALLOW_POPUPS;
     }
+    if (aIndicateErrorPageLoad) {
+      flags |= Ci.nsIWebNavigation.LOAD_FLAGS_ERROR_LOAD_CHANGES_RV;
+    }
 
     w.gBrowser.loadURIWithFlags(url, {
       flags: flags,
@@ -411,7 +416,7 @@ function closeMenus(node)
 }
 
 // Gather all descendent text under given document node.
-function gatherTextUnder ( root ) 
+function gatherTextUnder ( root )
 {
   var text = "";
   var node = root.firstChild;
@@ -452,15 +457,10 @@ function gatherTextUnder ( root )
   return text;
 }
 
+// This function exists for legacy reasons.
 function getShellService()
 {
-  var shell = null;
-  try {
-    shell = Components.classes["@mozilla.org/browser/shell-service;1"]
-      .getService(Components.interfaces.nsIShellService);
-  } catch (e) {
-  }
-  return shell;
+  return ShellService;
 }
 
 function isBidiEnabled() {
@@ -509,13 +509,15 @@ function openAboutDialog() {
     return;
   }
 
-#ifdef XP_WIN
-  var features = "chrome,centerscreen,dependent";
-#elifdef XP_MACOSX
-  var features = "chrome,resizable=no,minimizable=no";
-#else
-  var features = "chrome,centerscreen,dependent,dialog=no";
-#endif
+  var features = "chrome,";
+  if (AppConstants.platform == "win") {
+    features += "centerscreen,dependent";
+  } else if (AppConstants.platform == "macosx") {
+    features += "resizable=no,minimizable=no";
+  } else {
+    features += "centerscreen,dependent,dialog=no";
+  }
+
   window.openDialog("chrome://browser/content/aboutDialog.xul", "", features);
 }
 
@@ -599,7 +601,6 @@ function openTroubleshootingPage()
   openUILinkIn("about:support", "tab");
 }
 
-#ifdef MOZ_SERVICES_HEALTHREPORT
 /**
  * Opens the troubleshooting information (about:support) page for this version
  * of the application.
@@ -608,7 +609,6 @@ function openHealthReport()
 {
   openUILinkIn("about:healthreport", "tab");
 }
-#endif
 
 /**
  * Opens the feedback page for this version of the application.
@@ -631,7 +631,7 @@ function openTourPage()
 function buildHelpMenu()
 {
   // Enable/disable the "Report Web Forgery" menu item.
-  if (typeof gSafeBrowsing != "undefined")
+  if (typeof gSafeBrowsing != "undefined" && AppConstants.MOZ_SAFE_BROWSING)
     gSafeBrowsing.setReportPhishingMenu();
 }
 
@@ -673,7 +673,7 @@ function makeURLAbsolute(aBase, aUrl)
  *        This will be used as the referrer. There will be no security check.
  * @param [optional] aReferrerPolicy
  *        Referrer policy - Ci.nsIHttpChannel.REFERRER_POLICY_*.
- */ 
+ */
 function openNewTabWith(aURL, aDocument, aPostData, aEvent,
                         aAllowThirdPartyFixup, aReferrer, aReferrerPolicy) {
 
@@ -728,7 +728,7 @@ function openHelpLink(aHelpTopic, aCalledFromModal, aWhere) {
 }
 
 function openPrefsHelp() {
-  // non-instant apply prefwindows are usually modal, so we can't open in the topmost window, 
+  // non-instant apply prefwindows are usually modal, so we can't open in the topmost window,
   // since its probably behind the window.
   var instantApply = getBoolPref("browser.preferences.instantApply");
 
@@ -751,9 +751,9 @@ function trimURL(aURL) {
 
   let flags = Services.uriFixup.FIXUP_FLAG_ALLOW_KEYWORD_LOOKUP |
               Services.uriFixup.FIXUP_FLAG_FIX_SCHEME_TYPOS;
-  let fixedUpURL = Services.uriFixup.createFixupURI(urlWithoutProtocol, flags);
-  let expectedURLSpec;
+  let fixedUpURL, expectedURLSpec;
   try {
+    fixedUpURL = Services.uriFixup.createFixupURI(urlWithoutProtocol, flags);
     expectedURLSpec = makeURI(aURL).spec;
   } catch (ex) {
     return url;

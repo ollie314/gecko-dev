@@ -15,7 +15,7 @@ dictionary ProfileTimelineStackFrame {
   DOMString functionDisplayName;
   object? parent = null;
   object? asyncParent = null;
-  object? asyncCause = null;
+  DOMString asyncCause;
 };
 
 dictionary ProfileTimelineLayerRect {
@@ -23,6 +23,11 @@ dictionary ProfileTimelineLayerRect {
   long y = 0;
   long width = 0;
   long height = 0;
+};
+
+enum ProfileTimelineMessagePortOperationType {
+  "serializeData",
+  "deserializeData",
 };
 
 enum ProfileTimelineWorkerOperationType {
@@ -51,11 +56,18 @@ dictionary ProfileTimelineMarker {
   DOMString type;
   unsigned short eventPhase;
 
+  /* For document::DOMContentLoaded and document::Load markers. Using this
+   * instead of the `start` and `end` timestamps is strongly discouraged. */
+  unsigned long long unixTime; // in microseconds
+
   /* For Paint markers.  */
   sequence<ProfileTimelineLayerRect> rectangles;
 
   /* For Style markers. */
   DOMString restyleHint;
+
+  /* For MessagePort markers. */
+  ProfileTimelineMessagePortOperationType messagePortOperation;
 
   /* For Worker markers. */
   ProfileTimelineWorkerOperationType workerOperation;

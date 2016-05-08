@@ -1,69 +1,40 @@
-%if 0
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
-%endif
+
+@import url("splitters.css");
 
 :root {
   font: message-box;
-%ifdef XP_MACOSX
+}
+
+:root[platform="mac"] {
   --monospace-font-family: Menlo, monospace;
-%elifdef XP_WIN
+}
+
+:root[platform="win"] {
   --monospace-font-family: Consolas, monospace;
-%else
+}
+
+:root[platform="linux"],
+:root.theme-firebug {
   --monospace-font-family: monospace;
-%endif
+}
+
+:root.theme-firebug {
+  --proportional-font-family: Lucida Grande, Tahoma, sans-serif;
 }
 
 .devtools-monospace {
   font-family: var(--monospace-font-family);
-%if defined(MOZ_WIDGET_GTK) || defined(MOZ_WIDGET_QT)
+}
+
+:root[platform="linux"] .devtools-monospace {
   font-size: 80%;
-%endif
 }
 
-/* Bottom-docked toolbox minimize transition */
-.devtools-toolbox-bottom-iframe {
-  transition: margin-bottom .1s;
-}
-
-/* Splitters */
-.devtools-horizontal-splitter {
-  -moz-appearance: none;
-  background-image: none;
-  background-color: transparent;
-  border: 0;
-  border-bottom: 1px solid rgba(118, 121, 125, .5);
-  min-height: 3px;
-  height: 3px;
-  margin-top: -3px;
-  position: relative;
-}
-
-.devtools-side-splitter {
-  -moz-appearance: none;
-  background-image: none;
-  background-color: transparent;
-  border: 0;
-  -moz-border-end: 1px solid rgba(118, 121, 125, .5);
-  min-width: 3px;
-  width: 3px;
-  -moz-margin-start: -3px;
-  position: relative;
-  cursor: e-resize;
-}
-
-.devtools-horizontal-splitter.disabled,
-.devtools-side-splitter.disabled {
-  pointer-events: none;
-}
-
-.devtools-toolbox-side-iframe {
-  min-width: 465px;
-}
 
 /* Autocomplete Popup */
-/* Dark and light theme */
 
 .devtools-autocomplete-popup {
   -moz-appearance: none !important;
@@ -71,17 +42,29 @@
   background-color: transparent;
   border-radius: 3px;
   overflow-x: hidden;
-%if defined(MOZ_WIDGET_GTK) || defined(MOZ_WIDGET_QT)
-  max-height: 32rem;
-%else
-  max-height: 40rem;
-%endif
+  max-height: 20rem;
+}
+
+:root[platform="linux"] .devtools-autocomplete-popup {
+  /* Root font size is bigger on Linux, adjust rem-based values. */
+  max-height: 16rem;
 }
 
 .devtools-autocomplete-listbox {
   -moz-appearance: none !important;
   background-color: transparent;
   border-width: 0px !important;
+  margin: 0;
+}
+
+.devtools-autocomplete-listbox > scrollbox {
+  padding: 2px;
+}
+
+.inplace-editor-autocomplete-popup .devtools-autocomplete-listbox {
+  /* Inplace editor closes the autocomplete popup on blur, the autocomplete
+  popup should not steal the focus here.*/
+  -moz-user-focus: ignore;
 }
 
 .devtools-autocomplete-listbox > richlistitem,
@@ -139,16 +122,31 @@
   box-shadow: 0 1px 0 hsla(209,29%,90%,.25) inset;
 }
 
+.theme-firebug .devtools-autocomplete-popup {
+  border-color: var(--theme-splitter-color);
+  border-radius: 5px;
+  font-size: var(--theme-autompletion-font-size);
+}
+
+.devtools-autocomplete-popup.firebug-theme {
+  background: var(--theme-body-background);
+}
+
+.devtools-autocomplete-listbox.firebug-theme > richlistitem[selected],
+.devtools-autocomplete-listbox.firebug-theme > richlistitem:hover,
 .devtools-autocomplete-listbox.light-theme > richlistitem[selected],
 .devtools-autocomplete-listbox.light-theme > richlistitem:hover {
   background-color: rgba(128,128,128,0.3);
 }
 
+.devtools-autocomplete-listbox.firebug-theme > richlistitem[selected] > .autocomplete-value,
+.devtools-autocomplete-listbox:focus.firebug-theme > richlistitem[selected] > .initial-value,
 .devtools-autocomplete-listbox.light-theme > richlistitem[selected] > .autocomplete-value,
 .devtools-autocomplete-listbox:focus.light-theme > richlistitem[selected] > .initial-value {
   color: #222;
 }
 
+.devtools-autocomplete-listbox.firebug-theme > richlistitem > label,
 .devtools-autocomplete-listbox.light-theme > richlistitem > label {
   color: #666;
 }
@@ -248,17 +246,6 @@
   background: transparent;
 }
 
-/* Eyedropper Widget */
-
-.devtools-eyedropper-panel {
-  pointer-events: none;
-  -moz-appearance: none;
-  width: 156px;
-  height: 120px;
-  background-color: transparent;
-  border: none;
-}
-
 /* links to source code, like displaying `myfile.js:45` */
 
 .devtools-source-link {
@@ -288,4 +275,30 @@
   flex: none;
   margin: 2px 0px;
   cursor: pointer;
+}
+
+/* Keyboard focus highlight styles */
+
+:-moz-focusring {
+  outline: var(--theme-focus-outline);
+  outline-offset: -1px;
+}
+
+textbox[focused="true"] {
+  border-color: var(--theme-focus-border-color-textbox);
+  box-shadow: var(--theme-focus-box-shadow-textbox);
+  transition: all 0.2s ease-in-out
+}
+
+textbox :-moz-focusring {
+  box-shadow: none;
+  outline: none;
+}
+
+/* Form fields should already have box-shadow hightlight */
+select:-moz-focusring,
+input[type="radio"]:-moz-focusring,
+input[type="checkbox"]:-moz-focusring,
+checkbox:-moz-focusring {
+  outline: none;
 }

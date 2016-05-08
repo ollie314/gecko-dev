@@ -39,9 +39,6 @@ const PREF_APP_PARTNER_BRANCH             = "app.partner.";
 const PREF_DISTRIBUTION_ID                = "distribution.id";
 const PREF_DISTRIBUTION_VERSION           = "distribution.version";
 
-const PREF_EXTENSIONS_UPDATE_URL          = "extensions.update.url";
-const PREF_EXTENSIONS_STRICT_COMPAT       = "extensions.strictCompatibility";
-
 const NS_APP_PROFILE_DIR_STARTUP   = "ProfDS";
 const NS_APP_USER_PROFILE_50_DIR   = "ProfD";
 const NS_GRE_DIR                   = "GreD";
@@ -609,8 +606,13 @@ function logTestInfo(aText, aCaller) {
   let ms = now.getMilliseconds();
   let time = (hh < 10 ? "0" + hh : hh) + ":" +
              (mm < 10 ? "0" + mm : mm) + ":" +
-             (ss < 10 ? "0" + ss : ss) + ":" +
-             (ms < 10 ? "00" + ms : ms < 100 ? "0" + ms : ms);
+             (ss < 10 ? "0" + ss : ss) + ":";
+  if (ms < 10) {
+    time += "00";
+  } else if (ms < 100) {
+    time += "0";
+  }
+  time += ms;
   let msg = time + " | TEST-INFO | " + caller.filename + " | [" + caller.name +
             " : " + caller.lineNumber + "] " + aText;
   LOG_FUNCTION(msg);

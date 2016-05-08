@@ -69,7 +69,6 @@ class AntivirusScan(BaseScript, VirtualenvMixin):
         r"^.*json$",
         r"^.*/host.*$",
         r"^.*/mar-tools/.*$",
-        r"^.*gecko-unsigned-unaligned.apk$",
         r"^.*robocop.apk$",
         r"^.*contrib.*"
     ]
@@ -108,7 +107,7 @@ class AntivirusScan(BaseScript, VirtualenvMixin):
         self.dest_dir = self.CACHE_DIR
 
     def _get_candidates_prefix(self):
-        return "pub/{}/candidates/{}-candidates/build{}".format(
+        return "pub/{}/candidates/{}-candidates/build{}/".format(
             self.config['product'],
             self.config["version"],
             self.config["build_number"]
@@ -155,7 +154,7 @@ class AntivirusScan(BaseScript, VirtualenvMixin):
             key = bucket.get_key(source)
             return retry(key.get_contents_to_filename,
                          args=(destination, ),
-                         sleeptime=5, max_sleeptime=60,
+                         sleeptime=30, max_sleeptime=150,
                          retry_exceptions=(S3CopyError, S3ResponseError,
                                            IOError, HTTPException))
 
@@ -167,7 +166,7 @@ class AntivirusScan(BaseScript, VirtualenvMixin):
                 if self._matches_exclude(keyname):
                     self.debug("Excluding {}".format(keyname))
                 else:
-                    destination = self.dest_dir + keyname.replace(candidates_prefix, '')
+                    destination = os.path.join(self.dest_dir, keyname.replace(candidates_prefix, ''))
                     dest_dir = os.path.dirname(destination)
                     if not os.path.isdir(dest_dir):
                         os.makedirs(dest_dir)

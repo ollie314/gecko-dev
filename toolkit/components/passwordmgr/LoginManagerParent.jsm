@@ -27,105 +27,7 @@ XPCOMUtils.defineLazyGetter(this, "log", () => {
   return logger.log.bind(logger);
 });
 
-this.EXPORTED_SYMBOLS = [ "LoginManagerParent", "PasswordsMetricsProvider" ];
-
-#ifndef ANDROID
-#ifdef MOZ_SERVICES_HEALTHREPORT
-XPCOMUtils.defineLazyModuleGetter(this, "Metrics",
-                                  "resource://gre/modules/Metrics.jsm");
-XPCOMUtils.defineLazyModuleGetter(this, "Task",
-                                  "resource://gre/modules/Task.jsm");
-
-function recordFHRDailyCounter(aField) {
-    let reporter = Cc["@mozilla.org/datareporting/service;1"]
-                      .getService()
-                      .wrappedJSObject
-                      .healthReporter;
-    // This can happen if the FHR component of the data reporting service is
-    // disabled. This is controlled by a pref that most will never use.
-    if (!reporter) {
-      return;
-    }
-      reporter.onInit().then(() => reporter.getProvider("org.mozilla.passwordmgr")
-        .recordDailyCounter(aField));
-  }
-
-this.PasswordsMetricsProvider = function() {
-  Metrics.Provider.call(this);
-};
-
-PasswordsMetricsProvider.prototype = Object.freeze({
-  __proto__: Metrics.Provider.prototype,
-
-  name: "org.mozilla.passwordmgr",
-
-  measurementTypes: [
-    PasswordsMeasurement1,
-    PasswordsMeasurement2,
-  ],
-
-  collectDailyData: function () {
-    return this.storage.enqueueTransaction(this._recordDailyPasswordData.bind(this));
-  },
-
-  _recordDailyPasswordData: function *() {
-    let m = this.getMeasurement(PasswordsMeasurement2.prototype.name,
-                                PasswordsMeasurement2.prototype.version);
-    let enabled = Services.prefs.getBoolPref("signon.rememberSignons");
-    yield m.setDailyLastNumeric("enabled", enabled ? 1 : 0);
-
-    let loginsCount = Services.logins.countLogins("", "", "");
-    yield m.setDailyLastNumeric("numSavedPasswords", loginsCount);
-
-  },
-
-  recordDailyCounter: function(aField) {
-    let m = this.getMeasurement(PasswordsMeasurement2.prototype.name,
-                                PasswordsMeasurement2.prototype.version);
-    if (this.storage.hasFieldFromMeasurement(m.id, aField,
-                                             Metrics.Storage.FIELD_DAILY_COUNTER)) {
-      let fieldID = this.storage.fieldIDFromMeasurement(m.id, aField, Metrics.Storage.FIELD_DAILY_COUNTER);
-      return this.enqueueStorageOperation(() => m.incrementDailyCounter(aField));
-    }
-
-    // Otherwise, we first need to create the field.
-    return this.enqueueStorageOperation (() => this.storage.registerField(m.id, aField, 
-      Metrics.Storage.FIELD_DAILY_COUNTER).then(() => m.incrementDailyCounter(aField)));
-  },
-});
-
-function PasswordsMeasurement1() {
-  Metrics.Measurement.call(this);
-}
-
-PasswordsMeasurement1.prototype = Object.freeze({
-  __proto__: Metrics.Measurement.prototype,
-  name: "passwordmgr",
-  version: 1,
-  fields: {
-    enabled: {type: Metrics.Storage.FIELD_DAILY_LAST_NUMERIC},
-    numSavedPasswords: {type: Metrics.Storage.FIELD_DAILY_LAST_NUMERIC},
-  },
-});
-
-function PasswordsMeasurement2() {
-  Metrics.Measurement.call(this);
-}
-PasswordsMeasurement2.prototype = Object.freeze({
-  __proto__: Metrics.Measurement.prototype,
-  name: "passwordmgr",
-  version: 2,
-  fields: {
-    enabled: {type: Metrics.Storage.FIELD_DAILY_LAST_NUMERIC},
-    numSavedPasswords: {type: Metrics.Storage.FIELD_DAILY_LAST_NUMERIC},
-    numSuccessfulFills: {type: Metrics.Storage.FIELD_DAILY_COUNTER},
-    numNewSavedPasswordsInSession: {type: Metrics.Storage.FIELD_DAILY_COUNTER},
-    numTotalLoginsEncountered: {type: Metrics.Storage.FIELD_DAILY_COUNTER},
-  },
-});
-
-#endif
-#endif
+this.EXPORTED_SYMBOLS = [ "LoginManagerParent" ];
 
 var LoginManagerParent = {
   /**
@@ -145,10 +47,8 @@ var LoginManagerParent = {
     mm.addMessageListener("RemoteLogins:findRecipes", this);
     mm.addMessageListener("RemoteLogins:onFormSubmit", this);
     mm.addMessageListener("RemoteLogins:autoCompleteLogins", this);
+    mm.addMessageListener("RemoteLogins:removeLogin", this);
     mm.addMessageListener("RemoteLogins:updateLoginFormPresence", this);
-    mm.addMessageListener("LoginStats:LoginEncountered", this);
-    mm.addMessageListener("LoginStats:LoginFillSuccessful", this);
-    Services.obs.addObserver(this, "LoginStats:NewSavedPassword", false);
 
     XPCOMUtils.defineLazyGetter(this, "recipeParentPromise", () => {
       const { LoginRecipesParent } = Cu.import("resource://gre/modules/LoginRecipes.jsm", {});
@@ -158,17 +58,6 @@ var LoginManagerParent = {
       return this._recipeManager.initializationPromise;
     });
 
-  },
-
-  observe: function (aSubject, aTopic, aData) {
-#ifndef ANDROID
-#ifdef MOZ_SERVICES_HEALTHREPORT
-    if (aTopic == "LoginStats:NewSavedPassword") {
-      recordFHRDailyCounter("numNewSavedPasswordsInSession");
-
-    }
-#endif
-#endif
   },
 
   receiveMessage: function (msg) {
@@ -211,24 +100,14 @@ var LoginManagerParent = {
         break;
       }
 
-      case "LoginStats:LoginFillSuccessful": {
-#ifndef ANDROID
-#ifdef MOZ_SERVICES_HEALTHREPORT
-        recordFHRDailyCounter("numSuccessfulFills");
-#endif
-#endif
-        break;
-      }
-
-      case "LoginStats:LoginEncountered": {
-#ifndef ANDROID
-#ifdef MOZ_SERVICES_HEALTHREPORT
-        recordFHRDailyCounter("numTotalLoginsEncountered");
-#endif
-#endif
+      case "RemoteLogins:removeLogin": {
+        let login = LoginHelper.vanillaObjectToLogin(data.login);
+        AutoCompleteE10S.removeLogin(login);
         break;
       }
     }
+
+    return undefined;
   },
 
   /**
@@ -250,7 +129,7 @@ var LoginManagerParent = {
 
     // Convert the array of nsILoginInfo to vanilla JS objects since nsILoginInfo
     // doesn't support structured cloning.
-    let jsLogins = JSON.parse(JSON.stringify([login]));
+    let jsLogins = [LoginHelper.loginToVanillaObject(login)];
 
     let objects = inputElement ? {inputElement} : null;
     browser.messageManager.sendAsyncMessage("RemoteLogins:fillForm", {
@@ -346,7 +225,7 @@ var LoginManagerParent = {
     var logins = Services.logins.findLogins({}, formOrigin, actionOrigin, null);
     // Convert the array of nsILoginInfo to vanilla JS objects since nsILoginInfo
     // doesn't support structured cloning.
-    var jsLogins = JSON.parse(JSON.stringify(logins));
+    var jsLogins = LoginHelper.loginsToVanillaObjects(logins);
     target.sendAsyncMessage("RemoteLogins:loginsFound", {
       requestId: requestId,
       logins: jsLogins,
@@ -379,7 +258,7 @@ var LoginManagerParent = {
 
       // We have a list of results for a shorter search string, so just
       // filter them further based on the new search string.
-      logins = previousResult.logins;
+      logins = LoginHelper.vanillaObjectsToLogins(previousResult.logins);
     } else {
       log("Creating new autocomplete search result.");
 
@@ -407,7 +286,7 @@ var LoginManagerParent = {
 
     // Convert the array of nsILoginInfo to vanilla JS objects since nsILoginInfo
     // doesn't support structured cloning.
-    var jsLogins = JSON.parse(JSON.stringify(matchingLogins));
+    var jsLogins = LoginHelper.loginsToVanillaObjects(matchingLogins);
     target.messageManager.sendAsyncMessage("RemoteLogins:loginsAutoCompleted", {
       requestId: requestId,
       logins: jsLogins,

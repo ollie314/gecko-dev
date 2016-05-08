@@ -122,7 +122,9 @@ class ValueOperand
     Register payloadReg() const {
         return payload_;
     }
-
+    bool aliases(Register reg) const {
+        return type_ == reg || payload_ == reg;
+    }
     Register scratchReg() const {
         return payloadReg();
     }
@@ -144,7 +146,9 @@ class ValueOperand
     Register valueReg() const {
         return value_;
     }
-
+    bool aliases(Register reg) const {
+        return value_ == reg;
+    }
     Register scratchReg() const {
         return valueReg();
     }
@@ -156,7 +160,7 @@ class ValueOperand
     }
 #endif
 
-    ValueOperand() {}
+    ValueOperand() = default;
 };
 
 // Registers to hold either either a typed or untyped value.
@@ -192,7 +196,7 @@ class TypedOrValueRegister
   public:
 
     TypedOrValueRegister()
-      : type_(MIRType_None)
+      : type_(MIRType::None)
     {}
 
     TypedOrValueRegister(MIRType type, AnyRegister reg)
@@ -202,7 +206,7 @@ class TypedOrValueRegister
     }
 
     MOZ_IMPLICIT TypedOrValueRegister(ValueOperand value)
-      : type_(MIRType_Value)
+      : type_(MIRType::Value)
     {
         dataValue() = value;
     }
@@ -212,11 +216,11 @@ class TypedOrValueRegister
     }
 
     bool hasTyped() const {
-        return type() != MIRType_None && type() != MIRType_Value;
+        return type() != MIRType::None && type() != MIRType::Value;
     }
 
     bool hasValue() const {
-        return type() == MIRType_Value;
+        return type() == MIRType::Value;
     }
 
     AnyRegister typedReg() const {
@@ -285,18 +289,18 @@ class ConstantOrRegister
     }
 };
 
-struct Int32Key {
+struct RegisterOrInt32Constant {
     bool isRegister_;
     union {
         Register reg_;
         int32_t constant_;
     };
 
-    explicit Int32Key(Register reg)
+    explicit RegisterOrInt32Constant(Register reg)
       : isRegister_(true), reg_(reg)
     { }
 
-    explicit Int32Key(int32_t index)
+    explicit RegisterOrInt32Constant(int32_t index)
       : isRegister_(false), constant_(index)
     { }
 
@@ -642,12 +646,12 @@ class AllocatableSetAccessors<RegisterSet>
 // The LiveSet accessors are used to collect a list of allocated
 // registers. Taking or adding a register should *not* consider the aliases, as
 // we care about interpreting the registers with the correct type.  For example,
-// on x64, where one float registers can be interpreted as an Int32x4, a Double,
-// or a Float, adding xmm0 as an Int32x4, does not make the register available
+// on x64, where one float registers can be interpreted as an Simd128, a Double,
+// or a Float, adding xmm0 as an Simd128, does not make the register available
 // as a Double.
 //
 //     LiveFloatRegisterSet regs;
-//     regs.add(xmm0.asInt32x4());
+//     regs.add(xmm0.asSimd128());
 //     regs.take(xmm0); // Assert!
 //
 // These accessors are useful for recording the result of a register allocator,
@@ -802,6 +806,14 @@ class SpecializedRegSet : public Accessors
         return ValueOperand(takeAny());
 #else
 #error "Bad architecture"
+#endif
+    }
+
+    bool aliases(ValueOperand v) const {
+#ifdef JS_NUNBOX32
+        return has(v.typeReg()) || has(v.payloadReg());
+#else
+        return has(v.valueReg());
 #endif
     }
 
@@ -1275,6 +1287,13 @@ class ABIArg
         MOZ_ASSERT(kind() == GPR);
         return Register::FromCode(u.gpr_);
     }
+    Register64 gpr64() const {
+#ifdef JS_PUNBOX64
+        return Register64(gpr());
+#else
+        MOZ_CRASH("NYI");
+#endif
+    }
     Register evenGpr() const {
         MOZ_ASSERT(isGeneralRegPair());
         return Register::FromCode(u.gpr_);
@@ -1309,7 +1328,7 @@ SavedNonVolatileRegisters(AllocatableGeneralRegisterSet unused)
     result.add(Register::FromCode(Registers::lr));
 #elif defined(JS_CODEGEN_ARM64)
     result.add(Register::FromCode(Registers::lr));
-#elif defined(JS_CODEGEN_MIPS32)
+#elif defined(JS_CODEGEN_MIPS32) || defined(JS_CODEGEN_MIPS64)
     result.add(Register::FromCode(Registers::ra));
 #endif
 

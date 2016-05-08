@@ -79,7 +79,7 @@ private:
 };
 
 // Shuts down a thread asynchronously.
-class ShutdownThreadEvent : public nsRunnable
+class ShutdownThreadEvent : public Runnable
 {
 public:
   explicit ShutdownThreadEvent(nsIThread* aThread) : mThread(aThread) {}
@@ -94,7 +94,7 @@ private:
 };
 
 template<class T>
-class DeleteObjectTask: public nsRunnable {
+class DeleteObjectTask: public Runnable {
 public:
   explicit DeleteObjectTask(nsAutoPtr<T>& aObject)
     : mObject(aObject)
@@ -131,6 +131,9 @@ CheckedInt64 FramesToUsecs(int64_t aFrames, uint32_t aRate);
 // Converts from number of audio frames (aFrames) TimeUnit, given
 // the specified audio rate (aRate).
 media::TimeUnit FramesToTimeUnit(int64_t aFrames, uint32_t aRate);
+// Perform aValue * aMul / aDiv, reducing the possibility of overflow due to
+// aValue * aMul overflowing.
+CheckedInt64 SaferMultDiv(int64_t aValue, uint32_t aMul, uint32_t aDiv);
 
 // Converts from microseconds (aUsecs) to number of audio frames, given the
 // specified audio rate (aRate). Stores the result in aOutFrames. Returns
@@ -154,21 +157,14 @@ nsresult SecondsToUsecs(double aSeconds, int64_t& aOutUsecs);
 // The maximum height and width of the video. Used for
 // sanitizing the memory allocation of the RGB buffer.
 // The maximum resolution we anticipate encountering in the
-// wild is 2160p - 3840x2160 pixels.
-static const int32_t MAX_VIDEO_WIDTH = 4000;
-static const int32_t MAX_VIDEO_HEIGHT = 3000;
+// wild is 2160p (UHD "4K") or 4320p - 7680x4320 pixels for VR.
+static const int32_t MAX_VIDEO_WIDTH = 8192;
+static const int32_t MAX_VIDEO_HEIGHT = 4608;
 
 // Scales the display rect aDisplay by aspect ratio aAspectRatio.
 // Note that aDisplay must be validated by IsValidVideoRegion()
 // before being used!
 void ScaleDisplayByAspectRatio(nsIntSize& aDisplay, float aAspectRatio);
-
-// Downmix multichannel Audio samples to Stereo.
-// Input are the buffer contains multichannel data,
-// the number of channels and the number of frames.
-int DownmixAudioToStereo(mozilla::AudioDataValue* buffer,
-                         int channels,
-                         uint32_t frames);
 
 // Downmix Stereo audio samples to Mono.
 // Input are the buffer contains stereo data and the number of frames.

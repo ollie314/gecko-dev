@@ -36,7 +36,7 @@ var tests = [
         ok(true, "The snapshot should conform to the schema.");
       }
       catch (err) {
-        ok(false, err);
+        ok(false, "Schema mismatch, " + err);
       }
       done();
     });
@@ -112,6 +112,10 @@ const SNAPSHOT_SCHEMA = {
           required: true,
           type: "string",
         },
+        osVersion: {
+          required: true,
+          type: "string",
+        },
         vendor: {
           type: "string",
         },
@@ -124,6 +128,9 @@ const SNAPSHOT_SCHEMA = {
         remoteAutoStart: {
           type: "boolean",
           required: true,
+        },
+        autoStartStatus: {
+          type: "number",
         },
         numTotalWindows: {
           type: "number",
@@ -298,6 +305,9 @@ const SNAPSHOT_SCHEMA = {
           items: {
             type: "string",
           },
+        },
+        featureLog: {
+          type: "object",
         },
         direct2DEnabledMessage: {
           type: "array",

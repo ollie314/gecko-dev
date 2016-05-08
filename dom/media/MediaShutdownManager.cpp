@@ -12,14 +12,14 @@
 
 namespace mozilla {
 
-extern PRLogModuleInfo* gMediaDecoderLog;
+extern LazyLogModule gMediaDecoderLog;
 #define DECODER_LOG(type, msg) MOZ_LOG(gMediaDecoderLog, type, msg)
 
 NS_IMPL_ISUPPORTS(MediaShutdownManager, nsIObserver)
 
 MediaShutdownManager::MediaShutdownManager()
-  : mIsObservingShutdown(false),
-    mIsDoingXPCOMShutDown(false)
+  : mIsObservingShutdown(false)
+  , mIsDoingXPCOMShutDown(false)
 {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_COUNT_CTOR(MediaShutdownManager);
@@ -48,7 +48,6 @@ MediaShutdownManager::Instance()
 void
 MediaShutdownManager::EnsureCorrectShutdownObserverState()
 {
-  MOZ_ASSERT(!mIsDoingXPCOMShutDown);
   bool needShutdownObserver = mDecoders.Count() > 0;
   if (needShutdownObserver != mIsObservingShutdown) {
     mIsObservingShutdown = needShutdownObserver;
@@ -67,6 +66,7 @@ void
 MediaShutdownManager::Register(MediaDecoder* aDecoder)
 {
   MOZ_ASSERT(NS_IsMainThread());
+  MOZ_DIAGNOSTIC_ASSERT(!mIsDoingXPCOMShutDown);
   // Don't call Register() after you've Unregistered() all the decoders,
   // that's not going to work.
   MOZ_ASSERT(!mDecoders.Contains(aDecoder));
@@ -81,10 +81,8 @@ MediaShutdownManager::Unregister(MediaDecoder* aDecoder)
 {
   MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(mDecoders.Contains(aDecoder));
-  if (!mIsDoingXPCOMShutDown) {
-    mDecoders.RemoveEntry(aDecoder);
-    EnsureCorrectShutdownObserverState();
-  }
+  mDecoders.RemoveEntry(aDecoder);
+  EnsureCorrectShutdownObserverState();
 }
 
 NS_IMETHODIMP
@@ -107,27 +105,27 @@ MediaShutdownManager::Shutdown()
 
   DECODER_LOG(LogLevel::Debug, ("MediaShutdownManager::Shutdown() start..."));
 
-  // Mark that we're shutting down, so that Unregister(*) calls don't remove
-  // hashtable entries. If Unregsiter(*) was to remove from the hash table,
-  // the iterations over the hashtables below would be disrupted.
+  // Set this flag to ensure no Register() is allowed when Shutdown() begins.
   mIsDoingXPCOMShutDown = true;
 
-  // Iterate over the decoders and shut them down, and remove them from the
-  // hashtable.
+  DebugOnly<uint32_t> oldCount = mDecoders.Count();
+  MOZ_ASSERT(oldCount > 0);
+
+  // Iterate over the decoders and shut them down.
   for (auto iter = mDecoders.Iter(); !iter.Done(); iter.Next()) {
     iter.Get()->GetKey()->Shutdown();
-    iter.Remove();
+    // Check MediaDecoder::Shutdown doesn't call Unregister() synchronously in
+    // order not to corrupt our hashtable traversal.
+    MOZ_ASSERT(mDecoders.Count() == oldCount);
   }
 
-  // Remove the MediaShutdownManager instance from the shutdown observer
-  // list.
-  nsContentUtils::UnregisterShutdownObserver(this);
+  // Spin the loop until all decoders are unregistered
+  // which will then clear |sInstance|.
+  while (sInstance) {
+    NS_ProcessNextEvent(NS_GetCurrentThread(), true);
+  }
 
-  // Clear the singleton instance. The only remaining reference should be the
-  // reference that the observer service used to call us with. The
-  // MediaShutdownManager will be deleted once the observer service cleans
-  // up after it finishes its notifications.
-  sInstance = nullptr;
+  // Note: Don't access |this| which might be deleted after clearing sInstance.
 
   DECODER_LOG(LogLevel::Debug, ("MediaShutdownManager::Shutdown() end."));
 }

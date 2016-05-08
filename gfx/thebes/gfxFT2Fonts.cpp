@@ -43,20 +43,20 @@
  */
 
 bool
-gfxFT2Font::ShapeText(gfxContext     *aContext,
+gfxFT2Font::ShapeText(DrawTarget     *aDrawTarget,
                       const char16_t *aText,
                       uint32_t        aOffset,
                       uint32_t        aLength,
-                      int32_t         aScript,
+                      Script          aScript,
                       bool            aVertical,
                       gfxShapedText  *aShapedText)
 {
-    if (!gfxFont::ShapeText(aContext, aText, aOffset, aLength, aScript,
+    if (!gfxFont::ShapeText(aDrawTarget, aText, aOffset, aLength, aScript,
                             aVertical, aShapedText)) {
         // harfbuzz must have failed(?!), just render raw glyphs
         AddRange(aText, aOffset, aLength, aShapedText);
-        PostShapingFixup(aContext, aText, aOffset, aLength, aVertical,
-                         aShapedText);
+        PostShapingFixup(aDrawTarget, aText, aOffset, aLength,
+                         aVertical, aShapedText);
     }
 
     return true;

@@ -11,7 +11,7 @@
 
 #include "mozilla/MemoryReporting.h"
 
-#include "js/TraceableVector.h"
+#include "js/GCVector.h"
 #include "js/Vector.h"
 #include "vm/Runtime.h"
 
@@ -29,20 +29,14 @@ class JitContext;
 class DebugModeOSRVolatileJitFrameIterator;
 } // namespace jit
 
-typedef HashSet<JSObject*> ObjectSet;
 typedef HashSet<Shape*> ShapeSet;
 
 /* Detects cycles when traversing an object graph. */
 class MOZ_RAII AutoCycleDetector
 {
-    JSContext* cx;
-    RootedObject obj;
-    bool cyclic;
-    uint32_t hashsetGenerationAtInit;
-    ObjectSet::AddPtr hashsetAddPointer;
-    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
-
   public:
+    using Set = HashSet<JSObject*, MovableCellHasher<JSObject*>>;
+
     AutoCycleDetector(JSContext* cx, HandleObject objArg
                       MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
       : cx(cx), obj(cx, objArg), cyclic(true)
@@ -55,11 +49,19 @@ class MOZ_RAII AutoCycleDetector
     bool init();
 
     bool foundCycle() { return cyclic; }
+
+  private:
+    Generation hashsetGenerationAtInit;
+    JSContext* cx;
+    RootedObject obj;
+    Set::AddPtr hashsetAddPointer;
+    bool cyclic;
+    MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };
 
 /* Updates references in the cycle detection set if the GC moves them. */
 extern void
-TraceCycleDetectionSet(JSTracer* trc, ObjectSet& set);
+TraceCycleDetectionSet(JSTracer* trc, AutoCycleDetector::Set& set);
 
 struct AutoResolving;
 
@@ -163,8 +165,10 @@ class ExclusiveContext : public ContextFriendFields,
     }
 
     void* onOutOfMemory(js::AllocFunction allocFunc, size_t nbytes, void* reallocPtr = nullptr) {
-        if (!isJSContext())
+        if (!isJSContext()) {
+            addPendingOutOfMemory();
             return nullptr;
+        }
         return runtime_->onOutOfMemory(allocFunc, nbytes, reallocPtr, asJSContext());
     }
 
@@ -186,6 +190,7 @@ class ExclusiveContext : public ContextFriendFields,
     bool isPermanentAtomsInitialized() { return !!runtime_->permanentAtoms; }
     FrozenAtomSet& permanentAtoms() { return *runtime_->permanentAtoms; }
     WellKnownSymbols& wellKnownSymbols() { return *runtime_->wellKnownSymbols; }
+    JS::BuildIdOp buildIdOp() { return runtime_->buildIdOp; }
     const JS::AsmJSCacheOps& asmJSCacheOps() { return runtime_->asmJSCacheOps; }
     PropertyName* emptyString() { return runtime_->emptyString; }
     FreeOp* defaultFreeOp() { return runtime_->defaultFreeOp(); }
@@ -278,8 +283,9 @@ class ExclusiveContext : public ContextFriendFields,
     }
 
     // Methods specific to any HelperThread for the context.
-    frontend::CompileError& addPendingCompileError();
+    bool addPendingCompileError(frontend::CompileError** err);
     void addPendingOverRecursed();
+    void addPendingOutOfMemory();
 };
 
 } /* namespace js */
@@ -349,7 +355,7 @@ struct JSContext : public js::ExclusiveContext,
 
   public:
     /* State for object and array toSource conversion. */
-    js::ObjectSet       cycleDetectorSet;
+    js::AutoCycleDetector::Set cycleDetectorSet;
 
     /* Client opaque pointers. */
     void*               data;
@@ -428,10 +434,11 @@ struct JSContext : public js::ExclusiveContext,
         return throwing;
     }
 
-    MOZ_WARN_UNUSED_RESULT
+    MOZ_MUST_USE
     bool getPendingException(JS::MutableHandleValue rval);
 
     bool isThrowingOutOfMemory();
+    bool isThrowingDebuggeeWouldRun();
     bool isClosingGenerator();
 
     void setPendingException(js::Value v);
@@ -657,6 +664,7 @@ namespace js {
 MOZ_ALWAYS_INLINE bool
 CheckForInterrupt(JSContext* cx)
 {
+    MOZ_ASSERT(!cx->isExceptionPending());
     // Add an inline fast-path since we have to check for interrupts in some hot
     // C++ loops of library builtins.
     JSRuntime* rt = cx->runtime();
@@ -666,11 +674,6 @@ CheckForInterrupt(JSContext* cx)
 }
 
 /************************************************************************/
-
-typedef JS::AutoVectorRooter<PropertyName*> AutoPropertyNameVector;
-
-using ShapeVector = js::TraceableVector<Shape*>;
-using StringVector = js::TraceableVector<JSString*>;
 
 /* AutoArrayRooter roots an external array of Values. */
 class MOZ_RAII AutoArrayRooter : private JS::AutoGCRooter
@@ -760,13 +763,15 @@ class MOZ_RAII AutoLockForExclusiveAccess
         runtime = rt;
         if (runtime->numExclusiveThreads) {
             runtime->assertCanLock(ExclusiveAccessLock);
-            PR_Lock(runtime->exclusiveAccessLock);
+            runtime->exclusiveAccessLock.lock();
 #ifdef DEBUG
             runtime->exclusiveAccessOwner = PR_GetCurrentThread();
 #endif
         } else {
             MOZ_ASSERT(!runtime->mainThreadHasExclusiveAccess);
+#ifdef DEBUG
             runtime->mainThreadHasExclusiveAccess = true;
+#endif
         }
     }
 
@@ -781,12 +786,16 @@ class MOZ_RAII AutoLockForExclusiveAccess
     }
     ~AutoLockForExclusiveAccess() {
         if (runtime->numExclusiveThreads) {
+#ifdef DEBUG
             MOZ_ASSERT(runtime->exclusiveAccessOwner == PR_GetCurrentThread());
             runtime->exclusiveAccessOwner = nullptr;
-            PR_Unlock(runtime->exclusiveAccessLock);
+#endif
+            runtime->exclusiveAccessLock.unlock();
         } else {
             MOZ_ASSERT(runtime->mainThreadHasExclusiveAccess);
+#ifdef DEBUG
             runtime->mainThreadHasExclusiveAccess = false;
+#endif
         }
     }
 

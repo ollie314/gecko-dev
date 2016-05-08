@@ -34,6 +34,35 @@ Base64Decode(const nsACString& aBinaryData, nsACString& aString);
 nsresult
 Base64Decode(const nsAString& aBinaryData, nsAString& aString);
 
+enum class Base64URLEncodePaddingPolicy {
+  Include,
+  Omit,
+};
+
+/**
+ * Converts |aData| to an unpadded, Base64 URL-encoded string per RFC 4648.
+ * Aims to encode the data in constant time. The caller retains ownership
+ * of |aData|.
+ */
+nsresult
+Base64URLEncode(uint32_t aLength, const uint8_t* aData,
+                Base64URLEncodePaddingPolicy aPaddingPolicy,
+                nsACString& aString);
+
+enum class Base64URLDecodePaddingPolicy {
+  Require,
+  Ignore,
+  Reject,
+};
+
+/**
+ * Decodes a Base64 URL-encoded |aString| into |aOutput|.
+ */
+nsresult
+Base64URLDecode(const nsACString& aString,
+                Base64URLDecodePaddingPolicy aPaddingPolicy,
+                FallibleTArray<uint8_t>& aOutput);
+
 } // namespace mozilla
 
 #endif

@@ -6,6 +6,7 @@
 #ifndef GFX_LAYERS_H
 #define GFX_LAYERS_H
 
+#include <map>
 #include <stdint.h>                     // for uint32_t, uint64_t, uint8_t
 #include <stdio.h>                      // for FILE
 #include <sys/types.h>                  // for int32_t, int64_t
@@ -27,6 +28,7 @@
 #include "mozilla/gfx/BaseMargin.h"     // for BaseMargin
 #include "mozilla/gfx/BasePoint.h"      // for BasePoint
 #include "mozilla/gfx/Point.h"          // for IntSize
+#include "mozilla/gfx/TiledRegion.h"    // for TiledIntRegion
 #include "mozilla/gfx/Types.h"          // for SurfaceFormat
 #include "mozilla/gfx/UserData.h"       // for UserData, etc
 #include "mozilla/layers/LayersTypes.h"
@@ -168,9 +170,8 @@ public:
     , mSnapEffectiveTransforms(true)
     , mId(0)
     , mInTransaction(false)
-  {
-    InitLog();
-  }
+    , mPaintedPixelCount(0)
+  {}
 
   /**
    * Release layers and resources held by this layer manager, and mark
@@ -566,12 +567,13 @@ public:
    * Dump information about this layer manager and its managed tree to
    * aStream.
    */
-  void Dump(std::stringstream& aStream, const char* aPrefix="", bool aDumpHtml=false);
+  void Dump(std::stringstream& aStream, const char* aPrefix="",
+            bool aDumpHtml=false, bool aSorted=false);
   /**
    * Dump information about just this layer manager itself to aStream
    */
-  void DumpSelf(std::stringstream& aStream, const char* aPrefix="");
-  void Dump();
+  void DumpSelf(std::stringstream& aStream, const char* aPrefix="", bool aSorted=false);
+  void Dump(bool aSorted=false);
 
   /**
    * Dump information about this layer manager and its managed tree to
@@ -621,7 +623,7 @@ public:
   void BeginTabSwitch();
 
   static bool IsLogEnabled();
-  static PRLogModuleInfo* GetLog() { return sLog; }
+  static mozilla::LogModule* GetLog();
 
   bool IsCompositingCheap(LayersBackend aBackend)
   {
@@ -642,17 +644,6 @@ public:
     mRegionToClear = aRegion;
   }
 
-  virtual bool SupportsMixBlendModes(EnumSet<gfx::CompositionOp>& aMixBlendModes)
-  {
-    return false;
-  }
-
-  bool SupportsMixBlendMode(gfx::CompositionOp aMixBlendMode)
-  {
-    EnumSet<gfx::CompositionOp> modes(aMixBlendMode);
-    return SupportsMixBlendModes(modes);
-  }
-
   virtual float RequestProperty(const nsAString& property) { return -1; }
 
   const TimeStamp& GetAnimationReadyTime() const {
@@ -664,6 +655,16 @@ public:
   }
 
   static void LayerUserDataDestroy(void* data);
+
+  void AddPaintedPixelCount(int32_t aCount) {
+    mPaintedPixelCount += aCount;
+  }
+
+  uint32_t GetAndClearPaintedPixelCount() {
+    uint32_t count = mPaintedPixelCount;
+    mPaintedPixelCount = 0;
+    return count;
+  }
 
 protected:
   RefPtr<Layer> mRoot;
@@ -684,32 +685,47 @@ protected:
   // Internally used to implement Dump().
   virtual void DumpPacket(layerscope::LayersPacket* aPacket);
 
-  static void InitLog();
-  static PRLogModuleInfo* sLog;
   uint64_t mId;
   bool mInTransaction;
   // The time when painting most recently finished. This is recorded so that
   // we can time any play-pending animations from this point.
   TimeStamp mAnimationReadyTime;
+  // The count of pixels that were painted in the current transaction.
+  uint32_t mPaintedPixelCount;
 private:
   struct FramesTimingRecording
   {
     // Stores state and data for frame intervals and paint times recording.
     // see LayerManager::StartFrameTimeRecording() at Layers.cpp for more details.
     FramesTimingRecording()
-      : mIsPaused(true)
-      , mNextIndex(0)
+      : mNextIndex(0)
+      , mLatestStartIndex(0)
+      , mCurrentRunStartIndex(0)
+      , mIsPaused(true)
     {}
-    bool mIsPaused;
-    uint32_t mNextIndex;
-    TimeStamp mLastFrameTime;
     nsTArray<float> mIntervals;
+    TimeStamp mLastFrameTime;
+    uint32_t mNextIndex;
     uint32_t mLatestStartIndex;
     uint32_t mCurrentRunStartIndex;
+    bool mIsPaused;
   };
   FramesTimingRecording mRecording;
 
   TimeStamp mTabSwitchStart;
+
+public:
+  /*
+   * Methods to store/get/clear a "pending scroll info update" object on a
+   * per-scrollid basis. This is used for empty transactions that push over
+   * scroll position updates to the APZ code.
+   */
+  void SetPendingScrollUpdateForNextTransaction(FrameMetrics::ViewID aScrollId,
+                                                const ScrollUpdateInfo& aUpdateInfo);
+  Maybe<ScrollUpdateInfo> GetPendingScrollInfoUpdate(FrameMetrics::ViewID aScrollId);
+  void ClearPendingScrollInfoUpdate();
+private:
+  std::map<FrameMetrics::ViewID,ScrollUpdateInfo> mPendingScrollUpdates;
 };
 
 typedef InfallibleTArray<Animation> AnimationArray;
@@ -717,7 +733,7 @@ typedef InfallibleTArray<Animation> AnimationArray;
 struct AnimData {
   InfallibleTArray<mozilla::StyleAnimationValue> mStartValues;
   InfallibleTArray<mozilla::StyleAnimationValue> mEndValues;
-  InfallibleTArray<nsAutoPtr<mozilla::ComputedTimingFunction> > mFunctions;
+  InfallibleTArray<Maybe<mozilla::ComputedTimingFunction>> mFunctions;
 };
 
 /**
@@ -849,7 +865,7 @@ public:
    * visible region will be ignored. So if a layer draws outside the bounds
    * of its visible region, it needs to ensure that what it draws is valid.
    */
-  virtual void SetVisibleRegion(const nsIntRegion& aRegion)
+  virtual void SetVisibleRegion(const LayerIntRegion& aRegion)
   {
     if (!mVisibleRegion.IsEqual(aRegion)) {
       MOZ_LAYERS_LOG_IF_SHADOWABLE(this, ("Layer::Mutated(%p) VisibleRegion was %s is %s", this,
@@ -867,12 +883,13 @@ public:
    * them with the provided FrameMetrics. See the documentation for
    * SetFrameMetrics(const nsTArray<FrameMetrics>&) for more details.
    */
-  void SetFrameMetrics(const FrameMetrics& aFrameMetrics)
+  void SetScrollMetadata(const ScrollMetadata& aScrollMetadata)
   {
-    if (mFrameMetrics.Length() != 1 || mFrameMetrics[0] != aFrameMetrics) {
+    Manager()->ClearPendingScrollInfoUpdate();
+    if (mScrollMetadata.Length() != 1 || mScrollMetadata[0] != aScrollMetadata) {
       MOZ_LAYERS_LOG_IF_SHADOWABLE(this, ("Layer::Mutated(%p) FrameMetrics", this));
-      mFrameMetrics.ReplaceElementsAt(0, mFrameMetrics.Length(), aFrameMetrics);
-      FrameMetricsChanged();
+      mScrollMetadata.ReplaceElementsAt(0, mScrollMetadata.Length(), aScrollMetadata);
+      ScrollMetadataChanged();
       Mutated();
     }
   }
@@ -883,23 +900,24 @@ public:
    * rooted at this. There might be multiple metrics on this layer
    * because the layer may, for example, be contained inside multiple
    * nested scrolling subdocuments. In general a Layer having multiple
-   * FrameMetrics objects is conceptually equivalent to having a stack
+   * ScrollMetadata objects is conceptually equivalent to having a stack
    * of ContainerLayers that have been flattened into this Layer.
    * See the documentation in LayerMetricsWrapper.h for a more detailed
    * explanation of this conceptual equivalence.
    *
    * Note also that there is actually a many-to-many relationship between
-   * Layers and FrameMetrics, because multiple Layers may have identical
-   * FrameMetrics objects. This happens when those layers belong to the
+   * Layers and ScrollMetadata, because multiple Layers may have identical
+   * ScrollMetadata objects. This happens when those layers belong to the
    * same scrolling subdocument and therefore end up with the same async
    * transform when they are scrolled by the APZ code.
    */
-  void SetFrameMetrics(const nsTArray<FrameMetrics>& aMetricsArray)
+  void SetScrollMetadata(const nsTArray<ScrollMetadata>& aMetadataArray)
   {
-    if (mFrameMetrics != aMetricsArray) {
+    Manager()->ClearPendingScrollInfoUpdate();
+    if (mScrollMetadata != aMetadataArray) {
       MOZ_LAYERS_LOG_IF_SHADOWABLE(this, ("Layer::Mutated(%p) FrameMetrics", this));
-      mFrameMetrics = aMetricsArray;
-      FrameMetricsChanged();
+      mScrollMetadata = aMetadataArray;
+      ScrollMetadataChanged();
       Mutated();
     }
   }
@@ -1117,6 +1135,21 @@ public:
     }
   }
 
+  /**
+   * CONSTRUCTION PHASE ONLY
+   * This flag is true when the transform on the layer is a perspective
+   * transform. The compositor treats perspective transforms specially
+   * for async scrolling purposes.
+   */
+  void SetTransformIsPerspective(bool aTransformIsPerspective)
+  {
+    if (mTransformIsPerspective != aTransformIsPerspective) {
+      MOZ_LAYERS_LOG_IF_SHADOWABLE(this, ("Layer::Mutated(%p) TransformIsPerspective", this));
+      mTransformIsPerspective = aTransformIsPerspective;
+      Mutated();
+    }
+  }
+
   // Call AddAnimation to add a new animation to this layer from layout code.
   // Caller must fill in all the properties of the returned animation.
   // A later animation overrides an earlier one.
@@ -1152,6 +1185,11 @@ public:
    *     compositing the layer tree with a transformation (such as when
    *     asynchronously scrolling and zooming).
    *
+   *   - |aSides| is the set of sides to which the element is fixed relative to.
+   *     This is used if the viewport size is changed in the compositor and
+   *     fixed position items need to shift accordingly. This value is made up
+   *     combining appropriate values from mozilla::SideBits.
+   *
    *   - |aIsClipFixed| is true if this layer's clip rect and mask layer
    *     should also remain fixed during async scrolling/animations.
    *     This is the case for fixed position layers, but not for
@@ -1159,11 +1197,13 @@ public:
    */
   void SetFixedPositionData(FrameMetrics::ViewID aScrollId,
                             const LayerPoint& aAnchor,
+                            int32_t aSides,
                             bool aIsClipFixed)
   {
     if (!mFixedPositionData ||
         mFixedPositionData->mScrollId != aScrollId ||
         mFixedPositionData->mAnchor != aAnchor ||
+        mFixedPositionData->mSides != aSides ||
         mFixedPositionData->mIsClipFixed != aIsClipFixed) {
       MOZ_LAYERS_LOG_IF_SHADOWABLE(this, ("Layer::Mutated(%p) FixedPositionData", this));
       if (!mFixedPositionData) {
@@ -1171,6 +1211,7 @@ public:
       }
       mFixedPositionData->mScrollId = aScrollId;
       mFixedPositionData->mAnchor = aAnchor;
+      mFixedPositionData->mSides = aSides;
       mFixedPositionData->mIsClipFixed = aIsClipFixed;
       Mutated();
     }
@@ -1242,10 +1283,11 @@ public:
   const Maybe<ParentLayerIntRect>& GetClipRect() const { return mClipRect; }
   uint32_t GetContentFlags() { return mContentFlags; }
   const gfx::IntRect& GetLayerBounds() const { return mLayerBounds; }
-  const nsIntRegion& GetVisibleRegion() const { return mVisibleRegion; }
+  const LayerIntRegion& GetVisibleRegion() const { return mVisibleRegion; }
+  const ScrollMetadata& GetScrollMetadata(uint32_t aIndex) const;
   const FrameMetrics& GetFrameMetrics(uint32_t aIndex) const;
-  uint32_t GetFrameMetricsCount() const { return mFrameMetrics.Length(); }
-  const nsTArray<FrameMetrics>& GetAllFrameMetrics() { return mFrameMetrics; }
+  uint32_t GetScrollMetadataCount() const { return mScrollMetadata.Length(); }
+  const nsTArray<ScrollMetadata>& GetAllScrollMetadata() { return mScrollMetadata; }
   bool HasScrollableFrameMetrics() const;
   bool IsScrollInfoLayer() const;
   const EventRegions& GetEventRegions() const { return mEventRegions; }
@@ -1256,15 +1298,20 @@ public:
   const Layer* GetPrevSibling() const { return mPrevSibling; }
   virtual Layer* GetFirstChild() const { return nullptr; }
   virtual Layer* GetLastChild() const { return nullptr; }
-  const gfx::Matrix4x4 GetTransform() const;
+  gfx::Matrix4x4 GetTransform() const;
+  // Same as GetTransform(), but returns the transform as a strongly-typed
+  // matrix. Eventually this will replace GetTransform().
+  const CSSTransformMatrix GetTransformTyped() const;
   const gfx::Matrix4x4& GetBaseTransform() const { return mTransform; }
   // Note: these are virtual because ContainerLayerComposite overrides them.
   virtual float GetPostXScale() const { return mPostXScale; }
   virtual float GetPostYScale() const { return mPostYScale; }
   bool GetIsFixedPosition() { return mIsFixedPosition; }
+  bool GetTransformIsPerspective() const { return mTransformIsPerspective; }
   bool GetIsStickyPosition() { return mStickyPositionData; }
   FrameMetrics::ViewID GetFixedPositionScrollContainerId() { return mFixedPositionData ? mFixedPositionData->mScrollId : FrameMetrics::NULL_SCROLL_ID; }
   LayerPoint GetFixedPositionAnchor() { return mFixedPositionData ? mFixedPositionData->mAnchor : LayerPoint(); }
+  int32_t GetFixedPositionSides() { return mFixedPositionData ? mFixedPositionData->mSides : eSideBitsNone; }
   bool IsClipFixed() { return mFixedPositionData ? mFixedPositionData->mIsClipFixed : false; }
   FrameMetrics::ViewID GetStickyScrollContainerId() { return mStickyPositionData->mScrollId; }
   const LayerRect& GetStickyScrollRangeOuter() { return mStickyPositionData->mOuter; }
@@ -1325,15 +1372,22 @@ public:
 
   /**
    * Returns the local transform for this layer: either mTransform or,
-   * for shadow layers, GetShadowTransform()
+   * for shadow layers, GetShadowBaseTransform(), in either case with the
+   * pre- and post-scales applied.
    */
-  const gfx::Matrix4x4 GetLocalTransform();
+  gfx::Matrix4x4 GetLocalTransform();
+
+  /**
+   * Same as GetLocalTransform(), but returns a strongly-typed matrix.
+   * Eventually, this will replace GetLocalTransform().
+   */
+  const LayerToParentLayerMatrix4x4 GetLocalTransformTyped();
 
   /**
    * Returns the local opacity for this layer: either mOpacity or,
    * for shadow layers, GetShadowOpacity()
    */
-  const float GetLocalOpacity();
+  float GetLocalOpacity();
 
   /**
    * DRAWING PHASE ONLY
@@ -1451,8 +1505,8 @@ public:
   // These getters can be used anytime.  They return the effective
   // values that should be used when drawing this layer to screen,
   // accounting for this layer possibly being a shadow.
-  const Maybe<ParentLayerIntRect>& GetEffectiveClipRect();
-  const nsIntRegion& GetEffectiveVisibleRegion();
+  const Maybe<ParentLayerIntRect>& GetLocalClipRect();
+  const LayerIntRegion& GetLocalVisibleRegion();
 
   bool Extend3DContext() {
     return GetContentFlags() & CONTENT_EXTEND_3D_CONTEXT;
@@ -1474,8 +1528,14 @@ public:
     // For containers extending 3D context, visible region
     // is meaningless, since they are just intermediate result of
     // content.
-    return !GetEffectiveVisibleRegion().IsEmpty() || Extend3DContext();
+    return !GetLocalVisibleRegion().IsEmpty() || Extend3DContext();
   }
+
+  /**
+   * Return true if current layer content is opaque.
+   * It does not guarantee that layer content is always opaque.
+   */
+  virtual bool IsOpaque() { return GetContentFlags() & CONTENT_OPAQUE; }
 
   /**
    * Returns the product of the opacities of this layer and all ancestors up
@@ -1565,7 +1625,8 @@ public:
    * Dump information about this layer manager and its managed tree to
    * aStream.
    */
-  void Dump(std::stringstream& aStream, const char* aPrefix="", bool aDumpHtml=false);
+  void Dump(std::stringstream& aStream, const char* aPrefix="",
+            bool aDumpHtml=false, bool aSorted=false);
   /**
    * Dump information about just this layer manager itself to aStream.
    */
@@ -1615,20 +1676,24 @@ public:
    * Returns the current area of the layer (in layer-space coordinates)
    * marked as needed to be recomposited.
    */
-  const nsIntRegion& GetInvalidRegion() { return mInvalidRegion; }
-  const void AddInvalidRegion(const nsIntRegion& aRegion) {
-    mInvalidRegion.Or(mInvalidRegion, aRegion);
+  const virtual gfx::TiledIntRegion& GetInvalidRegion() { return mInvalidRegion; }
+  void AddInvalidRegion(const nsIntRegion& aRegion) {
+    mInvalidRegion.Add(aRegion);
   }
 
   /**
    * Mark the entirety of the layer's visible region as being invalid.
    */
-  void SetInvalidRectToVisibleRegion() { mInvalidRegion = GetVisibleRegion(); }
+  void SetInvalidRectToVisibleRegion()
+  {
+    mInvalidRegion.SetEmpty();
+    mInvalidRegion.Add(GetVisibleRegion().ToUnknownRegion());
+  }
 
   /**
    * Adds to the current invalid rect.
    */
-  void AddInvalidRect(const gfx::IntRect& aRect) { mInvalidRegion.Or(mInvalidRegion, aRect); }
+  void AddInvalidRect(const gfx::IntRect& aRect) { mInvalidRegion.Add(aRect); }
 
   /**
    * Clear the invalid rect, marking the layer as being identical to what is currently
@@ -1643,10 +1708,10 @@ public:
   // The aIndex for these functions must be less than GetFrameMetricsCount().
   void SetAsyncPanZoomController(uint32_t aIndex, AsyncPanZoomController *controller);
   AsyncPanZoomController* GetAsyncPanZoomController(uint32_t aIndex) const;
-  // The FrameMetricsChanged function is used internally to ensure the APZC array length
+  // The ScrollMetadataChanged function is used internally to ensure the APZC array length
   // matches the frame metrics array length.
 private:
-  void FrameMetricsChanged();
+  void ScrollMetadataChanged();
 public:
 
   void ApplyPendingUpdatesForThisTransaction();
@@ -1766,8 +1831,8 @@ protected:
   nsTArray<RefPtr<Layer>> mAncestorMaskLayers;
   gfx::UserData mUserData;
   gfx::IntRect mLayerBounds;
-  nsIntRegion mVisibleRegion;
-  nsTArray<FrameMetrics> mFrameMetrics;
+  LayerIntRegion mVisibleRegion;
+  nsTArray<ScrollMetadata> mScrollMetadata;
   EventRegions mEventRegions;
   gfx::Matrix4x4 mTransform;
   // A mutation of |mTransform| that we've queued to be applied at the
@@ -1786,14 +1851,16 @@ protected:
   bool mForceIsolatedGroup;
   Maybe<ParentLayerIntRect> mClipRect;
   gfx::IntRect mTileSourceRect;
-  nsIntRegion mInvalidRegion;
+  gfx::TiledIntRegion mInvalidRegion;
   nsTArray<RefPtr<AsyncPanZoomController> > mApzcs;
   uint32_t mContentFlags;
   bool mUseTileSourceRect;
   bool mIsFixedPosition;
+  bool mTransformIsPerspective;
   struct FixedPositionData {
     FrameMetrics::ViewID mScrollId;
     LayerPoint mAnchor;
+    int32_t mSides;
     bool mIsClipFixed;
   };
   UniquePtr<FixedPositionData> mFixedPositionData;
@@ -1810,7 +1877,9 @@ protected:
   // CSS pixels of the scrollframe's space).
   float mScrollbarThumbRatio;
   bool mIsScrollbarContainer;
-  DebugOnly<uint32_t> mDebugColorIndex;
+#ifdef DEBUG
+  uint32_t mDebugColorIndex;
+#endif
   // If this layer is used for OMTA, then this counter is used to ensure we
   // stay in sync with the animation manager
   uint64_t mAnimationGeneration;
@@ -2065,7 +2134,7 @@ public:
   RenderTargetIntRect GetIntermediateSurfaceRect()
   {
     NS_ASSERTION(mUseIntermediateSurface, "Must have intermediate surface");
-    return RenderTargetPixel::FromUntyped(mVisibleRegion.GetBounds());
+    return RenderTargetIntRect::FromUnknownRect(GetLocalVisibleRegion().ToUnknownRegion().GetBounds());
   }
 
   /**
@@ -2106,8 +2175,20 @@ public:
   /**
    * VR
    */
-  void SetVRHMDInfo(gfx::VRHMDInfo* aHMD) { mHMDInfo = aHMD; }
-  gfx::VRHMDInfo* GetVRHMDInfo() { return mHMDInfo; }
+  void SetVRDeviceID(uint32_t aVRDeviceID) {
+    mVRDeviceID = aVRDeviceID;
+    Mutated();
+  }
+  uint32_t GetVRDeviceID() {
+    return mVRDeviceID;
+  }
+  void SetInputFrameID(int32_t aInputFrameID) {
+    mInputFrameID = aInputFrameID;
+    Mutated();
+  }
+  int32_t GetInputFrameID() {
+    return mInputFrameID;
+  }
 
   /**
    * Replace the current effective transform with the given one,
@@ -2183,7 +2264,8 @@ protected:
   // the intermediate surface.
   bool mChildrenChanged;
   EventRegionsOverride mEventRegionsOverride;
-  RefPtr<gfx::VRHMDInfo> mHMDInfo;
+  uint32_t mVRDeviceID;
+  int32_t mInputFrameID;
 };
 
 /**
@@ -2456,8 +2538,6 @@ private:
 
   virtual bool RepositionChild(Layer* aChild, Layer* aAfter) override
   { MOZ_CRASH(); return false; }
-
-  using Layer::SetFrameMetrics;
 
 public:
   /**

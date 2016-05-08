@@ -1,30 +1,23 @@
 /* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* Any copyright is dedicated to the Public Domain.
  http://creativecommons.org/publicdomain/zero/1.0/ */
+/* eslint no-unused-vars: [2, {"vars": "local", "args": "none"}] */
 
 "use strict";
 
-var Cu = Components.utils;
-const {gDevTools} = Cu.import("resource://devtools/client/framework/gDevTools.jsm", {});
-const {require} = Cu.import("resource://devtools/shared/Loader.jsm", {});
-const promise = require("promise");
-const {TargetFactory} = require("devtools/client/framework/target");
-const {console} = Cu.import("resource://gre/modules/Console.jsm", {});
+/* import-globals-from ../../inspector/test/head.js */
+// Import the inspector's head.js first (which itself imports shared-head.js).
+Services.scriptloader.loadSubScript(
+  "chrome://mochitests/content/browser/devtools/client/inspector/test/head.js",
+  this);
+
 const {ViewHelpers} = Cu.import("resource://devtools/client/shared/widgets/ViewHelpers.jsm", {});
-const DevToolsUtils = require("devtools/shared/DevToolsUtils");
-
-// All tests are asynchronous
-waitForExplicitFinish();
-
-const TEST_URL_ROOT = "http://example.com/browser/devtools/client/animationinspector/test/";
-const ROOT_TEST_DIR = getRootDirectory(gTestPath);
-const FRAME_SCRIPT_URL = ROOT_TEST_DIR + "doc_frame_script.js";
+const FRAME_SCRIPT_URL = CHROME_URL_ROOT + "doc_frame_script.js";
 const COMMON_FRAME_SCRIPT_URL = "chrome://devtools/content/shared/frame-script-utils.js";
-const NEW_UI_PREF = "devtools.inspector.animationInspectorV3";
 const TAB_NAME = "animationinspector";
 
 // Auto clean-up when a test ends
-registerCleanupFunction(function*() {
+registerCleanupFunction(function* () {
   yield closeAnimationInspector();
 
   while (gBrowser.tabs.length > 1) {
@@ -32,78 +25,54 @@ registerCleanupFunction(function*() {
   }
 });
 
-// Make sure the new UI is off by default.
-Services.prefs.setBoolPref(NEW_UI_PREF, false);
-
-// Uncomment this pref to dump all devtools emitted events to the console.
-// Services.prefs.setBoolPref("devtools.dump.emit", true);
-
-// Uncomment this pref to dump all devtools protocol traffic
-// Services.prefs.setBoolPref("devtools.debugger.log", true);
-
-// Set the testing flag on DevToolsUtils and reset it when the test ends
-DevToolsUtils.testing = true;
-registerCleanupFunction(() => DevToolsUtils.testing = false);
-
 // Clean-up all prefs that might have been changed during a test run
 // (safer here because if the test fails, then the pref is never reverted)
 registerCleanupFunction(() => {
-  Services.prefs.clearUserPref("devtools.dump.emit");
   Services.prefs.clearUserPref("devtools.debugger.log");
-  Services.prefs.clearUserPref(NEW_UI_PREF);
 });
+
+// WebAnimations API is not enabled by default in all release channels yet, see
+// Bug 1264101.
+function enableWebAnimationsAPI() {
+  return new Promise(resolve => {
+    SpecialPowers.pushPrefEnv({"set": [
+      ["dom.animations-api.core.enabled", true]
+    ]}, resolve);
+  });
+}
 
 /**
  * Add a new test tab in the browser and load the given url.
  * @param {String} url The url to be loaded in the new tab
  * @return a promise that resolves to the tab object when the url is loaded
  */
-function addTab(url) {
-  info("Adding a new tab with URL: '" + url + "'");
-  let def = promise.defer();
-
-  window.focus();
-
-  let tab = window.gBrowser.selectedTab = window.gBrowser.addTab(url);
-  let browser = tab.linkedBrowser;
-
-  info("Loading the helper frame script " + FRAME_SCRIPT_URL);
-  browser.messageManager.loadFrameScript(FRAME_SCRIPT_URL, false);
-
-  info("Loading the helper frame script " + COMMON_FRAME_SCRIPT_URL);
-  browser.messageManager.loadFrameScript(COMMON_FRAME_SCRIPT_URL, false);
-
-  browser.addEventListener("load", function onload() {
-    browser.removeEventListener("load", onload, true);
-    info("URL '" + url + "' loading complete");
-
-    def.resolve(tab);
-  }, true);
-
-  return def.promise;
-}
+var _addTab = addTab;
+addTab = function (url) {
+  return enableWebAnimationsAPI().then(() => _addTab(url)).then(tab => {
+    let browser = tab.linkedBrowser;
+    info("Loading the helper frame script " + FRAME_SCRIPT_URL);
+    browser.messageManager.loadFrameScript(FRAME_SCRIPT_URL, false);
+    info("Loading the helper frame script " + COMMON_FRAME_SCRIPT_URL);
+    browser.messageManager.loadFrameScript(COMMON_FRAME_SCRIPT_URL, false);
+    return tab;
+  });
+};
 
 /**
  * Reload the current tab location.
- */
-function reloadTab() {
-  return executeInContent("devtools:test:reload", {}, {}, false);
-}
-
-/**
- * Get the NodeFront for a given css selector, via the protocol
- * @param {String} selector
  * @param {InspectorPanel} inspector The instance of InspectorPanel currently
  * loaded in the toolbox
- * @return {Promise} Resolves to the NodeFront instance
  */
-function getNodeFront(selector, {walker}) {
-  return walker.querySelector(walker.rootNode, selector);
+function* reloadTab(inspector) {
+  let onNewRoot = inspector.once("new-root");
+  yield executeInContent("devtools:test:reload", {}, {}, false);
+  yield onNewRoot;
+  yield inspector.once("inspector-updated");
 }
 
 /*
  * Set the inspector's current selection to a node or to the first match of the
- * given css selector.
+ * given css selector and wait for the animations to be displayed
  * @param {String|NodeFront}
  *        data The node to select
  * @param {InspectorPanel} inspector
@@ -113,24 +82,18 @@ function getNodeFront(selector, {walker}) {
  *        Defaults to "test" which instructs the inspector not
  *        to highlight the node upon selection
  * @return {Promise} Resolves when the inspector is updated with the new node
+           and animations of its subtree are properly displayed.
  */
-var selectNode = Task.async(function*(data, inspector, reason="test") {
-  info("Selecting the node for '" + data + "'");
-  let nodeFront = data;
-  if (!data._form) {
-    nodeFront = yield getNodeFront(data, inspector);
-  }
-  let updated = inspector.once("inspector-updated");
-  inspector.selection.setNodeFront(nodeFront, reason);
-  yield updated;
+var selectNodeAndWaitForAnimations = Task.async(
+  function* (data, inspector, reason = "test") {
+    yield selectNode(data, inspector, reason);
 
-  // 99% of the times, selectNode is called to select an animated node, and we
-  // want to make sure the rest of the test waits for the animations to be
-  // properly displayed (wait for all target DOM nodes to be previewed).
-  // Even if there are no animations, this is safe to do.
-  let {AnimationsPanel} = inspector.sidebar.getWindowForTab(TAB_NAME);
-  yield waitForAllAnimationTargets(AnimationsPanel);
-});
+    // We want to make sure the rest of the test waits for the animations to
+    // be properly displayed (wait for all target DOM nodes to be previewed).
+    let {AnimationsPanel} = inspector.sidebar.getWindowForTab(TAB_NAME);
+    yield waitForAllAnimationTargets(AnimationsPanel);
+  }
+);
 
 /**
  * Check if there are the expected number of animations being displayed in the
@@ -139,10 +102,11 @@ var selectNode = Task.async(function*(data, inspector, reason="test") {
  * @param {Number} nbAnimations The expected number of animations.
  * @param {String} msg An optional string to be used as the assertion message.
  */
-function assertAnimationsDisplayed(panel, nbAnimations, msg="") {
+function assertAnimationsDisplayed(panel, nbAnimations, msg = "") {
   msg = msg || `There are ${nbAnimations} animations in the panel`;
-  is(panel.animationsTimelineComponent.animationsEl.childNodes.length,
-     nbAnimations, msg);
+  is(panel.animationsTimelineComponent
+          .animationsEl
+          .querySelectorAll(".animation").length, nbAnimations, msg);
 }
 
 /**
@@ -153,7 +117,7 @@ function assertAnimationsDisplayed(panel, nbAnimations, msg="") {
  * @param {InspectorPanel} inspector
  * @return {Promise}
  */
-var waitForAnimationInspectorReady = Task.async(function*(inspector) {
+var waitForAnimationInspectorReady = Task.async(function* (inspector) {
   let win = inspector.sidebar.getWindowForTab(TAB_NAME);
   let updated = inspector.once("inspector-updated");
 
@@ -173,24 +137,11 @@ var waitForAnimationInspectorReady = Task.async(function*(inspector) {
  * sidebar selected.
  * @return a promise that resolves when the inspector is ready.
  */
-var openAnimationInspector = Task.async(function*() {
-  let target = TargetFactory.forTab(gBrowser.selectedTab);
-
-  info("Opening the toolbox with the inspector selected");
-  let toolbox = yield gDevTools.showToolbox(target, "inspector");
-
-  info("Switching to the animationinspector");
-  let inspector = toolbox.getPanel("inspector");
-
-  let panelReady = waitForAnimationInspectorReady(inspector);
-
-  info("Waiting for toolbox focus");
-  yield waitForToolboxFrameFocus(toolbox);
-
-  inspector.sidebar.select(TAB_NAME);
+var openAnimationInspector = Task.async(function* () {
+  let {inspector, toolbox} = yield openInspectorSidebarTab(TAB_NAME);
 
   info("Waiting for the inspector and sidebar to be ready");
-  yield panelReady;
+  yield waitForAnimationInspectorReady(inspector);
 
   let win = inspector.sidebar.getWindowForTab(TAB_NAME);
   let {AnimationsController, AnimationsPanel} = win;
@@ -220,64 +171,10 @@ var openAnimationInspector = Task.async(function*() {
  * Close the toolbox.
  * @return a promise that resolves when the toolbox has closed.
  */
-var closeAnimationInspector = Task.async(function*() {
+var closeAnimationInspector = Task.async(function* () {
   let target = TargetFactory.forTab(gBrowser.selectedTab);
   yield gDevTools.closeToolbox(target);
 });
-
-/**
- * Wait for the toolbox frame to receive focus after it loads
- * @param {Toolbox} toolbox
- * @return a promise that resolves when focus has been received
- */
-function waitForToolboxFrameFocus(toolbox) {
-  info("Making sure that the toolbox's frame is focused");
-  let def = promise.defer();
-  let win = toolbox.frame.contentWindow;
-  waitForFocus(def.resolve, win);
-  return def.promise;
-}
-
-/**
- * Checks whether the inspector's sidebar corresponding to the given id already
- * exists
- * @param {InspectorPanel}
- * @param {String}
- * @return {Boolean}
- */
-function hasSideBarTab(inspector, id) {
-  return !!inspector.sidebar.getWindowForTab(id);
-}
-
-/**
- * Wait for eventName on target.
- * @param {Object} target An observable object that either supports on/off or
- * addEventListener/removeEventListener
- * @param {String} eventName
- * @param {Boolean} useCapture Optional, for add/removeEventListener
- * @return A promise that resolves when the event has been handled
- */
-function once(target, eventName, useCapture=false) {
-  info("Waiting for event: '" + eventName + "' on " + target + ".");
-
-  let deferred = promise.defer();
-
-  for (let [add, remove] of [
-    ["addEventListener", "removeEventListener"],
-    ["addListener", "removeListener"],
-    ["on", "off"]
-  ]) {
-    if ((add in target) && (remove in target)) {
-      target[add](eventName, function onEvent(...aArgs) {
-        target[remove](eventName, onEvent, useCapture);
-        deferred.resolve.apply(deferred, aArgs);
-      }, useCapture);
-      break;
-    }
-  }
-
-  return deferred.promise;
-}
 
 /**
  * Wait for a content -> chrome message on the message manager (the window
@@ -311,7 +208,8 @@ function waitForContentMessage(name) {
  * @return {Promise} Resolves to the response data if a response is expected,
  * immediately resolves otherwise
  */
-function executeInContent(name, data={}, objects={}, expectResponse=true) {
+function executeInContent(name, data = {}, objects = {},
+                          expectResponse = true) {
   info("Sending message " + name + " to content");
   let mm = gBrowser.selectedBrowser.messageManager;
 
@@ -323,102 +221,11 @@ function executeInContent(name, data={}, objects={}, expectResponse=true) {
   return promise.resolve();
 }
 
-function onceNextPlayerRefresh(player) {
-  let onRefresh = promise.defer();
-  player.once(player.AUTO_REFRESH_EVENT, onRefresh.resolve);
-  return onRefresh.promise;
-}
-
-/**
- * Simulate a click on the playPause button of a playerWidget.
- */
-var togglePlayPauseButton = Task.async(function*(widget) {
-  let nextState = widget.player.state.playState === "running"
-                  ? "paused"
-                  : "running";
-
-  // Note that instead of simulating a real event here, the callback is just
-  // called. This is better because the callback returns a promise, so we know
-  // when the player is paused, and we don't really care to test that simulating
-  // a DOM event actually works.
-  let onClicked = widget.onPlayPauseBtnClick();
-
-  // Verify that the button's state is changed immediately, even if it will be
-  // changed anyway with the next auto-refresh.
-  ok(widget.el.classList.contains(nextState),
-    "The button's state was changed in the UI before the request was sent");
-
-  yield onClicked;
-
-  // Wait until the state changes.
-  yield waitForPlayState(widget.player, nextState);
-});
-
-/**
- * Wait for a player's auto-refresh events and stop when a condition becomes
- * truthy.
- * @param {AnimationPlayerFront} player
- * @param {Function} conditionCheck Will be called over and over again when the
- * player state changes, passing the state as argument. This method must return
- * a truthy value to stop waiting.
- * @param {String} desc If provided, this will be logged with info(...) every
- * time the state is refreshed, until the condition passes.
- * @return {Promise} Resolves when the condition passes.
- */
-var waitForStateCondition = Task.async(function*(player, conditionCheck, desc="") {
-  if (desc) {
-    desc = "(" + desc + ")";
-  }
-  info("Waiting for a player's auto-refresh event " + desc);
-  let def = promise.defer();
-  player.on(player.AUTO_REFRESH_EVENT, function onNewState() {
-    info("State refreshed, checking condition ... " + desc);
-    if (conditionCheck(player.state)) {
-      player.off(player.AUTO_REFRESH_EVENT, onNewState);
-      def.resolve();
-    }
-  });
-  return def.promise;
-});
-
-/**
- * Wait for a player's auto-refresh events and stop when the playState is the
- * provided string.
- * @param {AnimationPlayerFront} player
- * @param {String} playState The playState to expect.
- * @return {Promise} Resolves when the playState has changed to the expected
- * value.
- */
-function waitForPlayState(player, playState) {
-  return waitForStateCondition(player, state => {
-    return state.playState === playState;
-  }, "Waiting for animation to be " + playState);
-}
-
-/**
- * Wait for the player's auto-refresh events until the animation is paused.
- * When done, check its currentTime.
- * @param {PlayerWidget} widget.
- * @param {Numer} time.
- * @return {Promise} Resolves when the animation is paused and tests have ran.
- */
-var checkPausedAt = Task.async(function*(widget, time) {
-  info("Wait for the next auto-refresh");
-
-  yield waitForStateCondition(widget.player, state => {
-    return state.playState === "paused" && state.currentTime === time;
-  }, "Waiting for animation to pause at " + time + "ms");
-
-  ok(widget.el.classList.contains("paused"), "The widget is in paused mode");
-  is(widget.player.state.currentTime, time,
-    "The player front's currentTime was set to " + time);
-  is(widget.currentTimeEl.value, time, "The input's value was set to " + time);
-});
-
 /**
  * Get the current playState of an animation player on a given node.
  */
-var getAnimationPlayerState = Task.async(function*(selector, animationIndex=0) {
+var getAnimationPlayerState = Task.async(function* (selector,
+                                                    animationIndex = 0) {
   let playState = yield executeInContent("Test:GetAnimationPlayerState",
                                          {selector, animationIndex});
   return playState;
@@ -439,10 +246,10 @@ function isNodeVisible(node) {
  * @param {AnimationsPanel} panel
  * @return {Array} all AnimationTargetNode instances
  */
-var waitForAllAnimationTargets = Task.async(function*(panel) {
+var waitForAllAnimationTargets = Task.async(function* (panel) {
   let targets = panel.animationsTimelineComponent.targetNodes;
   yield promise.all(targets.map(t => {
-    if (!t.nodeFront) {
+    if (!t.previewer.nodeFront) {
       return t.once("target-retrieved");
     }
     return false;
@@ -457,7 +264,6 @@ var waitForAllAnimationTargets = Task.async(function*(panel) {
  */
 function* assertScrubberMoving(panel, isMoving) {
   let timeline = panel.animationsTimelineComponent;
-  let scrubberEl = timeline.scrubberEl;
 
   if (isMoving) {
     // If we expect the scrubber to move, just wait for a couple of
@@ -469,12 +275,19 @@ function* assertScrubberMoving(panel, isMoving) {
     // If instead we expect the scrubber to remain at its position, just wait
     // for some time and make sure timeline-data-changed isn't emitted.
     let hasMoved = false;
-    timeline.once("timeline-data-changed", () => hasMoved = true);
+    timeline.once("timeline-data-changed", () => {
+      hasMoved = true;
+    });
     yield new Promise(r => setTimeout(r, 500));
     ok(!hasMoved, "The scrubber is not moving");
   }
 }
 
+/**
+ * Click the play/pause button in the timeline toolbar and wait for animations
+ * to update.
+ * @param {AnimationsPanel} panel
+ */
 function* clickTimelinePlayPauseButton(panel) {
   let onUiUpdated = panel.once(panel.UI_UPDATED_EVENT);
 
@@ -486,6 +299,11 @@ function* clickTimelinePlayPauseButton(panel) {
   yield waitForAllAnimationTargets(panel);
 }
 
+/**
+ * Click the rewind button in the timeline toolbar and wait for animations to
+ * update.
+ * @param {AnimationsPanel} panel
+ */
 function* clickTimelineRewindButton(panel) {
   let onUiUpdated = panel.once(panel.UI_UPDATED_EVENT);
 
@@ -495,4 +313,113 @@ function* clickTimelineRewindButton(panel) {
 
   yield onUiUpdated;
   yield waitForAllAnimationTargets(panel);
+}
+
+/**
+ * Select a rate inside the playback rate selector in the timeline toolbar and
+ * wait for animations to update.
+ * @param {AnimationsPanel} panel
+ * @param {Number} rate The new rate value to be selected
+ */
+function* changeTimelinePlaybackRate(panel, rate) {
+  let onUiUpdated = panel.once(panel.UI_UPDATED_EVENT);
+
+  let select = panel.rateSelectorEl.firstChild;
+  let win = select.ownerDocument.defaultView;
+
+  // Get the right option.
+  let option = [...select.options].filter(o => o.value === rate + "")[0];
+  if (!option) {
+    ok(false,
+       "Could not find an option for rate " + rate + " in the rate selector. " +
+       "Values are: " + [...select.options].map(o => o.value));
+    return;
+  }
+
+  // Simulate the right events to select the option in the drop-down.
+  EventUtils.synthesizeMouseAtCenter(select, {type: "mousedown"}, win);
+  EventUtils.synthesizeMouseAtCenter(option, {type: "mouseup"}, win);
+
+  yield onUiUpdated;
+  yield waitForAllAnimationTargets(panel);
+
+  // Simulate a mousemove outside of the rate selector area to avoid subsequent
+  // tests from failing because of unwanted mouseover events.
+  EventUtils.synthesizeMouseAtCenter(
+    win.document.querySelector("#timeline-toolbar"), {type: "mousemove"}, win);
+}
+
+/**
+ * Prevent the toolbox common highlighter from making backend requests.
+ * @param {Toolbox} toolbox
+ */
+function disableHighlighter(toolbox) {
+  toolbox._highlighter = {
+    showBoxModel: () => new Promise(r => r()),
+    hideBoxModel: () => new Promise(r => r()),
+    pick: () => new Promise(r => r()),
+    cancelPick: () => new Promise(r => r()),
+    destroy: () => {},
+    traits: {}
+  };
+}
+
+/**
+ * Click on an animation in the timeline to select/unselect it.
+ * @param {AnimationsPanel} panel The panel instance.
+ * @param {Number} index The index of the animation to click on.
+ * @param {Boolean} shouldClose Set to true if clicking should close the
+ * animation.
+ * @return {Promise} resolves to the animation whose state has changed.
+ */
+function* clickOnAnimation(panel, index, shouldClose) {
+  let timeline = panel.animationsTimelineComponent;
+
+  // Expect a selection event.
+  let onSelectionChanged = timeline.once(shouldClose
+                                         ? "animation-unselected"
+                                         : "animation-selected");
+
+  // If we're opening the animation, also wait for the keyframes-retrieved
+  // event.
+  let onReady = shouldClose
+                ? Promise.resolve()
+                : timeline.details[index].once("keyframes-retrieved");
+
+  info("Click on animation " + index + " in the timeline");
+  let timeBlock = timeline.rootWrapperEl.querySelectorAll(".time-block")[index];
+  EventUtils.sendMouseEvent({type: "click"}, timeBlock,
+                            timeBlock.ownerDocument.defaultView);
+
+  yield onReady;
+  return yield onSelectionChanged;
+}
+
+/**
+ * Get an instance of the Keyframes component from the timeline.
+ * @param {AnimationsPanel} panel The panel instance.
+ * @param {Number} animationIndex The index of the animation in the timeline.
+ * @param {String} propertyName The name of the animated property.
+ * @return {Keyframes} The Keyframes component instance.
+ */
+function getKeyframeComponent(panel, animationIndex, propertyName) {
+  let timeline = panel.animationsTimelineComponent;
+  let detailsComponent = timeline.details[animationIndex];
+  return detailsComponent.keyframeComponents
+                         .find(c => c.propertyName === propertyName);
+}
+
+/**
+ * Get a keyframe element from the timeline.
+ * @param {AnimationsPanel} panel The panel instance.
+ * @param {Number} animationIndex The index of the animation in the timeline.
+ * @param {String} propertyName The name of the animated property.
+ * @param {Index} keyframeIndex The index of the keyframe.
+ * @return {DOMNode} The keyframe element.
+ */
+function getKeyframeEl(panel, animationIndex, propertyName, keyframeIndex) {
+  let keyframeComponent = getKeyframeComponent(panel, animationIndex,
+                                               propertyName);
+  return keyframeComponent.keyframesEl
+                          .querySelectorAll(".frame")[keyframeIndex];
 }

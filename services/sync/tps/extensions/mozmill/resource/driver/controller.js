@@ -44,7 +44,11 @@ waitForEvents.prototype = {
     node.firedEvents = {};
     this.registry = {};
 
-    for each (var e in events) {
+    if (!events) {
+      return;
+    }
+    for (var key in events) {
+      var e = events[key];
       var listener = function (event) {
         this.firedEvents[event.type] = true;
       }
@@ -973,7 +977,10 @@ function browserAdditions (controller) {
         return windows.map.hasPageLoaded(utils.getWindowId(win));
       }, "Timeout", timeout, aInterval);
     }
-    catch (ex if ex instanceof errors.TimeoutError) {
+    catch (ex) {
+      if (!ex instanceof errors.TimeoutError) {
+        throw ex;
+      }
       timed_out = true;
     }
     finally {

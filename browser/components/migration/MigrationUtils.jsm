@@ -24,6 +24,22 @@ var gMigrators = null;
 var gProfileStartup = null;
 var gMigrationBundle = null;
 
+XPCOMUtils.defineLazyGetter(this, "gAvailableMigratorKeys", function() {
+  if (AppConstants.platform == "win") {
+    return [
+      "firefox", "edge", "ie", "chrome", "chromium", "safari", "360se",
+      "canary"
+    ];
+  }
+  if (AppConstants.platform == "macosx") {
+    return ["firefox", "safari", "chrome", "chromium", "canary"];
+  }
+  if (AppConstants.XP_UNIX) {
+    return ["firefox", "chrome", "chromium"];
+  }
+  return [];
+});
+
 function getMigrationBundle() {
   if (!gMigrationBundle) {
     gMigrationBundle = Services.strings.createBundle(
@@ -232,8 +248,8 @@ this.MigratorPrototype = {
 
       notify("Migration:Started");
       for (let [key, value] of resourcesGroupedByItems) {
-      	// TODO: (bug 449811).
-      	let migrationType = key, itemResources = value;
+        // TODO: (bug 449811).
+        let migrationType = key, itemResources = value;
 
         notify("Migration:ItemBeforeMigrate", migrationType);
 
@@ -291,7 +307,7 @@ this.MigratorPrototype = {
           doMigrate();
         };
         BookmarkHTMLUtils.importFromURL(
-          "resource:///defaults/profile/bookmarks.html", true).then(
+          "chrome://browser/locale/bookmarks.html", true).then(
           onImportComplete, onImportComplete);
         return;
       }
@@ -505,32 +521,6 @@ this.MigrationUtils = Object.freeze({
     } catch (ex) { Cu.reportError(ex); return null }
   },
 
-  // Iterates the available migrators, in the most suitable
-  // order for the running platform.
-  get migrators() {
-    let migratorKeysOrdered = [
-#ifdef XP_WIN
-      "firefox", "edge", "ie", "chrome", "chromium", "safari", "360se", "canary"
-#elifdef XP_MACOSX
-      "firefox", "safari", "chrome", "chromium", "canary"
-#elifdef XP_UNIX
-      "firefox", "chrome", "chromium"
-#endif
-    ];
-
-    // If a supported default browser is found check it first
-    // so that the wizard defaults to import from that browser.
-    let defaultBrowserKey = getMigratorKeyForDefaultBrowser();
-    if (defaultBrowserKey)
-      migratorKeysOrdered.sort((a, b) => b == defaultBrowserKey ? 1 : 0);
-
-    for (let migratorKey of migratorKeysOrdered) {
-      let migrator = this.getMigrator(migratorKey);
-      if (migrator)
-        yield migrator;
-    }
-  },
-
   // Whether or not we're in the process of startup migration
   get isStartupMigration() {
     return gProfileStartup != null;
@@ -562,6 +552,7 @@ this.MigrationUtils = Object.freeze({
    *        - {nsIBrowserProfileMigrator} actual migrator object
    *        - {Boolean} whether this is a startup migration
    *        - {Boolean} whether to skip the 'source' page
+   *        - {String} an identifier for the profile to use when migrating
    *        NB: If you add new consumers, please add a migration entry point
    *        constant below, and specify at least the first element of the array
    *        (the migration entry point for purposes of telemetry).
@@ -569,8 +560,7 @@ this.MigrationUtils = Object.freeze({
   showMigrationWizard:
   function MU_showMigrationWizard(aOpener, aParams) {
     let features = "chrome,dialog,modal,centerscreen,titlebar,resizable=no";
-#ifdef XP_MACOSX
-    if (!this.isStartupMigration) {
+    if (AppConstants.platform == "macosx" && !this.isStartupMigration) {
       let win = Services.wm.getMostRecentWindow("Browser:MigrationWizard");
       if (win) {
         win.focus();
@@ -580,13 +570,54 @@ this.MigrationUtils = Object.freeze({
       // startup-migration.
       features = "centerscreen,chrome,resizable=no";
     }
-#endif
+
+    // nsIWindowWatcher doesn't deal with raw arrays, so we convert the input
+    let params;
+    if (Array.isArray(aParams)) {
+      params = Cc["@mozilla.org/array;1"].createInstance(Ci.nsIMutableArray);
+      for (let item of aParams) {
+        let comtaminatedVal;
+        if (item && item instanceof Ci.nsISupports) {
+          comtaminatedVal = item;
+        } else {
+          switch (typeof item) {
+            case "boolean":
+              comtaminatedVal = Cc["@mozilla.org/supports-PRBool;1"].
+                                createInstance(Ci.nsISupportsPRBool);
+              comtaminatedVal.data = item;
+              break;
+            case "number":
+              comtaminatedVal = Cc["@mozilla.org/supports-PRUint32;1"].
+                                createInstance(Ci.nsISupportsPRUint32);
+              comtaminatedVal.data = item;
+              break;
+            case "string":
+              comtaminatedVal = Cc["@mozilla.org/supports-cstring;1"].
+                                createInstance(Ci.nsISupportsCString);
+              comtaminatedVal.data = item;
+              break;
+
+            case "undefined":
+            case "object":
+              if (!item) {
+                comtaminatedVal = null;
+                break;
+              }
+            default:
+              throw new Error("Unexpected parameter type " + (typeof item) + ": " + item);
+          }
+        }
+        params.appendElement(comtaminatedVal, false);
+      }
+    } else {
+      params = aParams;
+    }
 
     Services.ww.openWindow(aOpener,
                            "chrome://browser/content/migration/migration.xul",
                            "_blank",
                            features,
-                           aParams);
+                           params);
   },
 
   /**
@@ -604,11 +635,13 @@ this.MigrationUtils = Object.freeze({
    *        migrator for it, or with the first option selected as a fallback
    *        (The first option is hardcoded to be the most common browser for
    *         the OS we run on.  See migration.xul).
+   * @param [optional] aProfileToMigrate
+   *        If set, the migration wizard will import from the profile indicated.
    * @throws if aMigratorKey is invalid or if it points to a non-existent
    *         source.
    */
   startupMigration:
-  function MU_startupMigrator(aProfileStartup, aMigratorKey) {
+  function MU_startupMigrator(aProfileStartup, aMigratorKey, aProfileToMigrate) {
     if (!aProfileStartup) {
       throw new Error("an profile-startup instance is required for startup-migration");
     }
@@ -639,13 +672,11 @@ this.MigrationUtils = Object.freeze({
     if (!migrator) {
       // If there's no migrator set so far, ensure that there is at least one
       // migrator available before opening the wizard.
-      try {
-        this.migrators.next();
-      }
-      catch(ex) {
+      // Note that we don't need to check the default browser first, because
+      // if that one existed we would have used it in the block above this one.
+      if (!gAvailableMigratorKeys.some(key => !!this.getMigrator(key))) {
+        // None of the keys produced a usable migrator, so finish up here:
         this.finishMigration();
-        if (!(ex instanceof StopIteration))
-          throw ex;
         return;
       }
     }
@@ -660,7 +691,8 @@ this.MigrationUtils = Object.freeze({
       migratorKey,
       migrator,
       aProfileStartup,
-      skipSourcePage
+      skipSourcePage,
+      aProfileToMigrate,
     ];
     this.showMigrationWizard(null, params);
   },

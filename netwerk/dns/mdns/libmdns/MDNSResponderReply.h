@@ -17,7 +17,7 @@
 namespace mozilla {
 namespace net {
 
-class BrowseReplyRunnable final : public nsRunnable
+class BrowseReplyRunnable final : public Runnable
 {
 public:
   BrowseReplyRunnable(DNSServiceRef aSdRef,
@@ -48,10 +48,10 @@ private:
   nsCString mServiceName;
   nsCString mRegType;
   nsCString mReplyDomain;
-  BrowseOperator* mContext;
+  RefPtr<BrowseOperator> mContext;
 };
 
-class RegisterReplyRunnable final : public nsRunnable
+class RegisterReplyRunnable final : public Runnable
 {
 public:
   RegisterReplyRunnable(DNSServiceRef aSdRef,
@@ -79,10 +79,10 @@ private:
   nsCString mName;
   nsCString mRegType;
   nsCString mDomain;
-  RegisterOperator* mContext;
+  RefPtr<RegisterOperator> mContext;
 };
 
-class ResolveReplyRunnable final : public nsRunnable
+class ResolveReplyRunnable final : public Runnable
 {
 public:
   ResolveReplyRunnable(DNSServiceRef aSdRef,
@@ -123,7 +123,7 @@ private:
   RefPtr<ResolveOperator> mContext;
 };
 
-class GetAddrInfoReplyRunnable final : public nsRunnable
+class GetAddrInfoReplyRunnable final : public Runnable
 {
 public:
   GetAddrInfoReplyRunnable(DNSServiceRef aSdRef,

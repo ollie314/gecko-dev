@@ -11,6 +11,7 @@
 #include "gfxFT2FontBase.h"
 #include "gfxPlatformFontList.h"
 #include "mozilla/mozalloc.h"
+#include "nsClassHashtable.h"
 
 #include <fontconfig/fontconfig.h>
 #include "ft2build.h"
@@ -137,7 +138,7 @@ protected:
     // override to pull data from FTFace
     virtual nsresult
     CopyFontTable(uint32_t aTableTag,
-                  FallibleTArray<uint8_t>& aBuffer) override;
+                  nsTArray<uint8_t>& aBuffer) override;
 
     // if HB or GR faces are gone, close down the FT_Face
     void MaybeReleaseFTFace();
@@ -181,7 +182,10 @@ public:
     gfxFontconfigFont(cairo_scaled_font_t *aScaledFont,
                       gfxFontEntry *aFontEntry,
                       const gfxFontStyle *aFontStyle,
-                      bool aNeedsBold);
+                      bool aNeedsBold,
+                      bool aAutoHinting = false);
+
+    bool GetAutoHinting() const { return mAutoHinting; }
 
 #ifdef USE_SKIA
     virtual already_AddRefed<mozilla::gfx::GlyphRenderingOptions>
@@ -190,11 +194,20 @@ public:
 
 protected:
     virtual ~gfxFontconfigFont();
+
+private:
+    bool mAutoHinting;
 };
+
+class nsILanguageAtomService;
 
 class gfxFcPlatformFontList : public gfxPlatformFontList {
 public:
     gfxFcPlatformFontList();
+
+    static gfxFcPlatformFontList* PlatformFontList() {
+        return static_cast<gfxFcPlatformFontList*>(sPlatformFontList);
+    }
 
     // initialize font lists
     nsresult InitFontList() override;
@@ -218,13 +231,27 @@ public:
                      const uint8_t* aFontData,
                      uint32_t aLength) override;
 
-    gfxFontFamily* FindFamily(const nsAString& aFamily,
-                              gfxFontStyle* aStyle = nullptr) override;
+    bool FindAndAddFamilies(const nsAString& aFamily,
+                            nsTArray<gfxFontFamily*>* aOutput,
+                            gfxFontStyle* aStyle = nullptr,
+                            gfxFloat aDevToCssSize = 1.0) override;
 
     bool GetStandardFamilyName(const nsAString& aFontName,
                                nsAString& aFamilyName) override;
 
     FcConfig* GetLastConfig() const { return mLastConfig; }
+
+    // override to use fontconfig lookup for generics
+    void AddGenericFonts(mozilla::FontFamilyType aGenericType,
+                         nsIAtom* aLanguage,
+                         nsTArray<gfxFontFamily*>& aFamilyList) override;
+
+    void ClearLangGroupPrefFonts() override;
+
+    // clear out cached generic-lang ==> family-list mappings
+    void ClearGenericMappings() {
+        mGenericMappings.Clear();
+    }
 
     static FT_Library GetFTLibrary();
 
@@ -234,10 +261,13 @@ protected:
     // add all the font families found in a font set
     void AddFontSetFamilies(FcFontSet* aFontSet);
 
-    // figure out which family fontconfig maps a generic to
+    // figure out which families fontconfig maps a generic to
     // (aGeneric assumed already lowercase)
-    gfxFontFamily* FindGenericFamily(const nsAString& aGeneric,
-                                     nsIAtom* aLanguage);
+    PrefFontList* FindGenericFamilies(const nsAString& aGeneric,
+                                      nsIAtom* aLanguage);
+
+    // are all pref font settings set to use fontconfig generics?
+    bool PrefFontListsUseOnlyGenerics();
 
     static void CheckFontUpdates(nsITimer *aTimer, void *aThis);
 
@@ -253,14 +283,28 @@ protected:
                     nsCountedRef<FcPattern>,
                     FcPattern*> mLocalNames;
 
-    // caching generic/lang ==> font family
-    nsRefPtrHashtable<nsCStringHashKey, gfxFontFamily> mGenericMappings;
+    // caching generic/lang ==> font family list
+    nsClassHashtable<nsCStringHashKey,
+                     PrefFontList> mGenericMappings;
 
-    // caching family lookups as found by FindFamily after resolving substitutions
-    nsRefPtrHashtable<nsCStringHashKey, gfxFontFamily> mFcSubstituteCache;
+    // Caching family lookups as found by FindAndAddFamilies after resolving
+    // substitutions. The gfxFontFamily objects cached here are owned by the
+    // gfxFcPlatformFontList via its mFamilies table; note that if the main
+    // font list is rebuilt (e.g. due to a fontconfig configuration change),
+    // these pointers will be invalidated. InitFontList() flushes the cache
+    // in this case.
+    nsDataHashtable<nsCStringHashKey,
+                    nsTArray<gfxFontFamily*>> mFcSubstituteCache;
 
     nsCOMPtr<nsITimer> mCheckFontUpdatesTimer;
     nsCountedRef<FcConfig> mLastConfig;
+
+    // By default, font prefs under Linux are set to simply lookup
+    // via fontconfig the appropriate font for serif/sans-serif/monospace.
+    // Rather than check each time a font pref is used, check them all at startup
+    // and set a boolean to flag the case that non-default user font prefs exist
+    // Note: langGroup == x-math is handled separately
+    bool mAlwaysUseFontconfigGenerics;
 
     static FT_Library sCairoFTLibrary;
 };

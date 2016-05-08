@@ -20,7 +20,7 @@ namespace mozilla {
 #undef LOG
 #endif
 
-extern PRLogModuleInfo* GetGMPLog();
+extern LogModule* GetGMPLog();
 
 #define LOGD(msg) MOZ_LOG(GetGMPLog(), mozilla::LogLevel::Debug, msg)
 #define LOG(level, msg) MOZ_LOG(GetGMPLog(), (level), msg)
@@ -43,11 +43,11 @@ GMPContentParent::GMPContentParent(GMPParent* aParent)
 
 GMPContentParent::~GMPContentParent()
 {
-  XRE_GetIOMessageLoop()->PostTask(FROM_HERE,
-                                   new DeleteTask<Transport>(GetTransport()));
+  RefPtr<DeleteTask<Transport>> task = new DeleteTask<Transport>(GetTransport());
+  XRE_GetIOMessageLoop()->PostTask(task.forget());
 }
 
-class ReleaseGMPContentParent : public nsRunnable
+class ReleaseGMPContentParent : public Runnable
 {
 public:
   explicit ReleaseGMPContentParent(GMPContentParent* aToRelease)
@@ -95,7 +95,7 @@ GMPContentParent::VideoDecoderDestroyed(GMPVideoDecoderParent* aDecoder)
   MOZ_ASSERT(GMPThread() == NS_GetCurrentThread());
 
   // If the constructor fails, we'll get called before it's added
-  unused << NS_WARN_IF(!mVideoDecoders.RemoveElement(aDecoder));
+  Unused << NS_WARN_IF(!mVideoDecoders.RemoveElement(aDecoder));
   CloseIfUnused();
 }
 
@@ -105,7 +105,7 @@ GMPContentParent::VideoEncoderDestroyed(GMPVideoEncoderParent* aEncoder)
   MOZ_ASSERT(GMPThread() == NS_GetCurrentThread());
 
   // If the constructor fails, we'll get called before it's added
-  unused << NS_WARN_IF(!mVideoEncoders.RemoveElement(aEncoder));
+  Unused << NS_WARN_IF(!mVideoEncoders.RemoveElement(aEncoder));
   CloseIfUnused();
 }
 
@@ -134,8 +134,8 @@ GMPContentParent::CloseIfUnused()
         GeckoMediaPluginServiceChild::GetSingleton());
       gmp->RemoveGMPContentParent(toClose);
     }
-    NS_DispatchToCurrentThread(NS_NewRunnableMethod(toClose,
-                                                    &GMPContentParent::Close));
+    NS_DispatchToCurrentThread(NewRunnableMethod(toClose,
+                                                 &GMPContentParent::Close));
   }
 }
 

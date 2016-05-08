@@ -104,6 +104,12 @@ interface HTMLMediaElement : HTMLElement {
 partial interface HTMLMediaElement {
   [ChromeOnly]
   readonly attribute MediaSource? mozMediaSourceObject;
+  [ChromeOnly]
+  readonly attribute DOMString mozDebugReaderData;
+
+  [Pref="media.test.dumpDebugInfo"]
+  void mozDumpDebugInfo();
+
   attribute MediaStream? srcObject;
   // TODO: remove prefixed version soon (1183495).
   attribute MediaStream? mozSrcObject;
@@ -171,4 +177,6 @@ partial interface HTMLMediaElement {
   readonly attribute double computedVolume;
   [Pref="media.useAudioChannelService.testing"]
   readonly attribute boolean computedMuted;
+  [Pref="media.useAudioChannelService.testing"]
+  readonly attribute unsigned long computedSuspended;
 };

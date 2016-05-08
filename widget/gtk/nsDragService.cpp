@@ -237,8 +237,10 @@ OnSourceGrabEventAfter(GtkWidget *widget, GdkEvent *event, gpointer user_data)
         // Update the cursor position.  The last of these recorded gets used for
         // the eDragEnd event.
         nsDragService *dragService = static_cast<nsDragService*>(user_data);
-        dragService->SetDragEndPoint(nsIntPoint(event->motion.x_root,
-                                                event->motion.y_root));
+        gint scale = nsScreenGtk::GetGtkMonitorScaleFactor();
+        LayoutDeviceIntPoint p(floor(event->motion.x_root * scale + 0.5),
+                               floor(event->motion.y_root * scale + 0.5));
+        dragService->SetDragEndPoint(p);
     } else if (sMotionEvent && (event->type == GDK_KEY_PRESS ||
                                 event->type == GDK_KEY_RELEASE)) {
         // Update modifier state from key events.
@@ -396,7 +398,7 @@ nsDragService::InvokeDragSessionImpl(nsISupportsArray* aArrayTransferables,
                              G_CALLBACK(OnSourceGrabEventAfter), this);
         }
         // We don't have a drag end point yet.
-        mEndDragPoint = nsIntPoint(-1, -1);
+        mEndDragPoint = LayoutDeviceIntPoint(-1, -1);
         rv = NS_OK;
     }
     else {
@@ -466,6 +468,13 @@ nsDragService::SetAlphaPixmap(SourceSurface *aSurface,
 #ifdef cairo_image_surface_create
 #error "Looks like we're including Mozilla's cairo instead of system cairo"
 #endif
+    // Prior to GTK 3.9.12, cairo surfaces passed into gtk_drag_set_icon_surface
+    // had their shape information derived from the alpha channel and used with
+    // the X SHAPE extension instead of being displayed as an ARGB window.
+    // See bug 1249604.
+    if (gtk_check_version(3, 9, 12))
+      return false;
+
     // TODO: grab X11 pixmap or image data instead of expensive readback.
     cairo_surface_t *surf = cairo_image_surface_create(CAIRO_FORMAT_ARGB32,
                                                        dragRect.width,
@@ -961,12 +970,14 @@ nsDragService::GetData(nsITransferable * aTransferable,
             } // else we try one last ditch effort to find our data
 
             if (dataFound) {
-                // the DOM only wants LF, so convert from MacOS line endings
-                // to DOM line endings.
-                nsLinebreakHelpers::ConvertPlatformToDOMLinebreaks(
-                             flavorStr,
-                             &mTargetDragData,
-                             reinterpret_cast<int*>(&mTargetDragDataLen));
+                if (strcmp(flavorStr, kCustomTypesMime) != 0) {
+                  // the DOM only wants LF, so convert from MacOS line endings
+                  // to DOM line endings.
+                  nsLinebreakHelpers::ConvertPlatformToDOMLinebreaks(
+                               flavorStr,
+                               &mTargetDragData,
+                               reinterpret_cast<int*>(&mTargetDragDataLen));
+                }
         
                 // put it into the transferable.
                 nsCOMPtr<nsISupports> genericDataWrapper;
@@ -1413,8 +1424,9 @@ nsDragService::SourceEndDragSession(GdkDragContext *aContext,
         gint x, y;
         GdkDisplay* display = gdk_display_get_default();
         if (display) {
+            gint scale = nsScreenGtk::GetGtkMonitorScaleFactor();
             gdk_display_get_pointer(display, nullptr, &x, &y, nullptr);
-            SetDragEndPoint(nsIntPoint(x, y));
+            SetDragEndPoint(LayoutDeviceIntPoint(x * scale, y * scale));
         }
     }
 
@@ -1462,7 +1474,7 @@ nsDragService::SourceEndDragSession(GdkDragContext *aContext,
     }
 
     // Schedule the appropriate drag end dom events.
-    Schedule(eDragTaskSourceEnd, nullptr, nullptr, nsIntPoint(), 0);
+    Schedule(eDragTaskSourceEnd, nullptr, nullptr, LayoutDeviceIntPoint(), 0);
 }
 
 static void
@@ -1656,7 +1668,11 @@ void nsDragService::SetDragIcon(GdkDragContext* aContext)
 
     // If a popup is set as the drag image, use its widget. Otherwise, use
     // the surface that DrawDrag created.
-    if (mDragPopup) {
+    //
+    // XXX: Disable drag popups on GTK 3.19.4 and above: see bug 1264454.
+    //      Fix this once a new GTK version ships that does not destroy our
+    //      widget in gtk_drag_set_icon_widget.
+    if (mDragPopup && gtk_check_version(3, 19, 4)) {
         GtkWidget* gtkWidget = nullptr;
         nsIFrame* frame = mDragPopup->GetPrimaryFrame();
         if (frame) {
@@ -1783,7 +1799,7 @@ invisibleSourceDragEnd(GtkWidget        *aWidget,
 gboolean
 nsDragService::ScheduleMotionEvent(nsWindow *aWindow,
                                    GdkDragContext *aDragContext,
-                                   nsIntPoint aWindowPoint, guint aTime)
+                                   LayoutDeviceIntPoint aWindowPoint, guint aTime)
 {
     if (mScheduledTask == eDragTaskMotion) {
         // The drag source has sent another motion message before we've
@@ -1806,7 +1822,7 @@ nsDragService::ScheduleLeaveEvent()
     // We don't know at this stage whether a drop signal will immediately
     // follow.  If the drop signal gets sent it will happen before we return
     // to the main loop and the scheduled leave task will be replaced.
-    if (!Schedule(eDragTaskLeave, nullptr, nullptr, nsIntPoint(), 0)) {
+    if (!Schedule(eDragTaskLeave, nullptr, nullptr, LayoutDeviceIntPoint(), 0)) {
         NS_WARNING("Drag leave after drop");
     }        
 }
@@ -1814,7 +1830,7 @@ nsDragService::ScheduleLeaveEvent()
 gboolean
 nsDragService::ScheduleDropEvent(nsWindow *aWindow,
                                  GdkDragContext *aDragContext,
-                                 nsIntPoint aWindowPoint, guint aTime)
+                                 LayoutDeviceIntPoint aWindowPoint, guint aTime)
 {
     if (!Schedule(eDragTaskDrop, aWindow,
                   aDragContext, aWindowPoint, aTime)) {
@@ -1822,7 +1838,7 @@ nsDragService::ScheduleDropEvent(nsWindow *aWindow,
         return FALSE;        
     }
 
-    SetDragEndPoint(aWindowPoint + aWindow->WidgetToScreenOffsetUntyped());
+    SetDragEndPoint(aWindowPoint + aWindow->WidgetToScreenOffset());
 
     // We'll reply with gtk_drag_finish().
     return TRUE;
@@ -1831,7 +1847,7 @@ nsDragService::ScheduleDropEvent(nsWindow *aWindow,
 gboolean
 nsDragService::Schedule(DragTask aTask, nsWindow *aWindow,
                         GdkDragContext *aDragContext,
-                        nsIntPoint aWindowPoint, guint aTime)
+                        LayoutDeviceIntPoint aWindowPoint, guint aTime)
 {
     // If there is an existing leave or motion task scheduled, then that
     // will be replaced.  When the new task is run, it will dispatch

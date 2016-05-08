@@ -4,8 +4,8 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-#ifndef mozilla_psm__NSSCertDBTrustDomain_h
-#define mozilla_psm__NSSCertDBTrustDomain_h
+#ifndef NSSCertDBTrustDomain_h
+#define NSSCertDBTrustDomain_h
 
 #include "CertVerifier.h"
 #include "nsICertBlocklist.h"
@@ -19,7 +19,7 @@ enum class ValidityCheckingMode {
   CheckForEV = 1,
 };
 
-SECStatus InitializeNSS(const char* dir, bool readOnly);
+SECStatus InitializeNSS(const char* dir, bool readOnly, bool loadPKCS11Modules);
 
 void DisableMD5();
 
@@ -39,14 +39,7 @@ void UnloadLoadableRoots(const char* modNameUTF8);
 // Caller must free the result with PR_Free
 char* DefaultServerNicknameForCert(CERTCertificate* cert);
 
-void SaveIntermediateCerts(const ScopedCERTCertList& certList);
-
-enum SignatureDigestOption {
-  AcceptAllAlgorithms,
-  DisableSHA1ForEE,
-  DisableSHA1ForCA,
-  DisableSHA1Everywhere,
-};
+void SaveIntermediateCerts(const UniqueCERTCertList& certList);
 
 class NSSCertDBTrustDomain : public mozilla::pkix::TrustDomain
 {
@@ -69,11 +62,10 @@ public:
                        CertVerifier::PinningMode pinningMode,
                        unsigned int minRSABits,
                        ValidityCheckingMode validityCheckingMode,
-                       SignatureDigestOption signatureDigestOption,
                        CertVerifier::SHA1Mode sha1Mode,
+                       UniqueCERTCertList& builtChain,
           /*optional*/ PinningTelemetryInfo* pinningTelemetryInfo = nullptr,
-          /*optional*/ const char* hostname = nullptr,
-      /*optional out*/ ScopedCERTCertList* builtChain = nullptr);
+          /*optional*/ const char* hostname = nullptr);
 
   virtual Result FindIssuer(mozilla::pkix::Input encodedIssuerName,
                             IssuerChecker& checker,
@@ -156,15 +148,14 @@ private:
   CertVerifier::PinningMode mPinningMode;
   const unsigned int mMinRSABits;
   ValidityCheckingMode mValidityCheckingMode;
-  SignatureDigestOption mSignatureDigestOption;
   CertVerifier::SHA1Mode mSHA1Mode;
+  UniqueCERTCertList& mBuiltChain; // non-owning
   PinningTelemetryInfo* mPinningTelemetryInfo;
   const char* mHostname; // non-owning - only used for pinning checks
-  ScopedCERTCertList* mBuiltChain; // non-owning
   nsCOMPtr<nsICertBlocklist> mCertBlocklist;
   CertVerifier::OCSPStaplingStatus mOCSPStaplingStatus;
 };
 
 } } // namespace mozilla::psm
 
-#endif // mozilla_psm__NSSCertDBTrustDomain_h
+#endif // NSSCertDBTrustDomain_h

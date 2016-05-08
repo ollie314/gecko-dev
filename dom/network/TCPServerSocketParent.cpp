@@ -66,21 +66,21 @@ uint32_t
 TCPServerSocketParent::GetAppId()
 {
   const PContentParent *content = Manager()->Manager();
-  if (PBrowserParent* browser = LoneManagedOrNull(content->ManagedPBrowserParent())) {
+  if (PBrowserParent* browser = SingleManagedOrNull(content->ManagedPBrowserParent())) {
     TabParent *tab = TabParent::GetFrom(browser);
     return tab->OwnAppId();
   } else {
     return nsIScriptSecurityManager::UNKNOWN_APP_ID;
   }
-};
+}
 
 bool
-TCPServerSocketParent::GetInBrowser()
+TCPServerSocketParent::GetInIsolatedMozBrowser()
 {
   const PContentParent *content = Manager()->Manager();
-  if (PBrowserParent* browser = LoneManagedOrNull(content->ManagedPBrowserParent())) {
+  if (PBrowserParent* browser = SingleManagedOrNull(content->ManagedPBrowserParent())) {
     TabParent *tab = TabParent::GetFrom(browser);
-    return tab->IsBrowserElement();
+    return tab->IsIsolatedMozBrowserElement();
   } else {
     return false;
   }
@@ -109,11 +109,11 @@ TCPServerSocketParent::SendCallbackAccept(TCPSocketParent *socket)
 
   if (mNeckoParent) {
     if (mNeckoParent->SendPTCPSocketConstructor(socket, host, port)) {
-      mozilla::unused << PTCPServerSocketParent::SendCallbackAccept(socket);
+      mozilla::Unused << PTCPServerSocketParent::SendCallbackAccept(socket);
     }
     else {
       NS_ERROR("Sending data from PTCPSocketParent was failed.");
-    };
+    }
   }
   else {
     NS_ERROR("The member value for NeckoParent is wrong.");
@@ -142,7 +142,7 @@ TCPServerSocketParent::ActorDestroy(ActorDestroyReason why)
 bool
 TCPServerSocketParent::RecvRequestDelete()
 {
-  mozilla::unused << Send__delete__(this);
+  mozilla::Unused << Send__delete__(this);
   return true;
 }
 
@@ -150,7 +150,7 @@ void
 TCPServerSocketParent::OnConnect(TCPServerSocketEvent* event)
 {
   RefPtr<TCPSocket> socket = event->Socket();
-  socket->SetAppIdAndBrowser(GetAppId(), GetInBrowser());
+  socket->SetAppIdAndBrowser(GetAppId(), GetInIsolatedMozBrowser());
 
   RefPtr<TCPSocketParent> socketParent = new TCPSocketParent();
   socketParent->SetSocket(socket);

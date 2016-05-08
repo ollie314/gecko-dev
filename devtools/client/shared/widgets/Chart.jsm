@@ -8,7 +8,7 @@
 const Ci = Components.interfaces;
 const Cu = Components.utils;
 
-const NET_STRINGS_URI = "chrome://browser/locale/devtools/netmonitor.properties";
+const NET_STRINGS_URI = "chrome://devtools/locale/netmonitor.properties";
 const SVG_NS = "http://www.w3.org/2000/svg";
 const PI = Math.PI;
 const TAU = PI * 2;
@@ -22,12 +22,15 @@ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://devtools/client/shared/widgets/ViewHelpers.jsm");
 Cu.import("resource://devtools/shared/event-emitter.js");
 
+const { require } = Cu.import("resource://devtools/shared/Loader.jsm", {});
+const { LocalizationHelper } = require("devtools/client/shared/l10n");
+
 this.EXPORTED_SYMBOLS = ["Chart"];
 
 /**
  * Localization convenience methods.
  */
-var L10N = new ViewHelpers.L10N(NET_STRINGS_URI);
+var L10N = new LocalizationHelper(NET_STRINGS_URI);
 
 /**
  * A factory for creating charts.

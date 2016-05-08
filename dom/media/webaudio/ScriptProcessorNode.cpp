@@ -262,7 +262,7 @@ public:
     IS_CONNECTED,
   };
 
-  virtual void SetInt32Parameter(uint32_t aIndex, int32_t aParam) override
+  void SetInt32Parameter(uint32_t aIndex, int32_t aParam) override
   {
     switch (aIndex) {
       case IS_CONNECTED:
@@ -273,11 +273,11 @@ public:
     } // End index switch.
   }
 
-  virtual void ProcessBlock(AudioNodeStream* aStream,
-                            GraphTime aFrom,
-                            const AudioBlock& aInput,
-                            AudioBlock* aOutput,
-                            bool* aFinished) override
+  void ProcessBlock(AudioNodeStream* aStream,
+                    GraphTime aFrom,
+                    const AudioBlock& aInput,
+                    AudioBlock* aOutput,
+                    bool* aFinished) override
   {
     // This node is not connected to anything. Per spec, we don't fire the
     // onaudioprocess event. We also want to clear out the input and output
@@ -328,7 +328,7 @@ public:
     }
   }
 
-  virtual bool IsActive() const override
+  bool IsActive() const override
   {
     // Could return false when !mIsConnected after all output chunks produced
     // by main thread events calling
@@ -336,18 +336,20 @@ public:
     return true;
   }
 
-  virtual size_t SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const override
+  size_t SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const override
   {
     // Not owned:
     // - mDestination (probably)
     size_t amount = AudioNodeEngine::SizeOfExcludingThis(aMallocSizeOf);
     amount += mSharedBuffers->SizeOfIncludingThis(aMallocSizeOf);
-    amount += mInputBuffer->SizeOfIncludingThis(aMallocSizeOf);
+    if (mInputBuffer) {
+      amount += mInputBuffer->SizeOfIncludingThis(aMallocSizeOf);
+    }
 
     return amount;
   }
 
-  virtual size_t SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const override
+  size_t SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const override
   {
     return aMallocSizeOf(this) + SizeOfExcludingThis(aMallocSizeOf);
   }
@@ -366,7 +368,7 @@ private:
     // Compute the playback time in the coordinate system of the destination
     double playbackTime = mDestination->StreamTimeToSeconds(playbackTick);
 
-    class Command final : public nsRunnable
+    class Command final : public Runnable
     {
     public:
       Command(AudioNodeStream* aStream,
@@ -427,7 +429,7 @@ private:
           inputBuffer =
             AudioBuffer::Create(context, inputChannelCount,
                                 aNode->BufferSize(), context->SampleRate(),
-                                mInputBuffer.forget(), cx, rv);
+                                mInputBuffer.forget(), rv);
           if (rv.Failed()) {
             return nullptr;
           }

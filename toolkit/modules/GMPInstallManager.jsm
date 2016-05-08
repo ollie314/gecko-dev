@@ -109,7 +109,7 @@ GMPInstallManager.prototype = {
         this._deferred.resolve([]);
       }
       else {
-        this._deferred.resolve([for (a of addons) new GMPAddon(a)]);
+        this._deferred.resolve(addons.map(a => new GMPAddon(a)));
       }
       delete this._deferred;
     }, (ex) => {
@@ -187,15 +187,6 @@ GMPInstallManager.prototype = {
       log.info("A version change occurred. Ignoring " +
                "media.gmp-manager.lastCheck to check immediately for " +
                "new or updated GMPs.");
-      // Firefox updated; it could be that the TrialGMPVideoDecoderCreator
-      // had failed but could now succeed, or vice versa. So reset the
-      // prefs so we re-try next time EME is used.
-      GMP_PLUGIN_IDS.concat("gmp-eme-clearkey").forEach(
-        function(id, index, array) {
-          log.info("Version change, resetting " +
-                   GMPPrefs.getPrefKey(GMPPrefs.KEY_PLUGIN_TRIAL_CREATE, id));
-          GMPPrefs.reset(GMPPrefs.KEY_PLUGIN_TRIAL_CREATE, id);
-        });
     } else {
       let secondsBetweenChecks =
         GMPPrefs.get(GMPPrefs.KEY_SECONDS_BETWEEN_CHECKS,
@@ -360,7 +351,7 @@ GMPAddon.prototype = {
       GMPPrefs.get(GMPPrefs.KEY_PLUGIN_VERSION, "", this.id) === this.version;
   },
   get isEME() {
-    return this.id.indexOf("gmp-eme-") == 0;
+    return this.id == "gmp-widevinecdm" || this.id.indexOf("gmp-eme-") == 0;
   },
 };
 /**
@@ -413,23 +404,34 @@ GMPExtractor.prototype = {
       let entries = this._getZipEntries(zipReader);
       let extractedPaths = [];
 
+      let destDir = Cc["@mozilla.org/file/local;1"].
+                    createInstance(Ci.nsILocalFile);
+      destDir.initWithPath(this.installToDirPath);
+      // Make sure the destination exists
+      if(!destDir.exists()) {
+        destDir.create(Ci.nsIFile.DIRECTORY_TYPE, parseInt("0755", 8));
+      }
+
       // Extract each of the entries
       entries.forEach(entry => {
         // We don't need these types of files
-        if (entry.includes("__MACOSX")) {
+        if (entry.includes("__MACOSX") ||
+            entry == "_metadata/verified_contents.json" ||
+            entry == "imgs/icon-128x128.png") {
           return;
         }
-        let outFile = Cc["@mozilla.org/file/local;1"].
-                      createInstance(Ci.nsILocalFile);
-        outFile.initWithPath(this.installToDirPath);
-        outFile.appendRelativePath(entry);
+        let outFile = destDir.clone();
+        // Do not extract into directories. Extract all files to the same
+        // directory. DO NOT use |OS.Path.basename()| here, as in Windows it
+        // does not work properly with forward slashes (which we must use here).
+        let outBaseName = entry.slice(entry.lastIndexOf("/") + 1);
+        outFile.appendRelativePath(outBaseName);
 
-        // Make sure the directory hierarchy exists
-        if(!outFile.parent.exists()) {
-          outFile.parent.create(Ci.nsIFile.DIRECTORY_TYPE, parseInt("0755", 8));
-        }
         zipReader.extract(entry, outFile);
         extractedPaths.push(outFile.path);
+        // Ensure files are writable and executable. Otherwise we may be unable to
+        // execute or uninstall them.
+        outFile.permissions |= parseInt("0700", 8);
         log.info(entry + " was successfully extracted to: " +
             outFile.path);
       });
@@ -495,10 +497,6 @@ GMPDownloader.prototype = {
         // Success, set the prefs
         let now = Math.round(Date.now() / 1000);
         GMPPrefs.set(GMPPrefs.KEY_PLUGIN_LAST_UPDATE, now, gmpAddon.id);
-        // Reset the trial create pref, so that Gecko knows to do a test
-        // run before reporting that the GMP works to content.
-        GMPPrefs.reset(GMPPrefs.KEY_PLUGIN_TRIAL_CREATE, gmpAddon.version,
-                       gmpAddon.id);
         // Remember our ABI, so that if the profile is migrated to another
         // platform or from 32 -> 64 bit, we notice and don't try to load the
         // unexecutable plugin library.

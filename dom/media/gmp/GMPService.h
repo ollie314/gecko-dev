@@ -19,12 +19,13 @@
 #include "nsPIDOMWindow.h"
 #include "nsIDocument.h"
 #include "nsIWeakReference.h"
+#include "mozilla/AbstractThread.h"
 
 template <class> struct already_AddRefed;
 
 namespace mozilla {
 
-extern PRLogModuleInfo* GetGMPLog();
+extern LogModule* GetGMPLog();
 
 namespace gmp {
 
@@ -65,14 +66,16 @@ public:
 
   int32_t AsyncShutdownTimeoutMs();
 
-  void RunPluginCrashCallbacks(const uint32_t aPluginId,
-                               const nsACString& aPluginName);
+  NS_IMETHOD RunPluginCrashCallbacks(uint32_t aPluginId,
+                                     const nsACString& aPluginName) override;
 
   // Sets the window to which 'PluginCrashed' chromeonly event is dispatched.
   // Note: if the plugin has crashed before the target window has been set,
   // the 'PluginCrashed' event is dispatched as soon as a target window is set.
   void AddPluginCrashedEventTarget(const uint32_t aPluginId,
-                                   nsPIDOMWindow* aParentWindow);
+                                   nsPIDOMWindowInner* aParentWindow);
+
+  RefPtr<AbstractThread> GetAbstractGMPThread();
 
 protected:
   GeckoMediaPluginService();
@@ -87,11 +90,13 @@ protected:
                                     UniquePtr<GetGMPContentParentCallback>&& aCallback) = 0;
 
   nsresult GMPDispatch(nsIRunnable* event, uint32_t flags = NS_DISPATCH_NORMAL);
+  nsresult GMPDispatch(already_AddRefed<nsIRunnable> event, uint32_t flags = NS_DISPATCH_NORMAL);
   void ShutdownGMPThread();
 
   Mutex mMutex; // Protects mGMPThread and mGMPThreadShutdown and some members
                 // in derived classes.
   nsCOMPtr<nsIThread> mGMPThread;
+  RefPtr<AbstractThread> mAbstractGMPThread;
   bool mGMPThreadShutdown;
   bool mShuttingDownOnGMPThread;
 
@@ -101,15 +106,15 @@ protected:
     NS_INLINE_DECL_REFCOUNTING(GMPCrashCallback)
 
     GMPCrashCallback(const uint32_t aPluginId,
-                     nsPIDOMWindow* aParentWindow,
+                     nsPIDOMWindowInner* aParentWindow,
                      nsIDocument* aDocument);
     void Run(const nsACString& aPluginName);
     bool IsStillValid();
-    const uint32_t GetPluginId() const { return mPluginId; }
+    uint32_t GetPluginId() const { return mPluginId; }
   private:
     virtual ~GMPCrashCallback() { MOZ_ASSERT(NS_IsMainThread()); }
 
-    bool GetParentWindowAndDocumentIfValid(nsCOMPtr<nsPIDOMWindow>& parentWindow,
+    bool GetParentWindowAndDocumentIfValid(nsCOMPtr<nsPIDOMWindowInner>& parentWindow,
                                            nsCOMPtr<nsIDocument>& document);
     const uint32_t mPluginId;
     nsWeakPtr mParentWindowWeakPtr;

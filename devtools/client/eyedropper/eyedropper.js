@@ -3,13 +3,12 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 const {Cc, Ci, Cu} = require("chrome");
-const {rgbToHsl} = require("devtools/shared/css-color").colorUtils;
+const {rgbToHsl, rgbToColorName} =
+      require("devtools/client/shared/css-color").colorUtils;
 const Telemetry = require("devtools/client/shared/telemetry");
 const {EventEmitter} = Cu.import("resource://devtools/shared/event-emitter.js");
 const promise = require("promise");
-const {setTimeout, clearTimeout} = Cu.import("resource://gre/modules/Timer.jsm", {});
-
-Cu.import("resource://gre/modules/Services.jsm");
+const Services = require("Services");
 
 loader.lazyGetter(this, "clipboardHelper", function() {
   return Cc["@mozilla.org/widget/clipboardhelper;1"]
@@ -35,7 +34,7 @@ loader.lazyGetter(this, "XULRuntime", function() {
 });
 
 loader.lazyGetter(this, "l10n", () => Services.strings
-  .createBundle("chrome://browser/locale/devtools/eyedropper.properties"));
+  .createBundle("chrome://devtools/locale/eyedropper.properties"));
 
 const EYEDROPPER_URL = "chrome://devtools/content/eyedropper/eyedropper.xul";
 const CROSSHAIRS_URL = "chrome://devtools/content/eyedropper/crosshairs.css";
@@ -807,7 +806,7 @@ function toColorString(rgb, format) {
     case "name":
       let str;
       try {
-        str = DOMUtils.rgbToColorName(r, g, b);
+        str = rgbToColorName(r, g, b);
       } catch(e) {
         str = hexString(rgb);
       }

@@ -166,12 +166,12 @@ struct ForOfPIC
      *
      *  Array.prototype's slot number for @@iterator (arrayProtoIteratorSlot_)
      *  Array.prototype's canonical value for @@iterator (canonicalIteratorFunc_)
-     *      To quickly retreive and ensure that the iterator constructor
+     *      To quickly retrieve and ensure that the iterator constructor
      *      stored in the slot has not changed.
      *
      *  ArrayIterator.prototype's slot number for 'next' (arrayIteratorProtoNextSlot_)
      *  ArrayIterator.prototype's canonical value for 'next' (canonicalNextFunc_)
-     *      To quickly retreive and ensure that the 'next' method for ArrayIterator
+     *      To quickly retrieve and ensure that the 'next' method for ArrayIterator
      *      objects has not changed.
      */
     class Chain : public BaseChain
@@ -253,12 +253,12 @@ struct ForOfPIC
     };
 
     // Class for object that holds ForOfPIC chain.
-    static const Class jsclass;
+    static const Class class_;
 
     static NativeObject* createForOfPICObject(JSContext* cx, Handle<GlobalObject*> global);
 
     static inline Chain* fromJSObject(NativeObject* obj) {
-        MOZ_ASSERT(js::GetObjectClass(obj) == &ForOfPIC::jsclass);
+        MOZ_ASSERT(js::GetObjectClass(obj) == &ForOfPIC::class_);
         return (ForOfPIC::Chain*) obj->getPrivate();
     }
     static inline Chain* getOrCreate(JSContext* cx) {

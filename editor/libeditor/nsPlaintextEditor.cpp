@@ -9,6 +9,7 @@
 #include "mozilla/Assertions.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/dom/Selection.h"
+#include "mozilla/dom/Event.h"
 #include "mozilla/TextComposition.h"
 #include "mozilla/TextEvents.h"
 #include "mozilla/dom/Element.h"
@@ -68,7 +69,6 @@ using namespace mozilla::dom;
 nsPlaintextEditor::nsPlaintextEditor()
 : nsEditor()
 , mRules(nullptr)
-, mWrapToWindow(false)
 , mWrapColumn(0)
 , mMaxTextLength(-1)
 , mInitTriggerCounter(0)
@@ -361,7 +361,7 @@ nsPlaintextEditor::HandleKeyPressEvent(nsIDOMKeyEvent* aKeyEvent)
   }
 
   WidgetKeyboardEvent* nativeKeyEvent =
-    aKeyEvent->GetInternalNSEvent()->AsKeyboardEvent();
+    aKeyEvent->AsEvent()->WidgetEventPtr()->AsKeyboardEvent();
   NS_ENSURE_TRUE(nativeKeyEvent, NS_ERROR_UNEXPECTED);
   NS_ASSERTION(nativeKeyEvent->mMessage == eKeyPress,
                "HandleKeyPressEvent gets non-keypress event");
@@ -388,7 +388,7 @@ nsPlaintextEditor::HandleKeyPressEvent(nsIDOMKeyEvent* aKeyEvent)
       }
 
       // else we insert the tab straight through
-      aKeyEvent->PreventDefault();
+      aKeyEvent->AsEvent()->PreventDefault();
       return TypedText(NS_LITERAL_STRING("\t"), eTypedText);
     }
     case nsIDOMKeyEvent::DOM_VK_RETURN:
@@ -397,7 +397,7 @@ nsPlaintextEditor::HandleKeyPressEvent(nsIDOMKeyEvent* aKeyEvent)
           nativeKeyEvent->IsOS()) {
         return NS_OK;
       }
-      aKeyEvent->PreventDefault();
+      aKeyEvent->AsEvent()->PreventDefault();
       return TypedText(EmptyString(), eTypedBreak);
   }
 
@@ -409,7 +409,7 @@ nsPlaintextEditor::HandleKeyPressEvent(nsIDOMKeyEvent* aKeyEvent)
     // we don't PreventDefault() here or keybindings like control-x won't work
     return NS_OK;
   }
-  aKeyEvent->PreventDefault();
+  aKeyEvent->AsEvent()->PreventDefault();
   nsAutoString str(nativeKeyEvent->charCode);
   return TypedText(str, eTypedText);
 }
@@ -436,7 +436,7 @@ nsPlaintextEditor::TypedText(const nsAString& aString, ETypingAction aAction)
   }
 }
 
-already_AddRefed<Element>
+Element*
 nsPlaintextEditor::CreateBRImpl(nsCOMPtr<nsINode>* aInOutParent,
                                 int32_t* aInOutOffset,
                                 EDirection aSelect)
@@ -447,7 +447,7 @@ nsPlaintextEditor::CreateBRImpl(nsCOMPtr<nsINode>* aInOutParent,
   CreateBRImpl(address_of(parent), aInOutOffset, address_of(br), aSelect);
   *aInOutParent = do_QueryInterface(parent);
   nsCOMPtr<Element> ret(do_QueryInterface(br));
-  return ret.forget();
+  return ret;
 }
 
 nsresult
@@ -847,7 +847,7 @@ nsPlaintextEditor::UpdateIMEComposition(nsIDOMEvent* aDOMTextEvent)
   MOZ_ASSERT(aDOMTextEvent, "aDOMTextEvent must not be nullptr");
 
   WidgetCompositionEvent* compositionChangeEvent =
-    aDOMTextEvent->GetInternalNSEvent()->AsCompositionEvent();
+    aDOMTextEvent->WidgetEventPtr()->AsCompositionEvent();
   NS_ENSURE_TRUE(compositionChangeEvent, NS_ERROR_INVALID_ARG);
   MOZ_ASSERT(compositionChangeEvent->mMessage == eCompositionChange,
              "The internal event should be eCompositionChange");
@@ -1044,27 +1044,17 @@ nsPlaintextEditor::SetWrapWidth(int32_t aWrapColumn)
   if (IsWrapHackEnabled() && aWrapColumn >= 0)
     styleValue.AppendLiteral("font-family: -moz-fixed; ");
 
-  // If "mail.compose.wrap_to_window_width" is set, and we're a mail editor,
-  // then remember our wrap width (for output purposes) but set the visual
-  // wrapping to window width.
-  // We may reset mWrapToWindow here, based on the pref's current value.
-  if (IsMailEditor())
-  {
-    mWrapToWindow =
-      Preferences::GetBool("mail.compose.wrap_to_window_width", mWrapToWindow);
-  }
-
   // and now we're ready to set the new whitespace/wrapping style.
-  if (aWrapColumn > 0 && !mWrapToWindow)        // Wrap to a fixed column
-  {
+  if (aWrapColumn > 0) {
+    // Wrap to a fixed column.
     styleValue.AppendLiteral("white-space: pre-wrap; width: ");
     styleValue.AppendInt(aWrapColumn);
     styleValue.AppendLiteral("ch;");
-  }
-  else if (mWrapToWindow || aWrapColumn == 0)
+  } else if (aWrapColumn == 0) {
     styleValue.AppendLiteral("white-space: pre-wrap;");
-  else
+  } else {
     styleValue.AppendLiteral("white-space: pre;");
+  }
 
   return rootElement->SetAttr(kNameSpaceID_None, nsGkAtoms::style, styleValue, true);
 }

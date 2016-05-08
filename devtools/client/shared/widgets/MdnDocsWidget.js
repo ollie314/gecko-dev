@@ -25,10 +25,9 @@
 "use strict";
 
 const {Cc, Cu, Ci} = require("chrome");
-Cu.import("resource://gre/modules/Services.jsm");
+const Services = require("Services");
 const Promise = require("promise");
-const DOMUtils = Cc["@mozilla.org/inspector/dom-utils;1"]
-                 .getService(Ci.inIDOMUtils);
+const {getCSSLexer} = require("devtools/shared/css-lexer");
 
 // Parameters for the XHR request
 // see https://developer.mozilla.org/en-US/docs/MDN/Kuma/API#Document_parameters
@@ -41,6 +40,7 @@ var XHR_CSS_URL = "https://developer.mozilla.org/en-US/docs/Web/CSS/";
 const PAGE_LINK_PARAMS = "?utm_source=mozilla&utm_medium=firefox-inspector&utm_campaign=default"
 // URL for the page link omits locale, so a locale-specific page will be loaded
 var PAGE_LINK_URL = "https://developer.mozilla.org/docs/Web/CSS/";
+exports.PAGE_LINK_URL = PAGE_LINK_URL;
 
 const BROWSER_WINDOW = 'navigator:browser';
 
@@ -82,7 +82,7 @@ const COMMENT_COLOR = "theme-comment";
 function appendSyntaxHighlightedCSS(cssText, parentElement) {
   let doc = parentElement.ownerDocument;
   let identClass = PROPERTY_NAME_COLOR;
-  let lexer = DOMUtils.getCSSLexer(cssText);
+  let lexer = getCSSLexer(cssText);
 
   /**
    * Create a SPAN node with the given text content and class.
@@ -382,7 +382,7 @@ var l10n = new L10N();
 
 loader.lazyGetter(L10N.prototype, "strings", () => {
   return Services.strings.createBundle(
-    "chrome://browser/locale/devtools/inspector.properties");
+    "chrome://devtools/locale/inspector.properties");
 });
 
 /**

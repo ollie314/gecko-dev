@@ -8,7 +8,7 @@ const TEST_URI = "data:text/html;charset=utf-8,<p>browser_telemetry_sidebar.js</
 const TOOL_DELAY = 200;
 
 add_task(function*() {
-  yield promiseTab(TEST_URI);
+  yield addTab(TEST_URI);
   let Telemetry = loadTelemetryAndRecordLogs();
 
   let target = TargetFactory.forTab(gBrowser.selectedTab);
@@ -62,9 +62,9 @@ function checkResults(Telemetry) {
     if (histId.endsWith("OPENED_PER_USER_FLAG")) {
       ok(value.length === 1 && value[0] === true,
          "Per user value " + histId + " has a single value of true");
-    } else if (histId === "DEVTOOLS_TOOLBOX_OPENED_BOOLEAN") {
+    } else if (histId === "DEVTOOLS_TOOLBOX_OPENED_COUNT") {
       is(value.length, 1, histId + " has only one entry");
-    } else if (histId.endsWith("OPENED_BOOLEAN")) {
+    } else if (histId.endsWith("OPENED_COUNT")) {
       ok(value.length > 1, histId + " has more than one entry");
 
       let okay = value.every(function(element) {

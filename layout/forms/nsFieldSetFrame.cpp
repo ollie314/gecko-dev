@@ -13,7 +13,7 @@
 #include <algorithm>
 #include "nsIFrame.h"
 #include "nsPresContext.h"
-#include "RestyleManager.h"
+#include "mozilla/RestyleManager.h"
 #include "nsGkAtoms.h"
 #include "nsStyleConsts.h"
 #include "nsDisplayList.h"
@@ -101,7 +101,6 @@ public:
     MOZ_COUNT_DTOR(nsDisplayFieldSetBorderBackground);
   }
 #endif
-
   virtual void HitTest(nsDisplayListBuilder* aBuilder, const nsRect& aRect,
                        HitTestState* aState,
                        nsTArray<nsIFrame*> *aOutFrames) override;
@@ -128,7 +127,7 @@ nsDisplayFieldSetBorderBackground::Paint(nsDisplayListBuilder* aBuilder,
                                          nsRenderingContext* aCtx)
 {
   DrawResult result = static_cast<nsFieldSetFrame*>(mFrame)->
-    PaintBorderBackground(aBuilder, *aCtx, ToReferenceFrame(), mVisibleRect);
+    PaintBorder(aBuilder, *aCtx, ToReferenceFrame(), mVisibleRect);
 
   nsDisplayItemGenericImageGeometry::UpdateDrawResult(this, result);
 }
@@ -166,13 +165,16 @@ nsFieldSetFrame::BuildDisplayList(nsDisplayListBuilder*   aBuilder,
   // we need to paint the outline
   if (!(GetStateBits() & NS_FRAME_IS_OVERFLOW_CONTAINER) &&
       IsVisibleForPainting(aBuilder)) {
-    if (StyleBorder()->mBoxShadow) {
+    if (StyleEffects()->mBoxShadow) {
       aLists.BorderBackground()->AppendNewToTop(new (aBuilder)
         nsDisplayBoxShadowOuter(aBuilder, this));
     }
 
-    // don't bother checking to see if we really have a border or background.
-    // we usually will have a border.
+    nsDisplayBackgroundImage::AppendBackgroundItemsToTop(
+      aBuilder, this, VisualBorderRectRelativeToSelf(),
+      aLists.BorderBackground(),
+      /* aAllowWillPaintBorderOptimization = */ false);
+
     aLists.BorderBackground()->AppendNewToTop(new (aBuilder)
       nsDisplayFieldSetBorderBackground(aBuilder, this));
   
@@ -209,7 +211,7 @@ nsFieldSetFrame::BuildDisplayList(nsDisplayListBuilder*   aBuilder,
 }
 
 DrawResult
-nsFieldSetFrame::PaintBorderBackground(
+nsFieldSetFrame::PaintBorder(
   nsDisplayListBuilder* aBuilder,
   nsRenderingContext& aRenderingContext,
   nsPoint aPt,
@@ -225,17 +227,14 @@ nsFieldSetFrame::PaintBorderBackground(
   rect += aPt;
   nsPresContext* presContext = PresContext();
 
-  uint32_t bgFlags = aBuilder->GetBackgroundPaintFlags();
   PaintBorderFlags borderFlags = aBuilder->ShouldSyncDecodeImages()
                                ? PaintBorderFlags::SYNC_DECODE_IMAGES
                                : PaintBorderFlags();
 
-  DrawResult result =
-    nsCSSRendering::PaintBackground(presContext, aRenderingContext, this,
-                                    aDirtyRect, rect, bgFlags);
+  DrawResult result = DrawResult::SUCCESS;
 
   nsCSSRendering::PaintBoxShadowInner(presContext, aRenderingContext,
-                                      this, rect, aDirtyRect);
+                                      this, rect);
 
   if (nsIFrame* legend = GetLegend()) {
     css::Side legendSide = wm.PhysicalSide(eLogicalSideBStart);
@@ -663,8 +662,9 @@ void
 nsFieldSetFrame::SetInitialChildList(ChildListID    aListID,
                                      nsFrameList&   aChildList)
 {
-  nsContainerFrame::SetInitialChildList(kPrincipalList, aChildList);
-  MOZ_ASSERT(GetInner());
+  nsContainerFrame::SetInitialChildList(aListID, aChildList);
+  MOZ_ASSERT(aListID != kPrincipalList || GetInner(),
+             "Setting principal child list should populate our inner frame");
 }
 void
 nsFieldSetFrame::AppendFrames(ChildListID    aListID,

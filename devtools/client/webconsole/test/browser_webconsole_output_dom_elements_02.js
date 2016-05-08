@@ -1,7 +1,7 @@
-/*
- * Any copyright is dedicated to the Public Domain.
- * http://creativecommons.org/publicdomain/zero/1.0/
- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
+/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
+/* Any copyright is dedicated to the Public Domain.
+ * http://creativecommons.org/publicdomain/zero/1.0/ */
 
 // Test the inspector links in the webconsole output for DOM Nodes actually
 // open the inspector and select the right node
@@ -23,14 +23,14 @@ const TEST_DATA = [
   },
   {
     input: "testBodyNode()",
-    output: '<body id="body-id" class="body-class">',
+    output: '<body class="body-class" id="body-id">',
     tagName: "BODY",
     attrs: [
       {
-        name: "id", value: "body-id"
+        name: "class", value: "body-class"
       },
       {
-        name: "class", value: "body-class"
+        name: "id", value: "body-id"
       }
     ]
   },
@@ -42,16 +42,16 @@ const TEST_DATA = [
   },
   {
     input: "testDocumentElement()",
-    output: '<html lang="en-US" dir="ltr">',
+    output: '<html dir="ltr" lang="en-US">',
     tagName: "HTML",
     attrs: [
       {
-        name: "lang",
-        value: "en-US"
-      },
-      {
         name: "dir",
         value: "ltr"
+      },
+      {
+        name: "lang",
+        value: "en-US"
       }
     ]
   }
@@ -107,7 +107,7 @@ function test() {
       let onNodeUnhighlight = toolbox.once("node-unhighlight");
       let btn = inspector.toolbox.doc.querySelector(".toolbox-dock-button");
       EventUtils.synthesizeMouseAtCenter(btn, {type: "mousemove"},
-        inspector.toolbox.doc.defaultView);
+        inspector.toolbox.win);
       yield onNodeUnhighlight;
 
       info("Switching back to the console");

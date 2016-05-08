@@ -59,9 +59,6 @@ const QUERYTYPE_AUTOFILL_URL        = 2;
 // "comment" back into the title and the tag.
 const TITLE_TAGS_SEPARATOR = " \u2013 ";
 
-// This separator identifies the search engine name in the title.
-const TITLE_SEARCH_ENGINE_SEPARATOR = " \u00B7\u2013\u00B7 ";
-
 // Telemetry probes.
 const TELEMETRY_1ST_RESULT = "PLACES_AUTOCOMPLETE_1ST_RESULT_TIME_MS";
 const TELEMETRY_6_FIRST_RESULTS = "PLACES_AUTOCOMPLETE_6_FIRST_RESULTS_TIME_MS";
@@ -71,7 +68,7 @@ const FRECENCY_DEFAULT = 1000;
 // Remote matches are appended when local matches are below a given frecency
 // threshold (FRECENCY_DEFAULT) as soon as they arrive.  However we'll
 // always try to have at least MINIMUM_LOCAL_MATCHES local matches.
-const MINIMUM_LOCAL_MATCHES = 5;
+const MINIMUM_LOCAL_MATCHES = 6;
 
 // A regex that matches "single word" hostnames for whitelisting purposes.
 // The hostname will already have been checked for general validity, so we
@@ -263,6 +260,8 @@ XPCOMUtils.defineLazyModuleGetter(this, "Task",
                                   "resource://gre/modules/Task.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "PlacesSearchAutocompleteProvider",
                                   "resource://gre/modules/PlacesSearchAutocompleteProvider.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "PlacesRemoteTabsAutocompleteProvider",
+                                  "resource://gre/modules/PlacesRemoteTabsAutocompleteProvider.jsm");
 
 XPCOMUtils.defineLazyServiceGetter(this, "textURIService",
                                    "@mozilla.org/intl/texttosuburi;1",
@@ -580,9 +579,47 @@ function stripHttpAndTrim(spec) {
  * @return String representation of the built moz-action: URL
  */
 function makeActionURL(action, params) {
-  let url = "moz-action:" + action + "," + JSON.stringify(params);
-  // Make a nsIURI out of this to ensure it's encoded properly.
-  return NetUtil.newURI(url).spec;
+  let encodedParams = {};
+  for (let key in params) {
+    encodedParams[key] = encodeURIComponent(params[key]);
+  }
+  return "moz-action:" + action + "," + JSON.stringify(encodedParams);
+}
+
+/**
+ * Returns the key to be used for a URL in a map for the purposes of removing
+ * duplicate entries - any 2 URLs that should be considered the same should
+ * return the same key. For some moz-action URLs this will unwrap the params
+ * and return a key based on the wrapped URL.
+ */
+function makeKeyForURL(actionUrl) {
+  // At this stage we only consider moz-action URLs.
+  if (!actionUrl.startsWith("moz-action:")) {
+    return stripHttpAndTrim(actionUrl);
+  }
+  let [, type, params] = actionUrl.match(/^moz-action:([^,]+),(.*)$/);
+  try {
+    params = JSON.parse(params);
+  } catch (ex) {
+    // This is unexpected in this context, so just return the input.
+    return stripHttpAndTrim(actionUrl);
+  }
+  // For now we only handle these 2 action types and treat them as the same.
+  switch (type) {
+    case "remotetab":
+    case "switchtab":
+      if (params.url) {
+        return "moz-action:tab:" + stripHttpAndTrim(params.url);
+      }
+      break;
+      // TODO (bug 1222435) - "switchtab" should be handled as an "autofill"
+      // entry.
+    default:
+      // do nothing.
+      // TODO (bug 1222436) - extend this method so it can be used instead of
+      // the |placeId| that's also used to remove duplicate entries.
+  }
+  return stripHttpAndTrim(actionUrl);
 }
 
 /**
@@ -864,6 +901,9 @@ Search.prototype = {
     yield this._matchFirstHeuristicResult(conn);
     this._addingHeuristicFirstMatch = false;
 
+    // We sleep a little between adding the heuristicFirstMatch and matching
+    // any other searches so we aren't kicking off potentially expensive
+    // searches on every keystroke.
     yield this._sleep(Prefs.delay);
     if (!this.pending)
       return;
@@ -874,6 +914,12 @@ Search.prototype = {
 
     for (let [query, params] of queries) {
       yield conn.executeCached(query, params, this._onResultRow.bind(this));
+      if (!this.pending)
+        return;
+    }
+
+    if (this._enableActions && this.hasBehavior("openpage")) {
+      yield this._matchRemoteTabs();
       if (!this.pending)
         return;
     }
@@ -1188,6 +1234,38 @@ Search.prototype = {
     });
   },
 
+  *_matchRemoteTabs() {
+    let matches = yield PlacesRemoteTabsAutocompleteProvider.getMatches(this._originalSearchString);
+    for (let {url, title, icon, deviceClass, deviceName} of matches) {
+      // It's rare that Sync supplies the icon for the page (but if it does, it
+      // is a string URL)
+      if (!icon) {
+        try {
+          let favicon = yield PlacesUtils.promiseFaviconLinkUrl(url);
+          if (favicon) {
+            icon = favicon.spec;
+          }
+        } catch (ex) {} // no favicon for this URL.
+      } else {
+        icon = PlacesUtils.favicons
+                          .getFaviconLinkForIcon(NetUtil.newURI(icon)).spec;
+      }
+
+      let match = {
+        // We include the deviceName in the action URL so we can render it in
+        // the URLBar.
+        value: makeActionURL("remotetab", { url, deviceName }),
+        comment: title || url,
+        style: "action remotetab",
+        // we want frecency > FRECENCY_DEFAULT so it doesn't get pushed out
+        // by "remote" matches.
+        frecency: FRECENCY_DEFAULT + 1,
+        icon,
+      }
+      this._addMatch(match);
+    }
+  },
+
   // TODO (bug 1054814): Use visited URLs to inform which scheme to use, if the
   // scheme isn't specificed.
   _matchUnknownUrl: function* () {
@@ -1228,14 +1306,22 @@ Search.prototype = {
       return false;
     }
 
+    // getFixupURIInfo() escaped the URI, so it may not be pretty.  Embed the
+    // escaped URL in the action URI since that URL should be "canonical".  But
+    // pass the pretty, unescaped URL as the match comment, since it's likely
+    // to be displayed to the user, and in any case the front-end should not
+    // rely on it being canonical.
+    let escapedURL = uri.spec;
+    let displayURL = textURIService.unEscapeURIForUI("UTF-8", uri.spec);
+
     let value = makeActionURL("visiturl", {
-      url: uri.spec,
+      url: escapedURL,
       input: this._originalSearchString,
     });
 
     let match = {
       value: value,
-      comment: uri.spec,
+      comment: displayURL,
       style: "action visiturl",
       frecency: 0,
     };
@@ -1246,14 +1332,16 @@ Search.prototype = {
         match.icon = favicon.spec;
     } catch (e) {
       // It's possible we don't have a favicon for this - and that's ok.
-    };
+    }
 
     this._addMatch(match);
     return true;
   },
 
   _onResultRow: function (row) {
-    TelemetryStopwatch.finish(TELEMETRY_1ST_RESULT, this);
+    if (this._localMatchesCount == 0) {
+      TelemetryStopwatch.finish(TELEMETRY_1ST_RESULT, this);
+    }
     let queryType = row.getResultByIndex(QUERYINDEX_QUERYTYPE);
     let match;
     switch (queryType) {
@@ -1294,10 +1382,15 @@ Search.prototype = {
       return;
     }
 
-    // Use the special separator that the binding will use to style the item.
-    match.style = "search " + match.style;
-    match.comment = parseResult.terms + TITLE_SEARCH_ENGINE_SEPARATOR +
-                    parseResult.engineName;
+    // Turn the match into a searchengine action with a favicon.
+    match.value = makeActionURL("searchengine", {
+      engineName: parseResult.engineName,
+      input: parseResult.terms,
+      searchQuery: parseResult.terms,
+    });
+    match.comment = parseResult.engineName;
+    match.icon = match.icon || match.iconUrl;
+    match.style = "action searchengine favicon";
   },
 
   _addMatch(match) {
@@ -1307,7 +1400,7 @@ Search.prototype = {
       return;
 
     // Must check both id and url, cause keywords dynamically modify the url.
-    let urlMapKey = stripHttpAndTrim(match.value);
+    let urlMapKey = makeKeyForURL(match.value);
     if ((match.placeId && this._usedPlaceIds.has(match.placeId)) ||
         this._usedURLs.has(urlMapKey)) {
       return;
@@ -1334,7 +1427,7 @@ Search.prototype = {
       match.style += " heuristic";
     }
 
-    match.icon = match.icon || PlacesUtils.favicons.defaultFavicon.spec;
+    match.icon = match.icon || "";
     match.finalCompleteValue = match.finalCompleteValue || "";
 
     this._result.insertMatchAt(this._getInsertIndexForMatch(match),
@@ -1390,7 +1483,10 @@ Search.prototype = {
     // Remove the trailing slash.
     match.comment = stripHttpAndTrim(trimmedHost);
     match.finalCompleteValue = untrimmedHost;
-    match.icon = faviconUrl;
+    if (faviconUrl) {
+      match.icon = PlacesUtils.favicons
+                              .getFaviconLinkForIcon(NetUtil.newURI(faviconUrl)).spec;
+    }
     // Although this has a frecency, this query is executed before any other
     // queries that would result in frecency matches.
     match.frecency = frecency;
@@ -1429,7 +1525,10 @@ Search.prototype = {
     match.value = this._strippedPrefix + url;
     match.comment = url;
     match.finalCompleteValue = untrimmedURL;
-    match.icon = faviconUrl;
+    if (faviconUrl) {
+      match.icon = PlacesUtils.favicons
+                              .getFaviconLinkForIcon(NetUtil.newURI(faviconUrl)).spec;
+    }
     // Although this has a frecency, this query is executed before any other
     // queries that would result in frecency matches.
     match.frecency = frecency;
@@ -1654,16 +1753,21 @@ Search.prototype = {
     let typed = Prefs.autofillTyped || this.hasBehavior("typed");
     let bookmarked = this.hasBehavior("bookmark") && !this.hasBehavior("history");
 
-    return [
-      bookmarked ? typed ? SQL_BOOKMARKED_TYPED_HOST_QUERY
-                         : SQL_BOOKMARKED_HOST_QUERY
-                 : typed ? SQL_TYPED_HOST_QUERY
-                         : SQL_HOST_QUERY,
-      {
-        query_type: QUERYTYPE_AUTOFILL_HOST,
-        searchString: this._searchString.toLowerCase()
-      }
-    ];
+    let query = [];
+    if (bookmarked) {
+      query.push(typed ? SQL_BOOKMARKED_TYPED_HOST_QUERY
+                       : SQL_BOOKMARKED_HOST_QUERY);
+    } else {
+      query.push(typed ? SQL_TYPED_HOST_QUERY
+                       : SQL_HOST_QUERY);
+    }
+
+    query.push({
+      query_type: QUERYTYPE_AUTOFILL_HOST,
+      searchString: this._searchString.toLowerCase()
+    });
+
+    return query;
   },
 
   /**
@@ -1683,17 +1787,22 @@ Search.prototype = {
     let typed = Prefs.autofillTyped || this.hasBehavior("typed");
     let bookmarked = this.hasBehavior("bookmark") && !this.hasBehavior("history");
 
-    return [
-      bookmarked ? typed ? SQL_BOOKMARKED_TYPED_URL_QUERY
-                         : SQL_BOOKMARKED_URL_QUERY
-                 : typed ? SQL_TYPED_URL_QUERY
-                         : SQL_URL_QUERY,
-      {
-        query_type: QUERYTYPE_AUTOFILL_URL,
-        searchString: this._autofillUrlSearchString,
-        revHost
-      }
-    ];
+    let query = [];
+    if (bookmarked) {
+      query.push(typed ? SQL_BOOKMARKED_TYPED_URL_QUERY
+                       : SQL_BOOKMARKED_URL_QUERY);
+    } else {
+      query.push(typed ? SQL_TYPED_URL_QUERY
+                       : SQL_URL_QUERY);
+    }
+
+    query.push({
+      query_type: QUERYTYPE_AUTOFILL_URL,
+      searchString: this._autofillUrlSearchString,
+      revHost
+    });
+
+    return query;
   },
 
  /**

@@ -197,13 +197,13 @@ private:
 #ifdef MOZ_B2G_RIL
   bool mDialingRequestProcessed;
 #endif
-  nsString mDeviceAddress;
+  BluetoothAddress mDeviceAddress;
 #ifdef MOZ_B2G_RIL
   nsString mMsisdn;
   nsString mOperatorName;
 
   nsTArray<Call> mCurrentCallArray;
-  nsAutoPtr<BluetoothRilListener> mListener;
+  UniquePtr<BluetoothRilListener> mListener;
 #endif
   RefPtr<BluetoothProfileController> mController;
   RefPtr<BluetoothReplyRunnable> mScoRunnable;

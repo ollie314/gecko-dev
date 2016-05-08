@@ -212,6 +212,12 @@ public:
                                                   bool aFlushLayout = true);
   already_AddRefed<DOMRectList> GetClientRects(bool aClampToEdge = true,
                                                bool aFlushLayout = true);
+  static void GetInnerTextNoFlush(mozilla::dom::DOMString& aValue,
+                                  mozilla::ErrorResult& aError,
+                                  nsIContent* aStartParent,
+                                  uint32_t aStartOffset,
+                                  nsIContent* aEndParent,
+                                  uint32_t aEndOffset);
 
   nsINode* GetParentObject() const { return mOwner; }
   virtual JSObject* WrapObject(JSContext* cx, JS::Handle<JSObject*> aGivenProto) override final;
@@ -246,6 +252,14 @@ public:
                                      bool *outNodeBefore,
                                      bool *outNodeAfter);
 
+  /**
+   * Return true if any part of (aNode, aStartOffset) .. (aNode, aEndOffset)
+   * overlaps any nsRange in aNode's GetNextRangeCommonAncestor ranges (i.e.
+   * where aNode is a descendant of a range's common ancestor node).
+   * If a nsRange starts in (aNode, aEndOffset) or if it ends in
+   * (aNode, aStartOffset) then it is non-overlapping and the result is false
+   * for that nsRange.  Collapsed ranges always counts as non-overlapping.
+   */
   static bool IsNodeSelected(nsINode* aNode, uint32_t aStartOffset,
                              uint32_t aEndOffset);
 
@@ -291,6 +305,14 @@ protected:
    * is undefined if called on a range where IsInSelection() is false.
    */
   nsINode* GetRegisteredCommonAncestor();
+
+  // Helper to IsNodeSelected.
+  static bool IsNodeInSortedRanges(nsINode* aNode,
+                                   uint32_t aStartOffset,
+                                   uint32_t aEndOffset,
+                                   const nsTArray<const nsRange*>& aRanges,
+                                   size_t aRangeStart,
+                                   size_t aRangeEnd);
 
   struct MOZ_STACK_CLASS AutoInvalidateSelection
   {

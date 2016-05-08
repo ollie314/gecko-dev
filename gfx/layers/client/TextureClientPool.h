@@ -12,12 +12,14 @@
 #include "TextureClient.h"
 #include "nsITimer.h"
 #include <stack>
+#include <list>
 
 namespace mozilla {
 namespace layers {
 
 class ISurfaceAllocator;
 class CompositableForwarder;
+class gfxSharedReadLock;
 
 class TextureClientAllocator
 {
@@ -32,7 +34,7 @@ public:
    * Return a TextureClient that is not yet ready to be reused, but will be
    * imminently.
    */
-  virtual void ReturnTextureClientDeferred(TextureClient *aClient) = 0;
+  virtual void ReturnTextureClientDeferred(TextureClient *aClient, gfxSharedReadLock* aLock) = 0;
 
   virtual void ReportClientLost() = 0;
 };
@@ -70,7 +72,7 @@ public:
    * Return a TextureClient that is not yet ready to be reused, but will be
    * imminently.
    */
-  void ReturnTextureClientDeferred(TextureClient *aClient) override;
+  void ReturnTextureClientDeferred(TextureClient *aClient, gfxSharedReadLock* aLock) override;
 
   /**
    * Attempt to shrink the pool so that there are no more than
@@ -105,7 +107,14 @@ public:
   gfx::SurfaceFormat GetFormat() { return mFormat; }
   TextureFlags GetFlags() const { return mFlags; }
 
+  /**
+   * Clear the pool and put it in a state where it won't recycle any new texture.
+   */
+  void Destroy();
+
 private:
+  void ReturnUnlockedClients();
+
   // The minimum size of the pool (the number of tiles that will be kept after
   // shrinking).
   static const uint32_t sMinCacheSize = 0;
@@ -132,11 +141,21 @@ private:
   /// existence is always mOutstandingClients + the size of mTextureClients.
   uint32_t mOutstandingClients;
 
+  struct TextureClientHolder {
+    RefPtr<TextureClient> mTextureClient;
+    RefPtr<gfxSharedReadLock> mLock;
+
+    TextureClientHolder(TextureClient* aTextureClient, gfxSharedReadLock* aLock)
+      : mTextureClient(aTextureClient), mLock(aLock)
+    {}
+  };
+
   // On b2g gonk, std::queue might be a better choice.
   // On ICS, fence wait happens implicitly before drawing.
   // Since JB, fence wait happens explicitly when fetching a client from the pool.
   std::stack<RefPtr<TextureClient> > mTextureClients;
-  std::stack<RefPtr<TextureClient> > mTextureClientsDeferred;
+
+  std::list<TextureClientHolder> mTextureClientsDeferred;
   RefPtr<nsITimer> mTimer;
   RefPtr<CompositableForwarder> mSurfaceAllocator;
 };

@@ -17,6 +17,7 @@
 #include "mozilla/layers/TextureD3D9.h"
 #endif
 #include "gfxUtils.h"
+#include "IPDLActor.h"
 
 namespace mozilla {
 namespace layers {
@@ -29,7 +30,7 @@ using namespace mozilla::gfx;
  *
  * CompositableChild is owned by a CompositableClient.
  */
-class CompositableChild : public PCompositableChild
+class CompositableChild : public ChildActor<PCompositableChild>
                         , public AsyncTransactionTrackersHolder
 {
 public:
@@ -61,12 +62,12 @@ RemoveTextureFromCompositableTracker::ReleaseTextureClient()
 {
   if (mTextureClient &&
       mTextureClient->GetAllocator() &&
-      !mTextureClient->GetAllocator()->IsImageBridgeChild())
+      !mTextureClient->GetAllocator()->UsesImageBridge())
   {
-    TextureClientReleaseTask* task = new TextureClientReleaseTask(mTextureClient);
-    RefPtr<ISurfaceAllocator> allocator = mTextureClient->GetAllocator();
+    RefPtr<TextureClientReleaseTask> task = new TextureClientReleaseTask(mTextureClient);
+    RefPtr<ClientIPCAllocator> allocator = mTextureClient->GetAllocator();
     mTextureClient = nullptr;
-    allocator->GetMessageLoop()->PostTask(FROM_HERE, task);
+    allocator->AsClientAllocator()->GetMessageLoop()->PostTask(task.forget());
   } else {
     mTextureClient = nullptr;
   }
@@ -128,7 +129,6 @@ CompositableClient::CompositableClient(CompositableForwarder* aForwarder,
 : mCompositableChild(nullptr)
 , mForwarder(aForwarder)
 , mTextureFlags(aTextureFlags)
-, mDestroyed(false)
 {
   MOZ_COUNT_CTOR(CompositableClient);
 }
@@ -160,6 +160,7 @@ CompositableClient::GetIPDLActor() const
 bool
 CompositableClient::Connect(ImageContainer* aImageContainer)
 {
+  MOZ_ASSERT(!mCompositableChild);
   if (!GetForwarder() || GetIPDLActor()) {
     return false;
   }
@@ -167,21 +168,32 @@ CompositableClient::Connect(ImageContainer* aImageContainer)
   return true;
 }
 
+bool
+CompositableClient::IsConnected() const
+{
+  return mCompositableChild && mCompositableChild->CanSend();
+}
+
 void
 CompositableClient::Destroy()
 {
-  mDestroyed = true;
-
-  if (!mCompositableChild) {
+  if (!IsConnected()) {
     return;
   }
-  // Send pending AsyncMessages before deleting CompositableChild.
-  // They might have dependency to the mCompositableChild.
+
+  // Send pending AsyncMessages before deleting CompositableChild since the former
+  // might have references to the latter.
   mForwarder->SendPendingAsyncMessges();
-  // Delete CompositableChild.
+
   mCompositableChild->mCompositableClient = nullptr;
-  PCompositableChild::Send__delete__(mCompositableChild);
+  mCompositableChild->Destroy(mForwarder);
   mCompositableChild = nullptr;
+}
+
+bool
+CompositableClient::DestroyFallback(PCompositableChild* aActor)
+{
+  return aActor->SendDestroySync();
 }
 
 uint64_t
@@ -193,7 +205,7 @@ CompositableClient::GetAsyncID() const
   return 0; // zero is always an invalid async ID
 }
 
-already_AddRefed<BufferTextureClient>
+already_AddRefed<TextureClient>
 CompositableClient::CreateBufferTextureClient(gfx::SurfaceFormat aFormat,
                                               gfx::IntSize aSize,
                                               gfx::BackendType aMoz2DBackend,
@@ -220,7 +232,7 @@ CompositableClient::CreateTextureClientForDrawing(gfx::SurfaceFormat aFormat,
 bool
 CompositableClient::AddTextureClient(TextureClient* aClient)
 {
-  if(!aClient || !aClient->IsAllocated()) {
+  if(!aClient) {
     return false;
   }
   aClient->SetAddedToCompositableClient();
@@ -231,7 +243,15 @@ void
 CompositableClient::ClearCachedResources()
 {
   if (mTextureClientRecycler) {
-    mTextureClientRecycler = nullptr;
+    mTextureClientRecycler->ShrinkToMinimumSize();
+  }
+}
+
+void
+CompositableClient::HandleMemoryPressure()
+{
+  if (mTextureClientRecycler) {
+    mTextureClientRecycler->ShrinkToMinimumSize();
   }
 }
 
@@ -278,23 +298,10 @@ CompositableClient::DumpTextureClient(std::stringstream& aStream,
 
 AutoRemoveTexture::~AutoRemoveTexture()
 {
-#if defined(MOZ_WIDGET_GONK) && ANDROID_VERSION >= 17
-  if (mCompositable && mTexture && mCompositable->GetForwarder()) {
-    // remove old buffer from CompositableHost
-    RefPtr<AsyncTransactionWaiter> waiter = new AsyncTransactionWaiter();
-    RefPtr<AsyncTransactionTracker> tracker =
-        new RemoveTextureFromCompositableTracker(waiter);
-    // Hold TextureClient until transaction complete.
-    tracker->SetTextureClient(mTexture);
-    mTexture->SetRemoveFromCompositableWaiter(waiter);
-    // RemoveTextureFromCompositableAsync() expects CompositorChild's presence.
-    mCompositable->GetForwarder()->RemoveTextureFromCompositableAsync(tracker, mCompositable, mTexture);
-  }
-#else
-  if (mCompositable && mTexture) {
+  if (mCompositable && mTexture && mCompositable->IsConnected()) {
+    mTexture->RemoveFromCompositable(mCompositable);
     mCompositable->RemoveTexture(mTexture);
   }
-#endif
 }
 
 } // namespace layers

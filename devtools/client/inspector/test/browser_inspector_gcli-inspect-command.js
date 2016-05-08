@@ -5,7 +5,7 @@
 
 // Testing that the gcli 'inspect' command works as it should.
 
-const TEST_URI = TEST_URL_ROOT + "doc_inspector_gcli-inspect-command.html";
+const TEST_URI = URL_ROOT + "doc_inspector_gcli-inspect-command.html";
 
 add_task(function* () {
   return helpers.addTabWithToolbar(TEST_URI, function(options) {
@@ -19,7 +19,7 @@ add_task(function* () {
           status: 'ERROR',
           args: {
             selector: {
-              message: 'Value required for \'selector\'.'
+              message: 'Value required for \u2018selector\u2019.'
             },
           }
         },

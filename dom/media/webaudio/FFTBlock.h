@@ -79,10 +79,11 @@ public:
   {
     EnsureFFT();
 #if defined(MOZ_LIBAV_FFT)
-    AlignedTArray<FFTSample> complex(mFFTSize);
-    PodCopy(complex.Elements(), aData, mFFTSize);
-    av_rdft_calc(mAvRDFT, complex.Elements());
-    PodCopy((FFTSample*)mOutputBuffer.Elements(), complex.Elements(), mFFTSize);
+    PodCopy(mOutputBuffer.Elements()->f, aData, mFFTSize);
+    av_rdft_calc(mAvRDFT, mOutputBuffer.Elements()->f);
+    // Recover packed Nyquist.
+    mOutputBuffer[mFFTSize / 2].r = mOutputBuffer[0].i;
+    mOutputBuffer[0].i = 0.0f;
 #else
 #ifdef BUILD_ARM_NEON
     if (mozilla::supports_neon()) {
@@ -109,23 +110,18 @@ public:
     EnsureIFFT();
 #if defined(MOZ_LIBAV_FFT)
     {
-      PodCopy(aDataOut, (float*)mOutputBuffer.Elements(), mFFTSize);
-      av_rdft_calc(mAvIRDFT, aDataOut);
-      // TODO: Once bug 877662 lands, change this to use SSE.
       // Even though this function doesn't scale, the libav forward transform
       // gives a value that needs scaling by 2 in order for things to turn out
       // similar to how we expect from kissfft/openmax.
-      for (uint32_t i = 0; i < mFFTSize; ++i) {
-        aDataOut[i] *= 2.0;
-      }
+      AudioBufferCopyWithScale(mOutputBuffer.Elements()->f, 2.0f,
+                               aDataOut, mFFTSize);
+      aDataOut[1] = 2.0f * mOutputBuffer[mFFTSize/2].r; // Packed Nyquist
+      av_rdft_calc(mAvIRDFT, aDataOut);
     }
 #else
 #ifdef BUILD_ARM_NEON
     if (mozilla::supports_neon()) {
-      omxSP_FFTInv_CCSToR_F32_Sfs(mOutputBuffer.Elements()->f, aDataOut, mOmxIFFT);
-      // There is no function that computes de inverse FFT without scaling, so
-      // we have to scale back up here. Bug 1158741.
-      AudioBufferInPlaceScale(aDataOut, mFFTSize, mFFTSize);
+      omxSP_FFTInv_CCSToR_F32_Sfs_unscaled(mOutputBuffer.Elements()->f, aDataOut, mOmxIFFT);
     } else
 #endif
     {
@@ -136,10 +132,18 @@ public:
 
   void Multiply(const FFTBlock& aFrame)
   {
+    uint32_t halfSize = mFFTSize / 2;
+    // DFTs are not packed.
+    MOZ_ASSERT(mOutputBuffer[0].i == 0);
+    MOZ_ASSERT(aFrame.mOutputBuffer[0].i == 0);
+
     BufferComplexMultiply(mOutputBuffer.Elements()->f,
                           aFrame.mOutputBuffer.Elements()->f,
                           mOutputBuffer.Elements()->f,
-                          mFFTSize / 2 + 1);
+                          halfSize);
+    mOutputBuffer[halfSize].r *= aFrame.mOutputBuffer[halfSize].r;
+    // This would have been set to NaN if either real component was NaN.
+    mOutputBuffer[0].i = 0.0f;
   }
 
   // Perform a forward FFT on |aData|, assuming zeros after dataSize samples,

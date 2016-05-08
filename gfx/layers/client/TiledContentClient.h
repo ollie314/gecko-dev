@@ -35,7 +35,6 @@
 #include "nsTArray.h"                   // for nsTArray, nsTArray_Impl, etc
 #include "nsExpirationTracker.h"
 #include "mozilla/layers/ISurfaceAllocator.h"
-#include "gfxReusableSurfaceWrapper.h"
 #include "pratom.h"                     // For PR_ATOMIC_INCREMENT/DECREMENT
 
 namespace mozilla {
@@ -97,7 +96,7 @@ private:
   };
 
 public:
-  explicit gfxShmSharedReadLock(ISurfaceAllocator* aAllocator);
+  explicit gfxShmSharedReadLock(ClientIPCAllocator* aAllocator);
 
 protected:
   ~gfxShmSharedReadLock();
@@ -118,6 +117,7 @@ public:
   static already_AddRefed<gfxShmSharedReadLock>
   Open(mozilla::layers::ISurfaceAllocator* aAllocator, const mozilla::layers::ShmemSection& aShmemSection)
   {
+    MOZ_RELEASE_ASSERT(aShmemSection.shmem().IsReadable());
     RefPtr<gfxShmSharedReadLock> readLock = new gfxShmSharedReadLock(aAllocator, aShmemSection);
     return readLock.forget();
   }
@@ -276,6 +276,7 @@ struct TileClient
   RefPtr<TextureClientAllocator> mAllocator;
   gfx::IntRect mUpdateRect;
   CompositableClient* mCompositableClient;
+  bool mWasPlaceholder;
 #ifdef GFX_TILEDLAYER_DEBUG_OVERLAY
   TimeStamp        mLastUpdate;
 #endif
@@ -313,14 +314,14 @@ struct BasicTiledLayerPaintData {
    * the closest ancestor layer which scrolls, and is used to obtain
    * the composition bounds that are relevant for this layer.
    */
-  gfx::Matrix4x4 mTransformToCompBounds;
+  LayerToParentLayerMatrix4x4 mTransformToCompBounds;
 
   /*
    * The critical displayport of the content from the nearest ancestor layer
-   * that represents scrollable content with a display port set. Empty if a
-   * critical displayport is not set.
+   * that represents scrollable content with a display port set. isNothing()
+   * if a critical displayport is not set.
    */
-  LayerIntRect mCriticalDisplayPort;
+  Maybe<LayerIntRect> mCriticalDisplayPort;
 
   /*
    * The render resolution of the document that the content this layer
@@ -355,6 +356,11 @@ struct BasicTiledLayerPaintData {
   bool mPaintFinished : 1;
 
   /*
+   * Whether or not there is an async transform animation active
+   */
+  bool mHasTransformAnimation : 1;
+
+  /*
    * Initializes/clears data to prepare for paint action.
    */
   void ResetPaintData();
@@ -376,7 +382,7 @@ public:
   bool UpdateFromCompositorFrameMetrics(const LayerMetricsWrapper& aLayer,
                                         bool aHasPendingNewThebesContent,
                                         bool aLowPrecision,
-                                        ViewTransform& aViewTransform);
+                                        AsyncTransform& aViewTransform);
 
   /**
    * Determines if the compositor's upcoming composition bounds has fallen
@@ -408,13 +414,15 @@ public:
     , mCompositableClient(aCompositableClient)
     , mLastPaintContentType(gfxContentType::COLOR)
     , mLastPaintSurfaceMode(SurfaceMode::SURFACE_OPAQUE)
+    , mWasLastPaintProgressive(false)
   {}
 
   virtual void PaintThebes(const nsIntRegion& aNewValidRegion,
                    const nsIntRegion& aPaintRegion,
                    const nsIntRegion& aDirtyRegion,
                    LayerManager::DrawPaintedLayerCallback aCallback,
-                   void* aCallbackData) = 0;
+                   void* aCallbackData,
+                   bool aIsProgressive = false) = 0;
 
   virtual bool SupportsProgressiveUpdate() = 0;
   virtual bool ProgressiveUpdate(nsIntRegion& aValidRegion,
@@ -449,6 +457,8 @@ protected:
   gfxContentType mLastPaintContentType;
   SurfaceMode mLastPaintSurfaceMode;
   CSSToParentLayerScale2D mFrameResolution;
+
+  bool mWasLastPaintProgressive;
 };
 
 class ClientMultiTiledLayerBuffer
@@ -475,7 +485,8 @@ public:
                    const nsIntRegion& aPaintRegion,
                    const nsIntRegion& aDirtyRegion,
                    LayerManager::DrawPaintedLayerCallback aCallback,
-                   void* aCallbackData) override;
+                   void* aCallbackData,
+                   bool aIsProgressive = false) override;
 
   virtual bool SupportsProgressiveUpdate() override { return true; }
   /**
@@ -627,9 +638,6 @@ public:
   };
   virtual void UpdatedBuffer(TiledBufferType aType) = 0;
 
-  virtual bool SupportsLayerSize(const gfx::IntSize& aSize, ClientLayerManager* aManager) const
-  { return true; }
-
 private:
   const char* mName;
 };
@@ -648,9 +656,8 @@ protected:
   ~MultiTiledContentClient()
   {
     MOZ_COUNT_DTOR(MultiTiledContentClient);
- 
-    mDestroyed = true;
-    mTiledBuffer.DiscardBuffers();
+
+      mTiledBuffer.DiscardBuffers();
     mLowPrecisionTiledBuffer.DiscardBuffers();
   }
 

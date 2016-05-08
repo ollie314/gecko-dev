@@ -28,7 +28,7 @@ namespace layers {
 
 class ActiveElementManager;
 
-typedef Function<void(const ScrollableLayerGuid&,
+typedef function<void(const ScrollableLayerGuid&,
                       uint64_t /* input block id */,
                       bool /* prevent default */)>
         ContentReceivedInputBlockCallback;
@@ -57,14 +57,19 @@ public:
   void ProcessTouchEvent(const WidgetTouchEvent& aEvent,
                          const ScrollableLayerGuid& aGuid,
                          uint64_t aInputBlockId,
-                         nsEventStatus aApzResponse);
+                         nsEventStatus aApzResponse,
+                         nsEventStatus aContentResponse);
   void ProcessWheelEvent(const WidgetWheelEvent& aEvent,
+                         const ScrollableLayerGuid& aGuid,
+                         uint64_t aInputBlockId);
+  void ProcessMouseEvent(const WidgetMouseEvent& aEvent,
                          const ScrollableLayerGuid& aGuid,
                          uint64_t aInputBlockId);
   void ProcessAPZStateChange(const nsCOMPtr<nsIDocument>& aDocument,
                              ViewID aViewId,
                              APZStateChange aChange,
                              int aArg);
+  void ProcessClusterHit();
 private:
   ~APZEventState();
   bool SendPendingTouchPreventedResponse(bool aPreventDefault);
@@ -79,6 +84,7 @@ private:
   bool mEndTouchIsClick;
   bool mTouchEndCancelled;
   int mActiveAPZTransforms;
+  int32_t mLastTouchIdentifier;
 };
 
 } // namespace layers

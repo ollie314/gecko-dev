@@ -2,11 +2,11 @@
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
 const TEST_URI = "data:text/html;charset=utf-8,browser_css_color.js";
-var {colorUtils} = require("devtools/shared/css-color");
+var {colorUtils} = require("devtools/client/shared/css-color");
 var origColorUnit;
 
 add_task(function*() {
-  yield promiseTab("about:blank");
+  yield addTab("about:blank");
   let [host, win, doc] = yield createHost("bottom", TEST_URI);
 
   info("Creating a test canvas element to test colors");

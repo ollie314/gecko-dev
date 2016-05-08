@@ -8,6 +8,7 @@
 
 #include <map>
 #include <set>
+#include <string>
 #include <vector>
 
 #include "mozilla/LinkedList.h"
@@ -59,12 +60,13 @@ struct LinkedProgramInfo final
     WebGLProgram* const prog;
     std::vector<RefPtr<WebGLActiveInfo>> activeAttribs;
     std::vector<RefPtr<WebGLActiveInfo>> activeUniforms;
+    std::vector<RefPtr<WebGLActiveInfo>> transformFeedbackVaryings;
 
     // Needed for Get{Attrib,Uniform}Location. The keys for these are non-mapped
     // user-facing `GLActiveInfo::name`s, without any final "[0]".
     std::map<nsCString, const WebGLActiveInfo*> attribMap;
     std::map<nsCString, const WebGLActiveInfo*> uniformMap;
-    std::map<nsCString, const nsCString>* fragDataMap;
+    std::map<nsCString, const WebGLActiveInfo*> transformFeedbackVaryingsMap;
 
     std::vector<RefPtr<UniformBlockInfo>> uniformBlocks;
 
@@ -109,17 +111,6 @@ struct LinkedProgramInfo final
         return false;
     }
 
-    bool FindFragData(const nsCString& baseUserName,
-                      nsCString* const out_baseMappedName) const
-    {
-        if (!fragDataMap) {
-            *out_baseMappedName = baseUserName;
-            return true;
-        }
-
-        MOZ_CRASH("Not implemented.");
-    }
-
     bool HasActiveAttrib(GLuint loc) const {
         auto itr = activeAttribLocs.find(loc);
         return itr != activeAttribLocs.end();
@@ -161,16 +152,23 @@ public:
                                              dom::Nullable<dom::OwningUnsignedLongOrUint32ArrayOrBoolean>& retval,
                                              ErrorResult& rv) const;
     already_AddRefed<WebGLUniformLocation> GetUniformLocation(const nsAString& name) const;
+    void GetUniformIndices(const dom::Sequence<nsString>& uniformNames,
+                           dom::Nullable< nsTArray<GLuint> >& retval) const;
     void UniformBlockBinding(GLuint uniformBlockIndex, GLuint uniformBlockBinding) const;
 
-    bool LinkProgram();
+    void LinkProgram();
     bool UseProgram() const;
     void ValidateProgram() const;
 
     ////////////////
 
+    bool FindActiveOutputMappedNameByUserName(const nsACString& userName,
+                                              nsCString* const out_mappedName) const;
     bool FindAttribUserNameByMappedName(const nsACString& mappedName,
                                         nsDependentCString* const out_userName) const;
+    bool FindVaryingByMappedName(const nsACString& mappedName,
+                                 nsCString* const out_userName,
+                                 bool* const out_isArray) const;
     bool FindUniformByMappedName(const nsACString& mappedName,
                                  nsCString* const out_userName,
                                  bool* const out_isArray) const;
@@ -189,7 +187,7 @@ public:
     }
 
     WebGLContext* GetParentObject() const {
-        return Context();
+        return mContext;
     }
 
     virtual JSObject* WrapObject(JSContext* js, JS::Handle<JSObject*> givenProto) override;
@@ -197,7 +195,7 @@ public:
 private:
     ~WebGLProgram();
 
-    bool LinkAndUpdate();
+    void LinkAndUpdate();
 
 public:
     const GLuint mGLName;

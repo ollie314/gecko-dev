@@ -51,9 +51,9 @@ public:
   BlobChild* GetOrCreateActorForBlob(Blob* aBlob);
   BlobChild* GetOrCreateActorForBlobImpl(BlobImpl* aImpl);
 
-  virtual PBlobChild* SendPBlobConstructor(
-    PBlobChild* aActor,
-    const BlobConstructorParams& aParams) = 0;
+  virtual PBlobChild*
+  SendPBlobConstructor(PBlobChild* aActor,
+                       const BlobConstructorParams& aParams) = 0;
 
   virtual bool
   SendPBrowserConstructor(PBrowserChild* aActor,
@@ -80,9 +80,9 @@ protected:
   virtual bool DeallocPBlobChild(PBlobChild* aActor);
 
   virtual bool RecvAsyncMessage(const nsString& aMsg,
-                                const ClonedMessageData& aData,
                                 InfallibleTArray<jsipc::CpowEntry>&& aCpows,
-                                const IPC::Principal& aPrincipal);
+                                const IPC::Principal& aPrincipal,
+                                const ClonedMessageData& aData);
 };
 
 NS_DEFINE_STATIC_IID_ACCESSOR(nsIContentChild, NS_ICONTENTCHILD_IID)

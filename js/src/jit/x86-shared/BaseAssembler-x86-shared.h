@@ -36,6 +36,8 @@
 #include "jit/x86-shared/Encoding-x86-shared.h"
 #include "jit/x86-shared/Patching-x86-shared.h"
 
+extern volatile uintptr_t* blackbox;
+
 namespace js {
 namespace jit {
 
@@ -1279,10 +1281,57 @@ public:
         m_formatter.oneByteOp(OP_GROUP2_EvCL, dst, GROUP2_OP_SHL);
     }
 
+    void roll_ir(int32_t imm, RegisterID dst)
+    {
+        MOZ_ASSERT(imm < 32);
+        spew("roll       $%d, %s", imm, GPReg32Name(dst));
+        if (imm == 1)
+            m_formatter.oneByteOp(OP_GROUP2_Ev1, dst, GROUP2_OP_ROL);
+        else {
+            m_formatter.oneByteOp(OP_GROUP2_EvIb, dst, GROUP2_OP_ROL);
+            m_formatter.immediate8u(imm);
+        }
+    }
+    void roll_CLr(RegisterID dst)
+    {
+        spew("roll       %%cl, %s", GPReg32Name(dst));
+        m_formatter.oneByteOp(OP_GROUP2_EvCL, dst, GROUP2_OP_ROL);
+    }
+
+    void rorl_ir(int32_t imm, RegisterID dst)
+    {
+        MOZ_ASSERT(imm < 32);
+        spew("rorl       $%d, %s", imm, GPReg32Name(dst));
+        if (imm == 1)
+            m_formatter.oneByteOp(OP_GROUP2_Ev1, dst, GROUP2_OP_ROR);
+        else {
+            m_formatter.oneByteOp(OP_GROUP2_EvIb, dst, GROUP2_OP_ROR);
+            m_formatter.immediate8u(imm);
+        }
+    }
+    void rorl_CLr(RegisterID dst)
+    {
+        spew("rorl       %%cl, %s", GPReg32Name(dst));
+        m_formatter.oneByteOp(OP_GROUP2_EvCL, dst, GROUP2_OP_ROR);
+    }
+
     void bsr_rr(RegisterID src, RegisterID dst)
     {
         spew("bsr        %s, %s", GPReg32Name(src), GPReg32Name(dst));
         m_formatter.twoByteOp(OP2_BSR_GvEv, src, dst);
+    }
+
+    void bsf_rr(RegisterID src, RegisterID dst)
+    {
+        spew("bsf        %s, %s", GPReg32Name(src), GPReg32Name(dst));
+        m_formatter.twoByteOp(OP2_BSF_GvEv, src, dst);
+    }
+
+    void popcnt_rr(RegisterID src, RegisterID dst)
+    {
+        spew("popcnt     %s, %s", GPReg32Name(src), GPReg32Name(dst));
+        m_formatter.legacySSEPrefix(VEX_SS);
+        m_formatter.twoByteOp(OP2_POPCNT_GvEv, src, dst);
     }
 
     void imull_rr(RegisterID src, RegisterID dst)
@@ -1489,7 +1538,7 @@ public:
         }
     }
 
-    MOZ_WARN_UNUSED_RESULT JmpSrc
+    MOZ_MUST_USE JmpSrc
     cmpl_im_disp32(int32_t rhs, int32_t offset, RegisterID base)
     {
         spew("cmpl       $0x%x, " MEM_o32b, rhs, ADDR_o32b(offset, base));
@@ -1506,7 +1555,7 @@ public:
         return r;
     }
 
-    MOZ_WARN_UNUSED_RESULT JmpSrc
+    MOZ_MUST_USE JmpSrc
     cmpl_im_disp32(int32_t rhs, const void* addr)
     {
         spew("cmpl       $0x%x, %p", rhs, addr);
@@ -1756,6 +1805,22 @@ public:
     {
         spew("xchgl      %s, " MEM_obs, GPReg32Name(src), ADDR_obs(offset, base, index, scale));
         m_formatter.oneByteOp(OP_XCHG_GvEv, offset, base, index, scale, src);
+    }
+
+    void cmovz_rr(RegisterID src, RegisterID dst)
+    {
+        spew("cmovz     %s, %s", GPReg16Name(src), GPReg32Name(dst));
+        m_formatter.twoByteOp(OP2_CMOVZ_GvqpEvqp, src, dst);
+    }
+    void cmovz_mr(int32_t offset, RegisterID base, RegisterID dst)
+    {
+        spew("cmovz     " MEM_ob ", %s", ADDR_ob(offset, base), GPReg32Name(dst));
+        m_formatter.twoByteOp(OP2_CMOVZ_GvqpEvqp, offset, base, dst);
+    }
+    void cmovz_mr(int32_t offset, RegisterID base, RegisterID index, int scale, RegisterID dst)
+    {
+        spew("cmovz     " MEM_obs ", %s", ADDR_obs(offset, base, index, scale), GPReg32Name(dst));
+        m_formatter.twoByteOp(OP2_CMOVZ_GvqpEvqp, offset, base, index, scale, dst);
     }
 
     void movl_rr(RegisterID src, RegisterID dst)
@@ -2205,7 +2270,7 @@ public:
 
     // Flow control:
 
-    MOZ_WARN_UNUSED_RESULT JmpSrc
+    MOZ_MUST_USE JmpSrc
     call()
     {
         m_formatter.oneByteOp(OP_CALL_rel32);
@@ -2229,7 +2294,7 @@ public:
     // Comparison of EAX against a 32-bit immediate. The immediate is patched
     // in as if it were a jump target. The intention is to toggle the first
     // byte of the instruction between a CMP and a JMP to produce a pseudo-NOP.
-    MOZ_WARN_UNUSED_RESULT JmpSrc
+    MOZ_MUST_USE JmpSrc
     cmp_eax()
     {
         m_formatter.oneByteOp(OP_CMP_EAXIv);
@@ -2254,7 +2319,7 @@ public:
             m_formatter.immediate32(diff - 5);
         }
     }
-    MOZ_WARN_UNUSED_RESULT JmpSrc
+    MOZ_MUST_USE JmpSrc
     jmp()
     {
         m_formatter.oneByteOp(OP_JMP_rel32);
@@ -2297,7 +2362,7 @@ public:
         }
     }
 
-    MOZ_WARN_UNUSED_RESULT JmpSrc
+    MOZ_MUST_USE JmpSrc
     jCC(Condition cond)
     {
         m_formatter.twoByteOp(jccRel32(cond));
@@ -3372,7 +3437,32 @@ threeByteOpImmSimd("vblendps", VEX_PD, OP3_BLENDPS_VpsWpsIb, ESCAPE_3A, imm, off
         if (offset == -1)
             return false;
 
-        MOZ_RELEASE_ASSERT(size_t(offset) < size());
+        if (MOZ_UNLIKELY(size_t(offset) >= size())) {
+#ifdef NIGHTLY_BUILD
+            // Stash some data on the stack so we can retrieve it from minidumps,
+            // see bug 1124397.
+            int32_t startOffset = from.offset() - 1;
+            while (startOffset >= 0 && code[startOffset] == 0xe5)
+                startOffset--;
+            int32_t endOffset = from.offset() - 1;
+            while (endOffset < int32_t(size()) && code[endOffset] == 0xe5)
+                endOffset++;
+            volatile uintptr_t dump[10];
+            blackbox = dump;
+            blackbox[0] = uintptr_t(0xABCD1234);
+            blackbox[1] = uintptr_t(offset);
+            blackbox[2] = uintptr_t(size());
+            blackbox[3] = uintptr_t(from.offset());
+            blackbox[4] = uintptr_t(code[from.offset() - 5]);
+            blackbox[5] = uintptr_t(code[from.offset() - 4]);
+            blackbox[6] = uintptr_t(code[from.offset() - 3]);
+            blackbox[7] = uintptr_t(startOffset);
+            blackbox[8] = uintptr_t(endOffset);
+            blackbox[9] = uintptr_t(0xFFFF7777);
+#endif
+            MOZ_CRASH("nextJump bogus offset");
+        }
+
         *next = JmpSrc(offset);
         return true;
     }
@@ -3411,6 +3501,15 @@ threeByteOpImmSimd("vblendps", VEX_PD, OP3_BLENDPS_VpsWpsIb, ESCAPE_3A, imm, off
     void executableCopy(void* buffer)
     {
         memcpy(buffer, m_formatter.buffer(), size());
+    }
+    bool appendBuffer(const BaseAssembler& other)
+    {
+        size_t otherSize = other.size();
+        size_t formerSize = size();
+        if (!m_formatter.growByUninitialized(otherSize))
+            return false;
+        memcpy((char*)m_formatter.buffer() + formerSize, other.m_formatter.buffer(), otherSize);
+        return true;
     }
 
   protected:
@@ -4604,7 +4703,7 @@ threeByteOpImmSimd("vblendps", VEX_PD, OP3_BLENDPS_VpsWpsIb, ESCAPE_3A, imm, off
             m_buffer.putInt64Unchecked(imm);
         }
 
-        MOZ_WARN_UNUSED_RESULT JmpSrc
+        MOZ_MUST_USE JmpSrc
         immediateRel32()
         {
             m_buffer.putIntUnchecked(0);
@@ -4662,6 +4761,7 @@ threeByteOpImmSimd("vblendps", VEX_PD, OP3_BLENDPS_VpsWpsIb, ESCAPE_3A, imm, off
         // Administrative methods:
 
         size_t size() const { return m_buffer.size(); }
+        bool growByUninitialized(size_t size) { return m_buffer.growByUninitialized(size); }
         const unsigned char* buffer() const { return m_buffer.buffer(); }
         bool oom() const { return m_buffer.oom(); }
         bool isAligned(int alignment) const { return m_buffer.isAligned(alignment); }

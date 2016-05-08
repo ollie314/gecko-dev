@@ -7,9 +7,9 @@
 #ifndef mozilla_dom_bluetooth_BluetoothProfileController_h
 #define mozilla_dom_bluetooth_BluetoothProfileController_h
 
-#include "BluetoothUuid.h"
+#include "BluetoothUuidHelper.h"
+#include "nsCOMPtr.h"
 #include "nsISupportsImpl.h"
-#include "nsAutoPtr.h"
 #include "nsITimer.h"
 
 BEGIN_BLUETOOTH_NAMESPACE
@@ -93,7 +93,7 @@ public:
    *                        aCod or disconnect all connected profiles.
    */
   BluetoothProfileController(bool aConnect,
-                             const nsAString& aDeviceAddress,
+                             const BluetoothAddress& aDeviceAddress,
                              BluetoothReplyRunnable* aRunnable,
                              BluetoothProfileControllerCallback aCallback,
                              uint16_t aServiceUuid,
@@ -139,7 +139,7 @@ private:
   bool IsBtServiceAvailable() const;
 
   const bool mConnect;
-  nsString mDeviceAddress;
+  BluetoothAddress mDeviceAddress;
   RefPtr<BluetoothReplyRunnable> mRunnable;
   BluetoothProfileControllerCallback mCallback;
 

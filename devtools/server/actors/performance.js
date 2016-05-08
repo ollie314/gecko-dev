@@ -46,10 +46,12 @@ var PerformanceActor = exports.PerformanceActor = protocol.ActorClass({
   traits: {
     features: {
       withMarkers: true,
-      withMemory: true,
       withTicks: true,
+      withMemory: true,
+      withFrames: true,
+      withGCEvents: true,
+      withDocLoadingEvents: true,
       withAllocations: true,
-      withJITOptimizations: true,
     },
   },
 

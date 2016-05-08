@@ -67,14 +67,17 @@ ActivitiesDb.prototype = {
 
     let self = this;
 
+    /**
+     * WARNING!! Before upgrading the Activities DB take into account that an
+     * OTA unregisters all the activities and reinstalls them during the first
+     * run process. Check Bug 1193503.
+     */
+
     function upgrade(currentVersion) {
       let next = upgrade.bind(self, currentVersion + 1);
       switch (currentVersion) {
         case 0:
           self.createSchema(aDb, next);
-          break;
-        case 1:
-          self.upgradeSchemaVersion2(aDb, aTransaction, next);
           break;
       }
     }
@@ -92,47 +95,6 @@ ActivitiesDb.prototype = {
     debug("Created object stores and indexes");
 
     aNext();
-  },
-
-  upgradeSchemaVersion2: function(aDb, aTransaction, aNext) {
-    debug("Upgrading DB to version 2");
-
-    // In order to be able to have multiple activities with same name
-    // but different descriptions, we need to update the keypath from
-    // a hash made from {manifest, name} to a hash made from {manifest,
-    // name, description}.
-    //
-    // Unfortunately, updating the keypath is not allowed by IDB, so we
-    // need to remove and recreate the activities object store.
-
-    let activities = [];
-    let objectStore = aTransaction.objectStore(STORE_NAME);
-    objectStore.openCursor().onsuccess = (event) => {
-      let cursor = event.target.result;
-      if (!cursor) {
-        aDb.deleteObjectStore(STORE_NAME);
-
-        let objectStore = aDb.createObjectStore(STORE_NAME, { keyPath: "id" });
-
-        // indexes
-        objectStore.createIndex("name", "name", { unique: false });
-        objectStore.createIndex("manifest", "manifest", { unique: false });
-
-        this.add(activities, () => {
-          debug("DB upgraded to version 2");
-          aNext();
-        }, () => {
-          dump("Error upgrading DB to version 2 " + error + "\n");
-        });
-        return;
-      }
-
-      let activity = cursor.value;
-      debug("Upgrading activity " + JSON.stringify(activity));
-      activity.id = this.createId(activity);
-      activities.push(activity);
-      cursor.continue();
-    };
   },
 
   // unique ids made of (uri, action)
@@ -295,14 +257,6 @@ var Activities = {
   startActivity: function activities_startActivity(aMsg) {
     debug("StartActivity: " + JSON.stringify(aMsg));
 
-    // The caller app will be killed by |assertAppHasStatus| if it doesn't
-    // fit our permission requirement.
-    let callerApp = this.callers[aMsg.id].mm;
-    if (aMsg.options.name === 'internal-system-engineering-mode' &&
-        !callerApp.assertAppHasStatus(Ci.nsIPrincipal.APP_STATUS_CERTIFIED)) {
-      return;
-    }
-
     let self = this;
     let successCb = function successCb(aResults) {
       debug(JSON.stringify(aResults));
@@ -323,17 +277,10 @@ var Activities = {
             // Don't do this check until we have passed to UIGlue so the glue
             // can choose to launch its own activity if needed.
             if (aResults.options.length === 0) {
-              if (AppConstants.MOZ_B2GDROID) {
-                // Fallback on the Android Intent mapper.
-                let glue = Cc["@mozilla.org/dom/activities/android-ui-glue;1"]
-                             .createInstance(Ci.nsIActivityUIGlue);
-                glue.chooseActivity(aMsg.options, aResults.options, getActivityChoice);
-              } else {
                 self.trySendAndCleanup(aMsg.id, "Activity:FireError", {
                   "id": aMsg.id,
                   "error": "NO_PROVIDER"
                 });
-              }
               return;
             }
 
@@ -429,13 +376,6 @@ var Activities = {
     };
 
     let matchFunc = function matchFunc(aResult) {
-      let calleeApp = DOMApplicationRegistry.getAppByManifestURL(aResult.manifest);
-      // Only allow certified apps to handle this special activity
-      if (aMsg.options.name === 'internal-system-engineering-mode' &&
-          calleeApp.appStatus !== Ci.nsIPrincipal.APP_STATUS_CERTIFIED) {
-        return false;
-      }
-
       // If the activity is in the developer mode activity list, only let the
       // system app be a provider.
       let isSystemApp = false;

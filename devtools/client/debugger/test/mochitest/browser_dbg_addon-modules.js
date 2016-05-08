@@ -1,5 +1,7 @@
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
+/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
 /* Any copyright is dedicated to the Public Domain.
-   http://creativecommons.org/publicdomain/zero/1.0/ */
+ * http://creativecommons.org/publicdomain/zero/1.0/ */
 
 // Make sure the add-on actor can see loaded JS Modules from an add-on
 
@@ -12,7 +14,8 @@ function test() {
 
     let addonDebugger = yield initAddonDebugger(ADDON_URL);
 
-    is(addonDebugger.title, "Debugger - Test add-on with JS Modules", "Saw the right toolbox title.");
+    is(addonDebugger.title, `Developer Tools - Test add-on with JS Modules - ${ADDON_URL}`,
+       "Saw the right toolbox title.");
 
     // Check the inital list of sources is correct
     let groups = yield addonDebugger.getSourceGroups();

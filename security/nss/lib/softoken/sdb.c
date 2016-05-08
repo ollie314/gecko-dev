@@ -235,7 +235,7 @@ sdb_getFallbackTempDir(void)
     const char *zDir = NULL;
 
     azDirs[0] = sqlite3_temp_directory;
-    azDirs[1] = getenv("TMPDIR");
+    azDirs[1] = PR_GetEnvSecure("TMPDIR");
 
     for (i = 0; i < PR_ARRAY_SIZE(azDirs); i++) {
         zDir = azDirs[i];
@@ -1694,7 +1694,7 @@ static const char INIT_CMD[] =
 
 CK_RV 
 sdb_init(char *dbname, char *table, sdbDataType type, int *inUpdate,
-	 int *newInit, int flags, PRUint32 accessOps, SDB **pSdb)
+	 int *newInit, int inFlags, PRUint32 accessOps, SDB **pSdb)
 {
     int i;
     char *initStr = NULL;
@@ -1710,6 +1710,7 @@ sdb_init(char *dbname, char *table, sdbDataType type, int *inUpdate,
     char *env;
     PRBool enableCache = PR_FALSE;
     PRBool create;
+    int flags = inFlags & 0x7;
 
     *pSdb = NULL;
     *inUpdate = 0;
@@ -1862,7 +1863,7 @@ sdb_init(char *dbname, char *table, sdbDataType type, int *inUpdate,
       * the environment variable is primarily to simplify testing, and to 
       * correct potential corner cases where  */
 
-     env = PR_GetEnv("NSS_SDB_USE_CACHE");
+     env = PR_GetEnvSecure("NSS_SDB_USE_CACHE");
 
      if (env && PORT_Strcasecmp(env,"no") == 0) {
 	enableCache = PR_FALSE;
@@ -1925,7 +1926,7 @@ sdb_init(char *dbname, char *table, sdbDataType type, int *inUpdate,
     sdb_p->sqlXactThread = NULL;
     sdb->private = sdb_p;
     sdb->version = 0;
-    sdb->sdb_flags = flags | SDB_HAS_META;
+    sdb->sdb_flags = inFlags | SDB_HAS_META;
     sdb->app_private = NULL;
     sdb->sdb_FindObjectsInit = sdb_FindObjectsInit;
     sdb->sdb_FindObjects = sdb_FindObjects;
@@ -2013,7 +2014,7 @@ s_open(const char *directory, const char *certPrefix, const char *keyPrefix,
     accessOps = 1;
     {
         char *env;
-        env = PR_GetEnv("NSS_SDB_USE_CACHE");
+        env = PR_GetEnvSecure("NSS_SDB_USE_CACHE");
         /* If the environment variable is set to yes or no, sdb_init() will
          * ignore the value of accessOps, and we can skip the measuring.*/
         if (!env || ((PORT_Strcasecmp(env, "no") != 0) &&

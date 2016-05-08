@@ -318,7 +318,9 @@ class ChildImpl final : public BackgroundChildImpl
   struct ThreadLocalInfo
   {
     explicit ThreadLocalInfo(nsIIPCBackgroundChildCreateCallback* aCallback)
+#ifdef DEBUG
       : mClosed(false)
+#endif
     {
       mCallbacks.AppendElement(aCallback);
     }
@@ -326,7 +328,9 @@ class ChildImpl final : public BackgroundChildImpl
     RefPtr<ChildImpl> mActor;
     nsTArray<nsCOMPtr<nsIIPCBackgroundChildCreateCallback>> mCallbacks;
     nsAutoPtr<BackgroundChildImpl::ThreadLocal> mConsumerThreadLocal;
-    DebugOnly<bool> mClosed;
+#ifdef DEBUG
+    bool mClosed;
+#endif
   };
 
   // This is only modified on the main thread. It is a FIFO queue for actors
@@ -337,13 +341,13 @@ class ChildImpl final : public BackgroundChildImpl
   // create the background thread after application shutdown has started.
   static bool sShutdownHasStarted;
 
-#ifdef RELEASE_BUILD
-  DebugOnly<nsIThread*> mBoundThread;
-#else
+#if defined(DEBUG) || !defined(RELEASE_BUILD)
   nsIThread* mBoundThread;
 #endif
 
-  DebugOnly<bool> mActorDestroyed;
+#ifdef DEBUG
+  bool mActorDestroyed;
+#endif
 
 public:
   static bool
@@ -374,8 +378,12 @@ public:
   }
 
   ChildImpl()
+#if defined(DEBUG) || !defined(RELEASE_BUILD)
   : mBoundThread(nullptr)
+#endif
+#ifdef DEBUG
   , mActorDestroyed(false)
+#endif
   {
     AssertIsOnMainThread();
   }
@@ -425,9 +433,8 @@ private:
           ChildImpl* actor;
           threadLocalInfo->mActor.forget(&actor);
 
-          nsCOMPtr<nsIRunnable> releaser =
-            NS_NewNonOwningRunnableMethod(actor, &ChildImpl::Release);
-          MOZ_ALWAYS_TRUE(NS_SUCCEEDED(NS_DispatchToMainThread(releaser)));
+          MOZ_ALWAYS_SUCCEEDS(
+	    NS_DispatchToMainThread(NewNonOwningRunnableMethod(actor, &ChildImpl::Release)));
         }
       }
       delete threadLocalInfo;
@@ -440,8 +447,10 @@ private:
   // This class is reference counted.
   ~ChildImpl()
   {
-    XRE_GetIOMessageLoop()->PostTask(FROM_HERE,
-                                     new DeleteTask<Transport>(GetTransport()));
+    RefPtr<DeleteTask<Transport>> task =
+      new DeleteTask<Transport>(GetTransport());
+    XRE_GetIOMessageLoop()->PostTask(task.forget());
+
     AssertActorDestroyed();
   }
 
@@ -487,8 +496,7 @@ private:
   }
 };
 
-class ParentImpl::RequestMessageLoopRunnable final :
-  public nsRunnable
+class ParentImpl::RequestMessageLoopRunnable final : public Runnable
 {
   nsCOMPtr<nsIThread> mTargetThread;
   MessageLoop* mMessageLoop;
@@ -502,8 +510,6 @@ public:
     MOZ_ASSERT(aTargetThread);
   }
 
-  NS_DECL_ISUPPORTS_INHERITED
-
 private:
   ~RequestMessageLoopRunnable()
   { }
@@ -511,7 +517,7 @@ private:
   NS_DECL_NSIRUNNABLE
 };
 
-class ParentImpl::ShutdownBackgroundThreadRunnable final : public nsRunnable
+class ParentImpl::ShutdownBackgroundThreadRunnable final : public Runnable
 {
 public:
   ShutdownBackgroundThreadRunnable()
@@ -520,8 +526,6 @@ public:
     AssertIsOnMainThread();
   }
 
-  NS_DECL_ISUPPORTS_INHERITED
-
 private:
   ~ShutdownBackgroundThreadRunnable()
   { }
@@ -529,7 +533,7 @@ private:
   NS_DECL_NSIRUNNABLE
 };
 
-class ParentImpl::ForceCloseBackgroundActorsRunnable final : public nsRunnable
+class ParentImpl::ForceCloseBackgroundActorsRunnable final : public Runnable
 {
   nsTArray<ParentImpl*>* mActorArray;
 
@@ -542,8 +546,6 @@ public:
     MOZ_ASSERT(aActorArray);
   }
 
-  NS_DECL_ISUPPORTS_INHERITED
-
 private:
   ~ForceCloseBackgroundActorsRunnable()
   { }
@@ -551,7 +553,7 @@ private:
   NS_DECL_NSIRUNNABLE
 };
 
-class ParentImpl::CreateCallbackRunnable final : public nsRunnable
+class ParentImpl::CreateCallbackRunnable final : public Runnable
 {
   RefPtr<CreateCallback> mCallback;
 
@@ -564,8 +566,6 @@ public:
     MOZ_ASSERT(aCallback);
   }
 
-  NS_DECL_ISUPPORTS_INHERITED
-
 private:
   ~CreateCallbackRunnable()
   { }
@@ -573,7 +573,7 @@ private:
   NS_DECL_NSIRUNNABLE
 };
 
-class ParentImpl::ConnectActorRunnable final : public nsRunnable
+class ParentImpl::ConnectActorRunnable final : public Runnable
 {
   RefPtr<ParentImpl> mActor;
   Transport* mTransport;
@@ -594,8 +594,6 @@ public:
     MOZ_ASSERT(aTransport);
     MOZ_ASSERT(aLiveActorArray);
   }
-
-  NS_DECL_ISUPPORTS_INHERITED
 
 private:
   ~ConnectActorRunnable()
@@ -644,7 +642,7 @@ private:
   }
 };
 
-class ChildImpl::CreateActorRunnable final : public nsRunnable
+class ChildImpl::CreateActorRunnable final : public Runnable
 {
   nsCOMPtr<nsIEventTarget> mEventTarget;
 
@@ -654,8 +652,6 @@ public:
   {
     MOZ_ASSERT(mEventTarget);
   }
-
-  NS_DECL_ISUPPORTS_INHERITED
 
 private:
   ~CreateActorRunnable()
@@ -692,7 +688,7 @@ private:
 
 // Must be cancelable in order to dispatch on active worker threads
 class ChildImpl::AlreadyCreatedCallbackRunnable final :
-  public nsCancelableRunnable
+  public CancelableRunnable
 {
 public:
   AlreadyCreatedCallbackRunnable()
@@ -700,25 +696,21 @@ public:
     // May be created on any thread!
   }
 
-  NS_DECL_ISUPPORTS_INHERITED
-
 protected:
   virtual ~AlreadyCreatedCallbackRunnable()
   { }
 
   NS_DECL_NSIRUNNABLE
-  NS_DECL_NSICANCELABLERUNNABLE
+  nsresult Cancel() override;
 };
 
-class ChildImpl::FailedCreateCallbackRunnable final : public nsRunnable
+class ChildImpl::FailedCreateCallbackRunnable final : public Runnable
 {
 public:
   FailedCreateCallbackRunnable()
   {
     // May be created on any thread!
   }
-
-  NS_DECL_ISUPPORTS_INHERITED
 
 protected:
   virtual ~FailedCreateCallbackRunnable()
@@ -727,7 +719,7 @@ protected:
   NS_DECL_NSIRUNNABLE
 };
 
-class ChildImpl::OpenChildProcessActorRunnable final : public nsRunnable
+class ChildImpl::OpenChildProcessActorRunnable final : public Runnable
 {
   RefPtr<ChildImpl> mActor;
   nsAutoPtr<Transport> mTransport;
@@ -745,21 +737,19 @@ public:
     MOZ_ASSERT(aTransport);
   }
 
-  NS_DECL_ISUPPORTS_INHERITED
-
 private:
   ~OpenChildProcessActorRunnable()
   {
     if (mTransport) {
       CRASH_IN_CHILD_PROCESS("Leaking transport!");
-      unused << mTransport.forget();
+      Unused << mTransport.forget();
     }
   }
 
   NS_DECL_NSIRUNNABLE
 };
 
-class ChildImpl::OpenMainProcessActorRunnable final : public nsRunnable
+class ChildImpl::OpenMainProcessActorRunnable final : public Runnable
 {
   RefPtr<ChildImpl> mActor;
   RefPtr<ParentImpl> mParentActor;
@@ -776,8 +766,6 @@ public:
     MOZ_ASSERT(mParentActor);
     MOZ_ASSERT(aParentMessageLoop);
   }
-
-  NS_DECL_ISUPPORTS_INHERITED
 
 private:
   ~OpenMainProcessActorRunnable()
@@ -1014,11 +1002,8 @@ ParentImpl::GetContentParent(PBackgroundParent* aBackgroundActor)
     // it for us. This is safe since we are guaranteed that our AddRef runnable
     // will run before the reference we hand out can be released, and the
     // ContentParent can't die as long as the existing reference is maintained.
-    nsCOMPtr<nsIRunnable> runnable =
-      NS_NewNonOwningRunnableMethod(actor->mContent, &ContentParent::AddRef);
-    MOZ_ASSERT(runnable);
-
-    MOZ_ALWAYS_TRUE(NS_SUCCEEDED(NS_DispatchToMainThread(runnable)));
+    MOZ_ALWAYS_SUCCEEDS(
+      NS_DispatchToMainThread(NewNonOwningRunnableMethod(actor->mContent, &ContentParent::AddRef)));
   }
 
   return already_AddRefed<ContentParent>(actor->mContent.get());
@@ -1101,7 +1086,7 @@ ParentImpl::CreateActorForSameProcess(CreateCallback* aCallback)
   if (sBackgroundThreadMessageLoop) {
     nsCOMPtr<nsIRunnable> callbackRunnable =
       new CreateCallbackRunnable(aCallback);
-    MOZ_ALWAYS_TRUE(NS_SUCCEEDED(NS_DispatchToCurrentThread(callbackRunnable)));
+    MOZ_ALWAYS_SUCCEEDS(NS_DispatchToCurrentThread(callbackRunnable));
     return true;
   }
 
@@ -1226,11 +1211,11 @@ ParentImpl::ShutdownBackgroundThread()
       // cleaned up. We also set a timeout to force-kill any hanging actors.
       TimerCallbackClosure closure(thread, liveActors);
 
-      MOZ_ALWAYS_TRUE(NS_SUCCEEDED(
+      MOZ_ALWAYS_SUCCEEDS(
         shutdownTimer->InitWithFuncCallback(&ShutdownTimerCallback,
                                             &closure,
                                             kShutdownTimerDelayMS,
-                                            nsITimer::TYPE_ONE_SHOT)));
+                                            nsITimer::TYPE_ONE_SHOT));
 
       nsIThread* currentThread = NS_GetCurrentThread();
       MOZ_ASSERT(currentThread);
@@ -1241,16 +1226,15 @@ ParentImpl::ShutdownBackgroundThread()
 
       MOZ_ASSERT(liveActors->IsEmpty());
 
-      MOZ_ALWAYS_TRUE(NS_SUCCEEDED(shutdownTimer->Cancel()));
+      MOZ_ALWAYS_SUCCEEDS(shutdownTimer->Cancel());
     }
 
     // Dispatch this runnable to unregister the thread from the profiler.
     nsCOMPtr<nsIRunnable> shutdownRunnable =
       new ShutdownBackgroundThreadRunnable();
-    MOZ_ALWAYS_TRUE(NS_SUCCEEDED(thread->Dispatch(shutdownRunnable,
-                                                  NS_DISPATCH_NORMAL)));
+    MOZ_ALWAYS_SUCCEEDS(thread->Dispatch(shutdownRunnable, NS_DISPATCH_NORMAL));
 
-    MOZ_ALWAYS_TRUE(NS_SUCCEEDED(thread->Shutdown()));
+    MOZ_ALWAYS_SUCCEEDS(thread->Shutdown());
   }
 }
 
@@ -1272,8 +1256,8 @@ ParentImpl::ShutdownTimerCallback(nsITimer* aTimer, void* aClosure)
 
   nsCOMPtr<nsIRunnable> forceCloseRunnable =
     new ForceCloseBackgroundActorsRunnable(closure->mLiveActors);
-  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(closure->mThread->Dispatch(forceCloseRunnable,
-                                                          NS_DISPATCH_NORMAL)));
+  MOZ_ALWAYS_SUCCEEDS(closure->mThread->Dispatch(forceCloseRunnable,
+						 NS_DISPATCH_NORMAL));
 }
 
 void
@@ -1283,11 +1267,8 @@ ParentImpl::Destroy()
 
   AssertIsInMainProcess();
 
-  nsCOMPtr<nsIRunnable> destroyRunnable =
-    NS_NewNonOwningRunnableMethod(this, &ParentImpl::MainThreadActorDestroy);
-  MOZ_ASSERT(destroyRunnable);
-
-  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(NS_DispatchToMainThread(destroyRunnable)));
+  MOZ_ALWAYS_SUCCEEDS(
+    NS_DispatchToMainThread(NewNonOwningRunnableMethod(this, &ParentImpl::MainThreadActorDestroy)));
 }
 
 void
@@ -1301,8 +1282,8 @@ ParentImpl::MainThreadActorDestroy()
   MOZ_ASSERT_IF(!mIsOtherProcessActor, !mTransport);
 
   if (mTransport) {
-    XRE_GetIOMessageLoop()->PostTask(FROM_HERE,
-                                     new DeleteTask<Transport>(mTransport));
+    RefPtr<DeleteTask<Transport>> task = new DeleteTask<Transport>(mTransport);
+    XRE_GetIOMessageLoop()->PostTask(task.forget());
     mTransport = nullptr;
   }
 
@@ -1375,11 +1356,9 @@ ParentImpl::ActorDestroy(ActorDestroyReason aWhy)
   // IPDL is about to call MessageChannel::Clear() on this thread! To avoid
   // racing with the main thread we must ensure that the MessageChannel lives
   // long enough to be cleared in this call stack.
-  nsCOMPtr<nsIRunnable> destroyRunnable =
-    NS_NewNonOwningRunnableMethod(this, &ParentImpl::Destroy);
-  MOZ_ASSERT(destroyRunnable);
 
-  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(NS_DispatchToCurrentThread(destroyRunnable)));
+  MOZ_ALWAYS_SUCCEEDS(
+    NS_DispatchToCurrentThread(NewNonOwningRunnableMethod(this, &ParentImpl::Destroy)));
 }
 
 NS_IMPL_ISUPPORTS(ParentImpl::ShutdownObserver, nsIObserver)
@@ -1404,9 +1383,6 @@ ParentImpl::ShutdownObserver::Observe(nsISupports* aSubject,
 
   return NS_OK;
 }
-
-NS_IMPL_ISUPPORTS_INHERITED0(ParentImpl::RequestMessageLoopRunnable,
-                             nsRunnable)
 
 NS_IMETHODIMP
 ParentImpl::RequestMessageLoopRunnable::Run()
@@ -1474,9 +1450,6 @@ ParentImpl::RequestMessageLoopRunnable::Run()
   return NS_OK;
 }
 
-NS_IMPL_ISUPPORTS_INHERITED0(ParentImpl::ShutdownBackgroundThreadRunnable,
-                             nsRunnable)
-
 NS_IMETHODIMP
 ParentImpl::ShutdownBackgroundThreadRunnable::Run()
 {
@@ -1491,9 +1464,6 @@ ParentImpl::ShutdownBackgroundThreadRunnable::Run()
 
   return NS_OK;
 }
-
-NS_IMPL_ISUPPORTS_INHERITED0(ParentImpl::ForceCloseBackgroundActorsRunnable,
-                             nsRunnable)
 
 NS_IMETHODIMP
 ParentImpl::ForceCloseBackgroundActorsRunnable::Run()
@@ -1518,12 +1488,10 @@ ParentImpl::ForceCloseBackgroundActorsRunnable::Run()
     }
   }
 
-  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(NS_DispatchToMainThread(this)));
+  MOZ_ALWAYS_SUCCEEDS(NS_DispatchToMainThread(this));
 
   return NS_OK;
 }
-
-NS_IMPL_ISUPPORTS_INHERITED0(ParentImpl::CreateCallbackRunnable, nsRunnable)
 
 NS_IMETHODIMP
 ParentImpl::CreateCallbackRunnable::Run()
@@ -1542,8 +1510,6 @@ ParentImpl::CreateCallbackRunnable::Run()
 
   return NS_OK;
 }
-
-NS_IMPL_ISUPPORTS_INHERITED0(ParentImpl::ConnectActorRunnable, nsRunnable)
 
 NS_IMETHODIMP
 ParentImpl::ConnectActorRunnable::Run()
@@ -1612,6 +1578,7 @@ ChildImpl::Shutdown()
 
   sShutdownHasStarted = true;
 
+#ifdef DEBUG
   MOZ_ASSERT(sThreadLocalIndex != kBadThreadLocalIndex);
 
   auto threadLocalInfo =
@@ -1621,6 +1588,7 @@ ChildImpl::Shutdown()
     MOZ_ASSERT(!threadLocalInfo->mClosed);
     threadLocalInfo->mClosed = true;
   }
+#endif
 
   DebugOnly<PRStatus> status = PR_SetThreadPrivate(sThreadLocalIndex, nullptr);
   MOZ_ASSERT(status == PR_SUCCESS);
@@ -1705,7 +1673,7 @@ ChildImpl::GetOrCreateForCurrentThread(
     // Runnable will use GetForCurrentThread() to retrieve actor again.  This
     // allows us to avoid addref'ing on the wrong thread.
     nsCOMPtr<nsIRunnable> runnable = new AlreadyCreatedCallbackRunnable();
-    MOZ_ALWAYS_TRUE(NS_SUCCEEDED(NS_DispatchToCurrentThread(runnable)));
+    MOZ_ALWAYS_SUCCEEDS(NS_DispatchToCurrentThread(runnable));
 
     return true;
   }
@@ -1747,8 +1715,10 @@ ChildImpl::CloseForCurrentThread()
     return;
   }
 
+#ifdef DEBUG
   MOZ_ASSERT(!threadLocalInfo->mClosed);
   threadLocalInfo->mClosed = true;
+#endif
 
   if (threadLocalInfo->mActor) {
     threadLocalInfo->mActor->FlushPendingInterruptQueue();
@@ -1803,9 +1773,6 @@ ChildImpl::GetNextCallback()
   return callback.forget();
 }
 
-NS_IMPL_ISUPPORTS_INHERITED0(ChildImpl::AlreadyCreatedCallbackRunnable,
-                             nsCancelableRunnable)
-
 NS_IMETHODIMP
 ChildImpl::AlreadyCreatedCallbackRunnable::Run()
 {
@@ -1833,16 +1800,13 @@ ChildImpl::AlreadyCreatedCallbackRunnable::Run()
   return NS_OK;
 }
 
-NS_IMETHODIMP
+nsresult
 ChildImpl::AlreadyCreatedCallbackRunnable::Cancel()
 {
   // These are IPC infrastructure objects and need to run unconditionally.
   Run();
   return NS_OK;
 }
-
-NS_IMPL_ISUPPORTS_INHERITED0(ChildImpl::FailedCreateCallbackRunnable,
-                             nsRunnable);
 
 NS_IMETHODIMP
 ChildImpl::FailedCreateCallbackRunnable::Run()
@@ -1858,9 +1822,6 @@ ChildImpl::FailedCreateCallbackRunnable::Run()
 
   return NS_OK;
 }
-
-NS_IMPL_ISUPPORTS_INHERITED0(ChildImpl::OpenChildProcessActorRunnable,
-                             nsRunnable);
 
 NS_IMETHODIMP
 ChildImpl::OpenChildProcessActorRunnable::Run()
@@ -1912,9 +1873,6 @@ ChildImpl::OpenChildProcessActorRunnable::Run()
   return NS_OK;
 }
 
-NS_IMPL_ISUPPORTS_INHERITED0(ChildImpl::OpenMainProcessActorRunnable,
-                             nsRunnable);
-
 NS_IMETHODIMP
 ChildImpl::OpenMainProcessActorRunnable::Run()
 {
@@ -1957,7 +1915,7 @@ ChildImpl::OpenMainProcessActorRunnable::Run()
   parentActor->SetOtherProcessId(base::GetCurrentProcId());
 
   // Now that Open() has succeeded transfer the ownership of the actors to IPDL.
-  unused << parentActor.forget();
+  Unused << parentActor.forget();
 
   auto threadLocalInfo =
     static_cast<ThreadLocalInfo*>(PR_GetThreadPrivate(sThreadLocalIndex));
@@ -1977,8 +1935,6 @@ ChildImpl::OpenMainProcessActorRunnable::Run()
 
   return NS_OK;
 }
-
-NS_IMPL_ISUPPORTS_INHERITED0(ChildImpl::CreateActorRunnable, nsRunnable)
 
 NS_IMETHODIMP
 ChildImpl::CreateActorRunnable::Run()
@@ -2092,8 +2048,10 @@ ChildImpl::ActorDestroy(ActorDestroyReason aWhy)
 {
   AssertIsOnBoundThread();
 
+#ifdef DEBUG
   MOZ_ASSERT(!mActorDestroyed);
   mActorDestroyed = true;
+#endif
 
   BackgroundChildImpl::ActorDestroy(aWhy);
 }

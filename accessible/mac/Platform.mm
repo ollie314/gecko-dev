@@ -72,6 +72,7 @@ ProxyEvent(ProxyAccessible* aProxy, uint32_t aEventType)
   // events for now.
   if (aEventType != nsIAccessibleEvent::EVENT_FOCUS &&
       aEventType != nsIAccessibleEvent::EVENT_VALUE_CHANGE &&
+      aEventType != nsIAccessibleEvent::EVENT_TEXT_VALUE_CHANGE &&
       aEventType != nsIAccessibleEvent::EVENT_TEXT_CARET_MOVED &&
       aEventType != nsIAccessibleEvent::EVENT_TEXT_SELECTION_CHANGED)
     return;
@@ -98,6 +99,16 @@ ProxyCaretMoveEvent(ProxyAccessible* aTarget, int32_t aOffset)
 void
 ProxyTextChangeEvent(ProxyAccessible*, const nsString&, int32_t, uint32_t,
                      bool, bool)
+{
+}
+
+void
+ProxyShowHideEvent(ProxyAccessible*, ProxyAccessible*, bool, bool)
+{
+}
+
+void
+ProxySelectionEvent(ProxyAccessible*, ProxyAccessible*, uint32_t)
 {
 }
 } // namespace a11y

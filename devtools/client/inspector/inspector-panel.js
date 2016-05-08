@@ -4,33 +4,39 @@
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
-const {Cc, Ci, Cu, Cr} = require("chrome");
+"use strict";
 
-Cu.import("resource://gre/modules/Services.jsm");
+const {Cc, Ci, Cu} = require("chrome");
 
+var Services = require("Services");
 var promise = require("promise");
 var EventEmitter = require("devtools/shared/event-emitter");
 var clipboard = require("sdk/clipboard");
 var {HostType} = require("devtools/client/framework/toolbox").Toolbox;
+const {executeSoon} = require("devtools/shared/DevToolsUtils");
 
-loader.lazyGetter(this, "MarkupView", () => require("devtools/client/markupview/markup-view").MarkupView);
+loader.lazyRequireGetter(this, "CSS", "CSS");
+
+loader.lazyGetter(this, "MarkupView", () => require("devtools/client/inspector/markup/markup").MarkupView);
 loader.lazyGetter(this, "HTMLBreadcrumbs", () => require("devtools/client/inspector/breadcrumbs").HTMLBreadcrumbs);
 loader.lazyGetter(this, "ToolSidebar", () => require("devtools/client/framework/sidebar").ToolSidebar);
-loader.lazyGetter(this, "SelectorSearch", () => require("devtools/client/inspector/selector-search").SelectorSearch);
+loader.lazyGetter(this, "InspectorSearch", () => require("devtools/client/inspector/inspector-search").InspectorSearch);
+loader.lazyGetter(this, "RuleViewTool", () => require("devtools/client/inspector/rules/rules").RuleViewTool);
+loader.lazyGetter(this, "ComputedViewTool", () => require("devtools/client/inspector/computed/computed").ComputedViewTool);
+loader.lazyGetter(this, "FontInspector", () => require("devtools/client/inspector/fonts/fonts").FontInspector);
+loader.lazyGetter(this, "LayoutView", () => require("devtools/client/inspector/layout/layout").LayoutView);
 
 loader.lazyGetter(this, "strings", () => {
-  return Services.strings.createBundle("chrome://browser/locale/devtools/inspector.properties");
+  return Services.strings.createBundle("chrome://devtools/locale/inspector.properties");
 });
 loader.lazyGetter(this, "toolboxStrings", () => {
-  return Services.strings.createBundle("chrome://browser/locale/devtools/toolbox.properties");
+  return Services.strings.createBundle("chrome://devtools/locale/toolbox.properties");
 });
 loader.lazyGetter(this, "clipboardHelper", () => {
   return Cc["@mozilla.org/widget/clipboardhelper;1"].getService(Ci.nsIClipboardHelper);
 });
 
-loader.lazyImporter(this, "CommandUtils", "resource://devtools/client/shared/DeveloperToolbar.jsm");
-
-const LAYOUT_CHANGE_TIMER = 250;
+loader.lazyRequireGetter(this, "CommandUtils", "devtools/client/shared/developer-toolbar", true);
 
 /**
  * Represents an open instance of the Inspector for a tab.
@@ -47,8 +53,6 @@ const LAYOUT_CHANGE_TIMER = 250;
  *      view has been reloaded)
  * - markuploaded
  *      Fired when the markup-view frame has loaded
- * - layout-change
- *      Fired when the layout of the inspector changes
  * - breadcrumbs-updated
  *      Fired when the breadcrumb widget updates to a new node
  * - layoutview-updated
@@ -78,7 +82,18 @@ function InspectorPanel(iframeWindow, toolbox) {
   this.panelWin.inspector = this;
 
   this.nodeMenuTriggerInfo = null;
+
   this._onBeforeNavigate = this._onBeforeNavigate.bind(this);
+  this.onNewRoot = this.onNewRoot.bind(this);
+  this._setupNodeMenu = this._setupNodeMenu.bind(this);
+  this._resetNodeMenu = this._resetNodeMenu.bind(this);
+  this._updateSearchResultsLabel = this._updateSearchResultsLabel.bind(this);
+  this.onNewSelection = this.onNewSelection.bind(this);
+  this.onBeforeNewSelection = this.onBeforeNewSelection.bind(this);
+  this.onDetached = this.onDetached.bind(this);
+  this.onPaneToggleButtonClicked = this.onPaneToggleButtonClicked.bind(this);
+  this._onMarkupFrameLoad = this._onMarkupFrameLoad.bind(this);
+
   this._target.on("will-navigate", this._onBeforeNavigate);
 
   EventEmitter.decorate(this);
@@ -139,33 +154,20 @@ InspectorPanel.prototype = {
   _deferredOpen: function(defaultSelection) {
     let deferred = promise.defer();
 
-    this.onNewRoot = this.onNewRoot.bind(this);
     this.walker.on("new-root", this.onNewRoot);
 
     this.nodemenu = this.panelDoc.getElementById("inspector-node-popup");
     this.lastNodemenuItem = this.nodemenu.lastChild;
-    this._setupNodeMenu = this._setupNodeMenu.bind(this);
-    this._resetNodeMenu = this._resetNodeMenu.bind(this);
     this.nodemenu.addEventListener("popupshowing", this._setupNodeMenu, true);
     this.nodemenu.addEventListener("popuphiding", this._resetNodeMenu, true);
 
-    this.onNewSelection = this.onNewSelection.bind(this);
     this.selection.on("new-node-front", this.onNewSelection);
-    this.onBeforeNewSelection = this.onBeforeNewSelection.bind(this);
     this.selection.on("before-new-node-front", this.onBeforeNewSelection);
-    this.onDetached = this.onDetached.bind(this);
     this.selection.on("detached-front", this.onDetached);
 
     this.breadcrumbs = new HTMLBreadcrumbs(this);
 
-    this.onToolboxHostChanged = this.onToolboxHostChanged.bind(this);
-    this._toolbox.on("host-changed", this.onToolboxHostChanged);
-
     if (this.target.isLocalTab) {
-      this.browser = this.target.tab.linkedBrowser;
-      this.scheduleLayoutChange = this.scheduleLayoutChange.bind(this);
-      this.browser.addEventListener("resize", this.scheduleLayoutChange, true);
-
       // Show a warning when the debugger is paused.
       // We show the warning only when the inspector
       // is selected.
@@ -173,7 +175,7 @@ InspectorPanel.prototype = {
         let notificationBox = this._toolbox.getNotificationBox();
         let notification = notificationBox.getNotificationWithValue("inspector-script-paused");
         if (!notification && this._toolbox.currentToolId == "inspector" &&
-            this.target.isThreadPaused) {
+            this._toolbox.threadClient.paused) {
           let message = strings.GetStringFromName("debuggerPausedWarning.message");
           notificationBox.appendNotification(message,
             "inspector-script-paused", "", notificationBox.PRIORITY_WARNING_HIGH);
@@ -183,7 +185,7 @@ InspectorPanel.prototype = {
           notificationBox.removeNotification(notification);
         }
 
-        if (notification && !this.target.isThreadPaused) {
+        if (notification && !this._toolbox.threadClient.paused) {
           notificationBox.removeNotification(notification);
         }
 
@@ -309,13 +311,31 @@ InspectorPanel.prototype = {
    * Hooks the searchbar to show result and auto completion suggestions.
    */
   setupSearchBox: function() {
-    // Initiate the selectors search object.
-    if (this.searchSuggestions) {
-      this.searchSuggestions.destroy();
-      this.searchSuggestions = null;
-    }
     this.searchBox = this.panelDoc.getElementById("inspector-searchbox");
-    this.searchSuggestions = new SelectorSearch(this, this.searchBox);
+    this.searchResultsLabel = this.panelDoc.getElementById("inspector-searchlabel");
+
+    this.search = new InspectorSearch(this, this.searchBox);
+    this.search.on("search-cleared", this._updateSearchResultsLabel);
+    this.search.on("search-result", this._updateSearchResultsLabel);
+  },
+
+  get searchSuggestions() {
+    return this.search.autocompleter;
+  },
+
+  _updateSearchResultsLabel: function(event, result) {
+    let str = "";
+    if (event !== "search-cleared") {
+      if (result) {
+        str = strings.formatStringFromName(
+          "inspector.searchResultsCount2",
+          [result.resultsIndex + 1, result.resultsLength], 2);
+      } else {
+        str = strings.GetStringFromName("inspector.searchResultsNone");
+      }
+    }
+
+    this.searchResultsLabel.textContent = str;
   },
 
   /**
@@ -329,29 +349,27 @@ InspectorPanel.prototype = {
 
     let defaultTab = Services.prefs.getCharPref("devtools.inspector.activeSidebar");
 
+    if (!Services.prefs.getBoolPref("devtools.fontinspector.enabled") &&
+       defaultTab == "fontinspector") {
+      defaultTab = "ruleview";
+    }
+
     this._setDefaultSidebar = (event, toolId) => {
       Services.prefs.setCharPref("devtools.inspector.activeSidebar", toolId);
     };
 
     this.sidebar.on("select", this._setDefaultSidebar);
 
-    this.sidebar.addTab("ruleview",
-                        "chrome://devtools/content/styleinspector/cssruleview.xhtml",
-                        "ruleview" == defaultTab);
+    this.ruleview = new RuleViewTool(this, this.panelWin);
+    this.computedview = new ComputedViewTool(this, this.panelWin);
 
-    this.sidebar.addTab("computedview",
-                        "chrome://devtools/content/styleinspector/computedview.xhtml",
-                        "computedview" == defaultTab);
-
-    if (Services.prefs.getBoolPref("devtools.fontinspector.enabled") && this.canGetUsedFontFaces) {
-      this.sidebar.addTab("fontinspector",
-                          "chrome://devtools/content/fontinspector/font-inspector.xhtml",
-                          "fontinspector" == defaultTab);
+    if (Services.prefs.getBoolPref("devtools.fontinspector.enabled") &&
+        this.canGetUsedFontFaces) {
+      this.fontInspector = new FontInspector(this, this.panelWin);
+      this.panelDoc.getElementById("sidebar-tab-fontinspector").hidden = false;
     }
 
-    this.sidebar.addTab("layoutview",
-                        "chrome://devtools/content/layoutview/view.xhtml",
-                        "layoutview" == defaultTab);
+    this.layoutview = new LayoutView(this, this.panelWin);
 
     if (this.target.form.animationsActor) {
       this.sidebar.addTab("animationinspector",
@@ -359,7 +377,7 @@ InspectorPanel.prototype = {
                           "animationinspector" == defaultTab);
     }
 
-    this.sidebar.show();
+    this.sidebar.show(defaultTab);
 
     this.setupSidebarToggle();
   },
@@ -369,10 +387,8 @@ InspectorPanel.prototype = {
    */
   setupSidebarToggle: function() {
     this._paneToggleButton = this.panelDoc.getElementById("inspector-pane-toggle");
-    this.onPaneToggleButtonClicked = this.onPaneToggleButtonClicked.bind(this);
     this._paneToggleButton.addEventListener("mousedown",
       this.onPaneToggleButtonClicked);
-    this.updatePaneToggleButton();
   },
 
   /**
@@ -399,7 +415,6 @@ InspectorPanel.prototype = {
           return;
         }
         this.markup.expandNode(this.selection.nodeFront);
-        this.setupSearchBox();
         this.emit("new-root");
       });
     };
@@ -439,6 +454,25 @@ InspectorPanel.prototype = {
   },
 
   /**
+   * Can a new HTML element be inserted into the currently selected element?
+   * @return {Boolean}
+   */
+  canAddHTMLChild: function() {
+    let selection = this.selection;
+
+    // Don't allow to insert an element into these elements. This should only
+    // contain elements where walker.insertAdjacentHTML has no effect.
+    let invalidTagNames = ["html", "iframe"];
+
+    return selection.isHTMLNode() &&
+           selection.isElementNode() &&
+           !selection.isPseudoElementNode() &&
+           !selection.isAnonymousNode() &&
+           invalidTagNames.indexOf(
+            selection.nodeFront.nodeName.toLowerCase()) === -1;
+  },
+
+  /**
    * When a new node is selected.
    */
   onNewSelection: function(event, value, reason) {
@@ -446,11 +480,18 @@ InspectorPanel.prototype = {
       return;
     }
 
-    this.cancelLayoutChange();
-
     // Wait for all the known tools to finish updating and then let the
     // client know.
     let selection = this.selection.nodeFront;
+
+    // Update the state of the add button in the toolbar depending on the
+    // current selection.
+    let btn = this.panelDoc.querySelector("#inspector-element-add-button");
+    if (this.canAddHTMLChild()) {
+      btn.removeAttribute("disabled");
+    } else {
+      btn.setAttribute("disabled", "true");
+    }
 
     // On any new selection made by the user, store the unique css selector
     // of the selected node so it can be restored after reload of the same page
@@ -471,13 +512,13 @@ InspectorPanel.prototype = {
     }
 
     let selfUpdate = this.updating("inspector-panel");
-    Services.tm.mainThread.dispatch(() => {
+    executeSoon(() => {
       try {
         selfUpdate(selection);
-      } catch(ex) {
+      } catch (ex) {
         console.error(ex);
       }
-    }, Ci.nsIThread.DISPATCH_NORMAL);
+    });
   },
 
   /**
@@ -493,7 +534,7 @@ InspectorPanel.prototype = {
 
     if (!this._updateProgress) {
       // Start an update in progress.
-      var self = this;
+      let self = this;
       this._updateProgress = {
         node: this.selection.nodeFront,
         outstanding: new Set(),
@@ -501,7 +542,9 @@ InspectorPanel.prototype = {
           if (this !== self._updateProgress) {
             return;
           }
-          if (this.node !== self.selection.nodeFront) {
+          // Cancel update if there is no `selection` anymore.
+          // It can happen if the inspector panel is already destroyed.
+          if (!self.selection || (this.node !== self.selection.nodeFront)) {
             self.cancelUpdate();
             return;
           }
@@ -547,7 +590,6 @@ InspectorPanel.prototype = {
    * node was selected).
    */
   onDetached: function(event, parentNode) {
-    this.cancelLayoutChange();
     this.breadcrumbs.cutAfter(this.breadcrumbs.indexOf(parentNode));
     this.selection.setNodeFront(parentNode ? parentNode : this._defaultNode, "detached");
   },
@@ -566,19 +608,28 @@ InspectorPanel.prototype = {
     }
 
     this.cancelUpdate();
-    this.cancelLayoutChange();
-
-    if (this.browser) {
-      this.browser.removeEventListener("resize", this.scheduleLayoutChange, true);
-      this.browser = null;
-    }
 
     this.target.off("will-navigate", this._onBeforeNavigate);
 
     this.target.off("thread-paused", this.updateDebuggerPausedWarning);
     this.target.off("thread-resumed", this.updateDebuggerPausedWarning);
     this._toolbox.off("select", this.updateDebuggerPausedWarning);
-    this._toolbox.off("host-changed", this.onToolboxHostChanged);
+
+    if (this.ruleview) {
+      this.ruleview.destroy();
+    }
+
+    if (this.computedview) {
+      this.computedview.destroy();
+    }
+
+    if (this.fontInspector) {
+      this.fontInspector.destroy();
+    }
+
+    if (this.layoutview) {
+      this.layoutview.destroy();
+    }
 
     this.sidebar.off("select", this._setDefaultSidebar);
     let sidebarDestroyer = this.sidebar.destroy();
@@ -590,8 +641,6 @@ InspectorPanel.prototype = {
     this._paneToggleButton.removeEventListener("mousedown",
       this.onPaneToggleButtonClicked);
     this._paneToggleButton = null;
-    this.searchSuggestions.destroy();
-    this.searchBox = null;
     this.selection.off("new-node-front", this.onNewSelection);
     this.selection.off("before-new-node", this.onBeforeNewSelection);
     this.selection.off("before-new-node-front", this.onBeforeNewSelection);
@@ -602,10 +651,12 @@ InspectorPanel.prototype = {
     this.panelDoc = null;
     this.panelWin = null;
     this.breadcrumbs = null;
-    this.searchSuggestions = null;
     this.lastNodemenuItem = null;
     this.nodemenu = null;
     this._toolbox = null;
+    this.search.destroy();
+    this.search = null;
+    this.searchBox = null;
 
     this._panelDestroyer = promise.all([
       sidebarDestroyer,
@@ -686,6 +737,14 @@ InspectorPanel.prototype = {
       deleteNode.removeAttribute("disabled");
     } else {
       deleteNode.setAttribute("disabled", "true");
+    }
+
+    // Disable add item if needed
+    let addNode = this.panelDoc.getElementById("node-menu-add");
+    if (this.canAddHTMLChild()) {
+      addNode.removeAttribute("disabled");
+    } else {
+      addNode.setAttribute("disabled", "true");
     }
 
     // Disable / enable "Copy Unique Selector", "Copy inner HTML",
@@ -914,25 +973,22 @@ InspectorPanel.prototype = {
     this._markupFrame.setAttribute("context", "inspector-node-popup");
 
     // This is needed to enable tooltips inside the iframe document.
-    this._boundMarkupFrameLoad = this._onMarkupFrameLoad.bind(this);
-    this._markupFrame.addEventListener("load", this._boundMarkupFrameLoad, true);
+    this._markupFrame.addEventListener("load", this._onMarkupFrameLoad, true);
 
     this._markupBox.setAttribute("collapsed", true);
     this._markupBox.appendChild(this._markupFrame);
-    this._markupFrame.setAttribute("src", "chrome://devtools/content/markupview/markup-view.xhtml");
+    this._markupFrame.setAttribute("src", "chrome://devtools/content/inspector/markup/markup.xhtml");
     this._markupFrame.setAttribute("aria-label", strings.GetStringFromName("inspector.panelLabel.markupView"));
   },
 
   _onMarkupFrameLoad: function() {
-    this._markupFrame.removeEventListener("load", this._boundMarkupFrameLoad, true);
-    delete this._boundMarkupFrameLoad;
+    this._markupFrame.removeEventListener("load", this._onMarkupFrameLoad, true);
 
     this._markupFrame.contentWindow.focus();
 
     this._markupBox.removeAttribute("collapsed");
 
-    let controllerWindow = this._toolbox.doc.defaultView;
-    this.markup = new MarkupView(this, this._markupFrame, controllerWindow);
+    this.markup = new MarkupView(this, this._markupFrame, this._toolbox.win);
 
     this.emit("markuploaded");
   },
@@ -940,9 +996,8 @@ InspectorPanel.prototype = {
   _destroyMarkup: function() {
     let destroyPromise;
 
-    if (this._boundMarkupFrameLoad) {
-      this._markupFrame.removeEventListener("load", this._boundMarkupFrameLoad, true);
-      this._boundMarkupFrameLoad = null;
+    if (this._markupFrame) {
+      this._markupFrame.removeEventListener("load", this._onMarkupFrameLoad, true);
     }
 
     if (this.markup) {
@@ -963,13 +1018,6 @@ InspectorPanel.prototype = {
   },
 
   /**
-   * When the type of toolbox host changes.
-   */
-  onToolboxHostChanged: function() {
-    this.updatePaneToggleButton();
-  },
-
-  /**
    * When the pane toggle button is clicked, toggle the pane, change the button
    * state and tooltip.
    */
@@ -978,10 +1026,16 @@ InspectorPanel.prototype = {
     let button = this._paneToggleButton;
     let isVisible = !button.hasAttribute("pane-collapsed");
 
-    // Make sure the sidebar has a width attribute before collapsing because
-    // ViewHelpers needs it.
-    if (isVisible && !sidePane.hasAttribute("width")) {
-      sidePane.setAttribute("width", sidePane.getBoundingClientRect().width);
+    // Make sure the sidebar has width and height attributes before collapsing
+    // because ViewHelpers needs it.
+    if (isVisible) {
+      let rect = sidePane.getBoundingClientRect();
+      if (!sidePane.hasAttribute("width")) {
+        sidePane.setAttribute("width", rect.width);
+      }
+      // always refresh the height attribute before collapsing, it could have
+      // been modified by resizing the container.
+      sidePane.setAttribute("height", rect.height);
     }
 
     ViewHelpers.togglePane({
@@ -1000,12 +1054,25 @@ InspectorPanel.prototype = {
   },
 
   /**
-   * Update the pane toggle button visibility depending on the toolbox host type.
+   * Create a new node as the last child of the current selection, expand the
+   * parent and select the new node.
    */
-  updatePaneToggleButton: function() {
-    this._paneToggleButton.setAttribute("hidden",
-      this._toolbox.hostType === HostType.SIDE);
-  },
+  addNode: Task.async(function* () {
+    if (!this.canAddHTMLChild()) {
+      return;
+    }
+
+    let html = "<div></div>";
+
+    // Insert the html and expect a childList markup mutation.
+    let onMutations = this.once("markupmutation");
+    let {nodes} = yield this.walker.insertAdjacentHTML(this.selection.nodeFront,
+                                                       "beforeEnd", html);
+    yield onMutations;
+
+    // Select the new node (this will auto-expand its parent).
+    this.selection.setNodeFront(nodes[0], "node-inserted");
+  }),
 
   /**
    * Toggle a pseudo class.
@@ -1031,7 +1098,7 @@ InspectorPanel.prototype = {
       let jsterm = panel.hud.jsterm;
 
       jsterm.execute("inspect($0)");
-      jsterm.inputNode.focus();
+      jsterm.focus();
     });
   },
 
@@ -1181,7 +1248,7 @@ InspectorPanel.prototype = {
   _copyLongString: function(longStringActorPromise) {
     return this._getLongString(longStringActorPromise).then(string => {
       clipboardHelper.copyString(string);
-    }).catch(Cu.reportError);
+    }).catch(e => console.error(e));
   },
 
   /**
@@ -1192,10 +1259,10 @@ InspectorPanel.prototype = {
   _getLongString: function(longStringActorPromise) {
     return longStringActorPromise.then(longStringActor => {
       return longStringActor.string().then(string => {
-        longStringActor.release().catch(Cu.reportError);
+        longStringActor.release().catch(e => console.error(e));
         return string;
       });
-    }).catch(Cu.reportError);
+    }).catch(e => console.error(e));
   },
 
   /**
@@ -1372,41 +1439,5 @@ InspectorPanel.prototype = {
     this.inspector.resolveRelativeURL(link, this.selection.nodeFront).then(url => {
       clipboardHelper.copyString(url);
     }, console.error);
-  },
-
-  /**
-   * Trigger a high-priority layout change for things that need to be
-   * updated immediately
-   */
-  immediateLayoutChange: function() {
-    this.emit("layout-change");
-  },
-
-  /**
-   * Schedule a low-priority change event for things like paint
-   * and resize.
-   */
-  scheduleLayoutChange: function(event) {
-    // Filter out non browser window resize events (i.e. triggered by iframes)
-    if (this.browser.contentWindow === event.target) {
-      if (this._timer) {
-        return null;
-      }
-      this._timer = this.panelWin.setTimeout(() => {
-        this.emit("layout-change");
-        this._timer = null;
-      }, LAYOUT_CHANGE_TIMER);
-    }
-  },
-
-  /**
-   * Cancel a pending low-priority change event if any is
-   * scheduled.
-   */
-  cancelLayoutChange: function() {
-    if (this._timer) {
-      this.panelWin.clearTimeout(this._timer);
-      delete this._timer;
-    }
   }
 };

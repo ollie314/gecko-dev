@@ -75,14 +75,22 @@ ClientPaintedLayer::PaintThebes()
   // from RGB to RGBA, because we might need to repaint with
   // subpixel AA)
   state.mRegionToInvalidate.And(state.mRegionToInvalidate,
-                                GetEffectiveVisibleRegion());
+                                GetLocalVisibleRegion().ToUnknownRegion());
 
   bool didUpdate = false;
   RotatedContentBuffer::DrawIterator iter;
   while (DrawTarget* target = mContentClient->BorrowDrawTargetForPainting(state, &iter)) {
+    if (!target || !target->IsValid()) {
+      if (target) {
+        mContentClient->ReturnDrawTargetToBuffer(target);
+      }
+      continue;
+    }
+    
     SetAntialiasingFlags(this, target);
 
-    RefPtr<gfxContext> ctx = gfxContext::ContextForDrawTarget(target);
+    RefPtr<gfxContext> ctx = gfxContext::ForDrawTargetWithTransform(target);
+    MOZ_ASSERT(ctx); // already checked the target above
 
     ClientManager()->GetPaintedLayerCallback()(this,
                                               ctx,
@@ -110,7 +118,7 @@ ClientPaintedLayer::PaintThebes()
     // so deleting this Hold for whatever reason will break things.
     ClientManager()->Hold(this);
     contentClientRemote->Updated(state.mRegionToDraw,
-                                 mVisibleRegion,
+                                 mVisibleRegion.ToUnknownRegion(),
                                  state.mDidSelfCopy);
   }
 }

@@ -6,13 +6,16 @@
 
 #include "mozilla/DebugOnly.h"
 #include "mozilla/Likely.h"
+#include "mozilla/dom/nsCSPService.h"
 
 #include "nsError.h"
 #include "nsHtml5TreeOpExecutor.h"
 #include "nsScriptLoader.h"
 #include "nsIContentViewer.h"
+#include "nsIContentSecurityPolicy.h"
 #include "nsIDocShellTreeItem.h"
 #include "nsIDocShell.h"
+#include "nsIDOMDocument.h"
 #include "nsIScriptGlobalObject.h"
 #include "nsIScriptSecurityManager.h"
 #include "nsIWebShellServices.h"
@@ -42,7 +45,7 @@ NS_IMPL_ADDREF_INHERITED(nsHtml5TreeOpExecutor, nsContentSink)
 
 NS_IMPL_RELEASE_INHERITED(nsHtml5TreeOpExecutor, nsContentSink)
 
-class nsHtml5ExecutorReflusher : public nsRunnable
+class nsHtml5ExecutorReflusher : public Runnable
 {
   private:
     RefPtr<nsHtml5TreeOpExecutor> mExecutor;
@@ -230,11 +233,8 @@ nsHtml5TreeOpExecutor::MarkAsBroken(nsresult aReason)
   // works out so that we get to terminate and clean up the parser from
   // a safer point.
   if (mParser) { // can mParser ever be null here?
-    nsCOMPtr<nsIRunnable> terminator =
-      NS_NewRunnableMethod(GetParser(), &nsHtml5Parser::Terminate);
-    if (NS_FAILED(NS_DispatchToMainThread(terminator))) {
-      NS_WARNING("failed to dispatch executor flush event");
-    }
+    MOZ_ALWAYS_SUCCEEDS(
+      NS_DispatchToMainThread(NewRunnableMethod(GetParser(), &nsHtml5Parser::Terminate)));
   }
   return aReason;
 }
@@ -1012,6 +1012,40 @@ nsHtml5TreeOpExecutor::SetSpeculationReferrerPolicy(const nsAString& aReferrerPo
 {
   ReferrerPolicy policy = mozilla::net::ReferrerPolicyFromString(aReferrerPolicy);
   return SetSpeculationReferrerPolicy(policy);
+}
+
+void
+nsHtml5TreeOpExecutor::AddSpeculationCSP(const nsAString& aCSP)
+{
+  if (!CSPService::sCSPEnabled) {
+    return;
+  }
+
+  NS_ASSERTION(NS_IsMainThread(), "Wrong thread!");
+
+  nsIPrincipal* principal = mDocument->NodePrincipal();
+  nsCOMPtr<nsIContentSecurityPolicy> preloadCsp;
+  nsCOMPtr<nsIDOMDocument> domDoc = do_QueryInterface(mDocument);
+  nsresult rv = principal->EnsurePreloadCSP(domDoc, getter_AddRefs(preloadCsp));
+  NS_ENSURE_SUCCESS_VOID(rv);
+
+  // please note that meta CSPs and CSPs delivered through a header need
+  // to be joined together.
+  rv = preloadCsp->AppendPolicy(aCSP,
+                                false, // csp via meta tag can not be report only
+                                true); // delivered through the meta tag
+  NS_ENSURE_SUCCESS_VOID(rv);
+
+  // Record "speculated" referrer policy for preloads
+  bool hasReferrerPolicy = false;
+  uint32_t referrerPolicy = mozilla::net::RP_Default;
+  rv = preloadCsp->GetReferrerPolicy(&referrerPolicy, &hasReferrerPolicy);
+  NS_ENSURE_SUCCESS_VOID(rv);
+  if (hasReferrerPolicy) {
+    SetSpeculationReferrerPolicy(static_cast<ReferrerPolicy>(referrerPolicy));
+  }
+
+  mDocument->ApplySettingsFromCSP(true);
 }
 
 void

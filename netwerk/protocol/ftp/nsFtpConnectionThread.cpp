@@ -42,16 +42,19 @@
 #include "nsIURI.h"
 #include "nsILoadInfo.h"
 #include "nsNullPrincipal.h"
+#include "nsIAuthPrompt2.h"
+#include "nsIFTPChannelParentInternal.h"
 
 #ifdef MOZ_WIDGET_GONK
 #include "NetStatistics.h"
 #endif
 
-extern PRLogModuleInfo* gFTPLog;
+using namespace mozilla;
+using namespace mozilla::net;
+
+extern LazyLogModule gFTPLog;
 #define LOG(args)         MOZ_LOG(gFTPLog, mozilla::LogLevel::Debug, args)
 #define LOG_INFO(args)  MOZ_LOG(gFTPLog, mozilla::LogLevel::Info, args)
-
-using namespace mozilla::net;
 
 // remove FTP parameters (starting with ";") from the path
 static void
@@ -1787,7 +1790,7 @@ nsFtpState::KillControlConnection()
     mControlConnection = nullptr;
 }
 
-class nsFtpAsyncAlert : public nsRunnable
+class nsFtpAsyncAlert : public Runnable
 {
 public:
     nsFtpAsyncAlert(nsIPrompt *aPrompter, nsString aResponseMsg)
@@ -1846,6 +1849,11 @@ nsFtpState::StopProcessing()
                     NS_ConvertASCIItoUTF16(mResponseMsg));
             }
             NS_DispatchToMainThread(alertEvent);
+        }
+        nsCOMPtr<nsIFTPChannelParentInternal> ftpChanP;
+        mChannel->GetCallback(ftpChanP);
+        if (ftpChanP) {
+          ftpChanP->SetErrorMsg(mResponseMsg.get(), mUseUTF8);
         }
     }
 
@@ -2123,7 +2131,7 @@ nsFtpState::SaveNetworkStats(bool enforce)
 
     // Create the event to save the network statistics.
     // the event is then dispathed to the main thread.
-    RefPtr<nsRunnable> event =
+    RefPtr<Runnable> event =
         new SaveNetworkStatsEvent(appId, isInBrowser, mActiveNetworkInfo,
                                   mCountRecv, 0, false);
     NS_DispatchToMainThread(event);

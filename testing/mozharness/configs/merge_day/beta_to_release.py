@@ -1,18 +1,17 @@
 config = {
     "log_name": "beta_to_release",
-    "version_files": [
-        "browser/config/version.txt",
-        "browser/config/version_display.txt",
-        "config/milestone.txt",
-        "mobile/android/confvars.sh",  # TODO: remove this line before gecko 43 merge
-        "b2g/confvars.sh",
+    "copy_files": [
+        {
+            "src": "browser/config/version.txt",
+            "dst": "browser/config/version_display.txt",
+        },
     ],
     "replacements": [
         # File, from, to
         ("{}/{}".format(d, f),
         "ac_add_options --with-branding=mobile/android/branding/beta",
         "ac_add_options --with-branding=mobile/android/branding/official")
-        for d in ["mobile/android/config/mozconfigs/android-api-11/",
+        for d in ["mobile/android/config/mozconfigs/android-api-15/",
                   "mobile/android/config/mozconfigs/android-api-9-10-constrained/",
                   "mobile/android/config/mozconfigs/android-x86/"]
         for f in ["debug", "nightly", "l10n-nightly", "l10n-release", "release"]
@@ -42,12 +41,10 @@ config = {
     "pull_all_branches": True,
 
     "virtualenv_modules": [
-        "requests==2.2.1",
+        "requests==2.8.1",
     ],
 
-    "post_merge_builders": [
-        "mozilla-release hg bundle",
-    ],
+    "post_merge_builders": [],
     "post_merge_nightly_branches": [
         # No nightlies on mozilla-release
     ],

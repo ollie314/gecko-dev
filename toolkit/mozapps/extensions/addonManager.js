@@ -12,8 +12,6 @@
 
 const { classes: Cc, interfaces: Ci, utils: Cu, results: Cr } = Components;
 
-const PREF_EM_UPDATE_INTERVAL = "extensions.update.interval";
-
 // The old XPInstall error codes
 const EXECUTION_ERROR   = -203;
 const CANT_READ_ARCHIVE = -207;
@@ -25,6 +23,11 @@ const SUCCESS           = 0;
 const MSG_INSTALL_ENABLED  = "WebInstallerIsInstallEnabled";
 const MSG_INSTALL_ADDONS   = "WebInstallerInstallAddonsFromWebpage";
 const MSG_INSTALL_CALLBACK = "WebInstallerInstallCallback";
+
+const MSG_PROMISE_REQUEST  = "WebAPIPromiseRequest";
+const MSG_PROMISE_RESULT   = "WebAPIPromiseResult";
+const MSG_INSTALL_EVENT    = "WebAPIInstallEvent";
+const MSG_INSTALL_CLEANUP  = "WebAPICleanup";
 
 const CHILD_SCRIPT = "resource://gre/modules/addons/Content.js";
 
@@ -38,30 +41,44 @@ var gParentMM = null;
 
 function amManager() {
   Cu.import("resource://gre/modules/AddonManager.jsm");
+  /*globals AddonManagerPrivate*/
 
-  let globalMM = Cc["@mozilla.org/globalmessagemanager;1"]
-                 .getService(Ci.nsIMessageListenerManager);
+  let globalMM = Services.mm;
   globalMM.loadFrameScript(CHILD_SCRIPT, true);
   globalMM.addMessageListener(MSG_INSTALL_ADDONS, this);
 
-  gParentMM = Cc["@mozilla.org/parentprocessmessagemanager;1"]
-                 .getService(Ci.nsIMessageListenerManager);
+  gParentMM = Services.ppmm;
   gParentMM.addMessageListener(MSG_INSTALL_ENABLED, this);
+  gParentMM.addMessageListener(MSG_PROMISE_REQUEST, this);
+  gParentMM.addMessageListener(MSG_INSTALL_CLEANUP, this);
+
+  Services.obs.addObserver(this, "message-manager-close", false);
+  Services.obs.addObserver(this, "message-manager-disconnect", false);
+
+  AddonManager.webAPI.setEventHandler(this.sendEvent);
 
   // Needed so receiveMessage can be called directly by JS callers
   this.wrappedJSObject = this;
 }
 
 amManager.prototype = {
-  observe: function AMC_observe(aSubject, aTopic, aData) {
-    if (aTopic == "addons-startup")
-      AddonManagerPrivate.startup();
+  observe: function(aSubject, aTopic, aData) {
+    switch (aTopic) {
+      case "addons-startup":
+        AddonManagerPrivate.startup();
+        break;
+
+      case "message-manager-close":
+      case "message-manager-disconnect":
+        AddonManager.webAPI.clearInstallsFrom(aSubject);
+        break;
+    }
   },
 
   /**
    * @see amIAddonManager.idl
    */
-  mapURIToAddonID: function AMC_mapURIToAddonID(uri, id) {
+  mapURIToAddonID: function(uri, id) {
     id.value = AddonManager.mapURIToAddonID(uri);
     return !!id.value;
   },
@@ -69,19 +86,15 @@ amManager.prototype = {
   /**
    * @see amIWebInstaller.idl
    */
-  isInstallEnabled: function AMC_isInstallEnabled(aMimetype, aReferer) {
+  isInstallEnabled: function(aMimetype, aReferer) {
     return AddonManager.isInstallEnabled(aMimetype);
   },
 
   /**
    * @see amIWebInstaller.idl
    */
-  installAddonsFromWebpage: function AMC_installAddonsFromWebpage(aMimetype,
-                                                                  aBrowser,
-                                                                  aInstallingPrincipal,
-                                                                  aUris, aHashes,
-                                                                  aNames, aIcons,
-                                                                  aCallback) {
+  installAddonsFromWebpage: function(aMimetype, aBrowser, aInstallingPrincipal,
+                                     aUris, aHashes, aNames, aIcons, aCallback) {
     if (aUris.length == 0)
       return false;
 
@@ -98,7 +111,7 @@ amManager.prototype = {
         return;
       }
       let uri = aUris.shift();
-      AddonManager.getInstallForURL(uri, function buildNextInstall_getInstallForURL(aInstall) {
+      AddonManager.getInstallForURL(uri, function(aInstall) {
         function callCallback(aUri, aStatus) {
           try {
             aCallback.onInstallEnded(aUri, aStatus);
@@ -112,22 +125,22 @@ amManager.prototype = {
           installs.push(aInstall);
           if (aCallback) {
             aInstall.addListener({
-              onDownloadCancelled: function buildNextInstall_onDownloadCancelled(aInstall) {
+              onDownloadCancelled: function(aInstall) {
                 callCallback(uri, USER_CANCELLED);
               },
 
-              onDownloadFailed: function buildNextInstall_onDownloadFailed(aInstall) {
+              onDownloadFailed: function(aInstall) {
                 if (aInstall.error == AddonManager.ERROR_CORRUPT_FILE)
                   callCallback(uri, CANT_READ_ARCHIVE);
                 else
                   callCallback(uri, DOWNLOAD_ERROR);
               },
 
-              onInstallFailed: function buildNextInstall_onInstallFailed(aInstall) {
+              onInstallFailed: function(aInstall) {
                 callCallback(uri, EXECUTION_ERROR);
               },
 
-              onInstallEnded: function buildNextInstall_onInstallEnded(aInstall, aStatus) {
+              onInstallEnded: function(aInstall, aStatus) {
                 callCallback(uri, SUCCESS);
               }
             });
@@ -144,7 +157,7 @@ amManager.prototype = {
     return retval;
   },
 
-  notify: function AMC_notify(aTimer) {
+  notify: function(aTimer) {
     AddonManagerPrivate.backgroundUpdateTimerHandler();
   },
 
@@ -154,7 +167,7 @@ amManager.prototype = {
    * Listens to requests from child processes for InstallTrigger
    * activity, and sends back callbacks.
    */
-  receiveMessage: function AMC_receiveMessage(aMessage) {
+  receiveMessage: function(aMessage) {
     let payload = aMessage.data;
 
     switch (aMessage.name) {
@@ -165,7 +178,7 @@ amManager.prototype = {
         let callback = null;
         if (payload.callbackID != -1) {
           callback = {
-            onInstallEnded: function ITP_callback(url, status) {
+            onInstallEnded: function(url, status) {
               gParentMM.broadcastAsyncMessage(MSG_INSTALL_CALLBACK, {
                 callbackID: payload.callbackID,
                 url: url,
@@ -179,12 +192,46 @@ amManager.prototype = {
           aMessage.target, payload.triggeringPrincipal, payload.uris,
           payload.hashes, payload.names, payload.icons, callback);
       }
+
+      case MSG_PROMISE_REQUEST: {
+        let resolve = (value) => {
+          aMessage.target.sendAsyncMessage(MSG_PROMISE_RESULT, {
+            callbackID: payload.callbackID,
+            resolve: value
+          });
+        }
+        let reject = (value) => {
+          aMessage.target.sendAsyncMessage(MSG_PROMISE_RESULT, {
+            callbackID: payload.callbackID,
+            reject: value
+          });
+        }
+
+        let API = AddonManager.webAPI;
+        if (payload.type in API) {
+          API[payload.type](aMessage.target, ...payload.args).then(resolve, reject);
+        }
+        else {
+          reject("Unknown Add-on API request.");
+        }
+        break;
+      }
+
+      case MSG_INSTALL_CLEANUP: {
+        AddonManager.webAPI.clearInstalls(payload.ids);
+        break;
+      }
     }
+    return undefined;
+  },
+
+  sendEvent(target, data) {
+    target.sendAsyncMessage(MSG_INSTALL_EVENT, data);
   },
 
   classID: Components.ID("{4399533d-08d1-458c-a87a-235f74451cfa}"),
   _xpcom_factory: {
-    createInstance: function AMC_createInstance(aOuter, aIid) {
+    createInstance: function(aOuter, aIid) {
       if (aOuter != null)
         throw Components.Exception("Component does not support aggregation",
                                    Cr.NS_ERROR_NO_AGGREGATION);

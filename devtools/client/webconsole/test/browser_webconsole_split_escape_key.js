@@ -1,7 +1,7 @@
-/*
- * Any copyright is dedicated to the Public Domain.
- * http://creativecommons.org/publicdomain/zero/1.0/
- */
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*- */
+/* vim: set ft=javascript ts=2 et sw=2 tw=80: */
+/* Any copyright is dedicated to the Public Domain.
+ * http://creativecommons.org/publicdomain/zero/1.0/ */
 
  "use strict";
 
@@ -30,7 +30,7 @@ function test() {
 
     yield executeJS();
     yield clickMessageAndShowVariablesView();
-    jsterm.inputNode.focus();
+    jsterm.focus();
 
     yield testHideVariablesViewAfterEscape();
 
@@ -49,7 +49,7 @@ function test() {
       ok(toolbox.splitConsole, "Split console is created.");
     });
 
-    let contentWindow = toolbox.frame.contentWindow;
+    let contentWindow = toolbox.win;
     contentWindow.focus();
     EventUtils.sendKey("ESCAPE", contentWindow);
 
@@ -60,7 +60,7 @@ function test() {
     let result = toolbox.once("split-console", () => {
       ok(!toolbox.splitConsole, "Split console is hidden.");
     });
-    EventUtils.sendKey("ESCAPE", toolbox.frame.contentWindow);
+    EventUtils.sendKey("ESCAPE", toolbox.win);
 
     return result;
   }
@@ -72,7 +72,7 @@ function test() {
       ok(toolbox.splitConsole,
         "Split console is open after hiding the variables view.");
     });
-    EventUtils.sendKey("ESCAPE", toolbox.frame.contentWindow);
+    EventUtils.sendKey("ESCAPE", toolbox.win);
 
     return result;
   }
@@ -91,7 +91,7 @@ function test() {
       deferred.resolve();
     }, false);
 
-    EventUtils.sendKey("ESCAPE", toolbox.frame.contentWindow);
+    EventUtils.sendKey("ESCAPE", toolbox.win);
 
     return deferred.promise;
   }
@@ -144,7 +144,7 @@ function test() {
       deferred.resolve();
     }, false);
 
-    jsterm.inputNode.focus();
+    jsterm.focus();
     jsterm.setInputValue("document.location.");
     EventUtils.sendKey("TAB", hud.iframeWindow);
 

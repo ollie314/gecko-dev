@@ -71,7 +71,6 @@ public:
     }
     return mPoints[aIndex];
   }
-  Touch* IdentifiedTouch(int32_t aIdentifier) const;
 
 protected:
   ~TouchList() {}
@@ -95,6 +94,9 @@ public:
     return TouchEventBinding::Wrap(aCx, this, aGivenProto);
   }
 
+  already_AddRefed<TouchList>
+  CopyTouches(const Sequence<OwningNonNull<Touch>>& aTouches);
+
   TouchList* Touches();
   TouchList* TargetTouches();
   TouchList* ChangedTouches();
@@ -107,7 +109,7 @@ public:
   void InitTouchEvent(const nsAString& aType,
                       bool aCanBubble,
                       bool aCancelable,
-                      nsIDOMWindow* aView,
+                      nsGlobalWindow* aView,
                       int32_t aDetail,
                       bool aCtrlKey,
                       bool aAltKey,
@@ -115,11 +117,15 @@ public:
                       bool aMetaKey,
                       TouchList* aTouches,
                       TouchList* aTargetTouches,
-                      TouchList* aChangedTouches,
-                      ErrorResult& aRv);
+                      TouchList* aChangedTouches);
 
   static bool PrefEnabled(JSContext* aCx = nullptr,
                           JSObject* aGlobal = nullptr);
+
+  static already_AddRefed<Event> Constructor(const GlobalObject& aGlobal,
+                                             const nsAString& aType,
+                                             const TouchEventInit& aParam,
+                                             ErrorResult& aRv);
 
 protected:
   ~TouchEvent() {}

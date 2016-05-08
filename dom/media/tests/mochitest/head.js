@@ -9,12 +9,14 @@ var Ci = SpecialPowers.Ci;
 
 // Specifies whether we are using fake streams to run this automation
 var FAKE_ENABLED = true;
+var TEST_AUDIO_FREQ = 1000;
 try {
   var audioDevice = SpecialPowers.getCharPref('media.audio_loopback_dev');
   var videoDevice = SpecialPowers.getCharPref('media.video_loopback_dev');
   dump('TEST DEVICES: Using media devices:\n');
   dump('audio: ' + audioDevice + '\nvideo: ' + videoDevice + '\n');
   FAKE_ENABLED = false;
+  TEST_AUDIO_FREQ = 440;
 } catch (e) {
   dump('TEST DEVICES: No test devices found (in media.{audio,video}_loopback_dev, using fake streams.\n');
   FAKE_ENABLED = true;
@@ -31,9 +33,13 @@ try {
 function AudioStreamAnalyser(ac, stream) {
   this.audioContext = ac;
   this.stream = stream;
-  this.sourceNode = this.audioContext.createMediaStreamSource(this.stream);
+  this.sourceNodes = this.stream.getAudioTracks().map(
+    t => this.audioContext.createMediaStreamSource(new MediaStream([t])));
   this.analyser = this.audioContext.createAnalyser();
-  this.sourceNode.connect(this.analyser);
+  // Setting values lower than default for speedier testing on emulators
+  this.analyser.smoothingTimeConstant = 0.2;
+  this.analyser.fftSize = 1024;
+  this.sourceNodes.forEach(n => n.connect(this.analyser));
   this.data = new Uint8Array(this.analyser.frequencyBinCount);
 }
 
@@ -58,17 +64,18 @@ AudioStreamAnalyser.prototype = {
 
     // Easy: 1px per bin
     cvs.width = this.analyser.frequencyBinCount;
-    cvs.height = 256;
+    cvs.height = 128;
     cvs.style.border = "1px solid red";
 
     var c = cvs.getContext('2d');
+    c.fillStyle = 'black';
 
     var self = this;
     function render() {
       c.clearRect(0, 0, cvs.width, cvs.height);
       var array = self.getByteFrequencyData();
       for (var i = 0; i < array.length; i++) {
-        c.fillRect(i, (256 - (array[i])), 1, 256);
+        c.fillRect(i, (cvs.height - (array[i])), 1, cvs.height);
       }
       if (!cvs.stopDrawing) {
         requestAnimationFrame(render);
@@ -88,6 +95,17 @@ AudioStreamAnalyser.prototype = {
 
     this.debugCanvas.stopDrawing = true;
     this.debugCanvas.parentElement.removeChild(this.debugCanvas);
+  },
+
+  /**
+   * Disconnects the input stream from our internal analyser node.
+   * Call this to reduce main thread processing, mostly necessary on slow
+   * devices.
+   */
+  disconnect: function() {
+    this.disableDebugCanvas();
+    this.sourceNodes.forEach(n => n.disconnect());
+    this.sourceNodes = [];
   },
 
   /**
@@ -262,10 +280,7 @@ function setupEnvironment() {
     return;
   }
 
-  // Running as a Mochitest.
-  SimpleTest.requestFlakyTimeout("WebRTC inherently depends on timeouts");
-  window.finish = () => SimpleTest.finish();
-  SpecialPowers.pushPrefEnv({
+  var defaultMochitestPrefs = {
     'set': [
       ['media.peerconnection.enabled', true],
       ['media.peerconnection.identity.enabled', true],
@@ -279,7 +294,22 @@ function setupEnvironment() {
       ['media.getusermedia.audiocapture.enabled', true],
       ['media.recorder.audio_node.enabled', true]
     ]
-  }, setTestOptions);
+  };
+
+  const isAndroid = !!navigator.userAgent.includes("Android");
+
+  if (isAndroid) {
+    defaultMochitestPrefs.set.push(
+      ["media.navigator.video.default_width", 320],
+      ["media.navigator.video.default_height", 240],
+      ["media.navigator.video.max_fr", 10]
+    );
+  }
+
+  // Running as a Mochitest.
+  SimpleTest.requestFlakyTimeout("WebRTC inherently depends on timeouts");
+  window.finish = () => SimpleTest.finish();
+  SpecialPowers.pushPrefEnv(defaultMochitestPrefs, setTestOptions);
 
   // We don't care about waiting for this to complete, we just want to ensure
   // that we don't build up a huge backlog of GC work.
@@ -307,9 +337,12 @@ function run_test(is_initiator,timeout) {
 function runTestWhenReady(testFunc) {
   setupEnvironment();
   return testConfigured.then(options => testFunc(options))
-    .catch(e => ok(false, 'Error executing test: ' + e +
+    .catch(e => {
+      ok(false, 'Error executing test: ' + e +
         ((typeof e.stack === 'string') ?
-        (' ' + e.stack.split('\n').join(' ... ')) : '')));
+        (' ' + e.stack.split('\n').join(' ... ')) : ''));
+      SimpleTest.finish();
+    });
 }
 
 
@@ -367,6 +400,34 @@ function checkMediaStreamContains(mediaStream, tracks, message) {
      message + "MediaStream " + mediaStream.id + " contains no extra tracks");
 }
 
+function checkMediaStreamCloneAgainstOriginal(clone, original) {
+  isnot(clone.id.length, 0, "Stream clone should have an id string");
+  isnot(clone, original,
+        "Stream clone should be different from the original");
+  isnot(clone.id, original.id,
+        "Stream clone's id should be different from the original's");
+  is(clone.getAudioTracks().length, original.getAudioTracks().length,
+     "All audio tracks should get cloned");
+  is(clone.getVideoTracks().length, original.getVideoTracks().length,
+     "All video tracks should get cloned");
+  original.getTracks()
+          .forEach(t => ok(!clone.getTracks().includes(t),
+                           "The clone's tracks should be originals"));
+}
+
+function checkMediaStreamTrackCloneAgainstOriginal(clone, original) {
+  isnot(clone.id.length, 0,
+        "Track clone should have an id string");
+  isnot(clone, original,
+        "Track clone should be different from the original");
+  isnot(clone.id, original.id,
+        "Track clone's id should be different from the original's");
+  is(clone.kind, original.kind,
+     "Track clone's kind should be same as the original's");
+  is(clone.enabled, original.enabled,
+     "Track clone's kind should be same as the original's");
+}
+
 /*** Utility methods */
 
 /** The dreadful setTimeout, use sparingly */
@@ -389,6 +450,29 @@ function waitUntil(func, time) {
 /** Time out while waiting for a promise to get resolved or rejected. */
 var timeout = (promise, time, msg) =>
   Promise.race([promise, wait(time).then(() => Promise.reject(new Error(msg)))]);
+
+/** Use event listener to call passed-in function on fire until it returns true */
+var listenUntil = (target, eventName, onFire) => {
+  return new Promise(resolve => target.addEventListener(eventName,
+                                                        function callback() {
+    var result = onFire();
+    if (result) {
+      target.removeEventListener(eventName, callback, false);
+      resolve(result);
+    }
+  }, false));
+};
+
+/* Test that a function throws the right error */
+function mustThrowWith(msg, reason, f) {
+  try {
+    f();
+    ok(false, msg + " must throw");
+  } catch (e) {
+    is(e.name, reason, msg + " must throw: " + e.message);
+  }
+};
+
 
 /*** Test control flow methods */
 
@@ -541,6 +625,14 @@ CommandChain.prototype = {
     return this.commands.indexOf(functionOrName, start);
   },
 
+  mustHaveIndexOf: function(functionOrName, start) {
+    var index = this.indexOf(functionOrName, start);
+    if (index == -1) {
+      throw new Error("Unknown test: " + functionOrName);
+    }
+    return index;
+  },
+
   /**
    * Inserts the new commands after the specified command.
    */
@@ -563,7 +655,7 @@ CommandChain.prototype = {
   },
 
   _insertHelper: function(functionOrName, commands, delta, all, start) {
-    var index = this.indexOf(functionOrName);
+    var index = this.mustHaveIndexOf(functionOrName);
     start = start || 0;
     for (; index !== -1; index = this.indexOf(functionOrName, index)) {
       if (!start) {
@@ -585,33 +677,21 @@ CommandChain.prototype = {
    * Removes the specified command, returns what was removed.
    */
   remove: function(functionOrName) {
-    var index = this.indexOf(functionOrName);
-    if (index >= 0) {
-      return this.commands.splice(index, 1);
-    }
-    return [];
+    return this.commands.splice(this.mustHaveIndexOf(functionOrName), 1);
   },
 
   /**
    * Removes all commands after the specified one, returns what was removed.
    */
   removeAfter: function(functionOrName, start) {
-    var index = this.indexOf(functionOrName, start);
-    if (index >= 0) {
-      return this.commands.splice(index + 1);
-    }
-    return [];
+    return this.commands.splice(this.mustHaveIndexOf(functionOrName, start) + 1);
   },
 
   /**
    * Removes all commands before the specified one, returns what was removed.
    */
   removeBefore: function(functionOrName) {
-    var index = this.indexOf(functionOrName);
-    if (index >= 0) {
-      return this.commands.splice(0, index);
-    }
-    return [];
+    return this.commands.splice(0, this.mustHaveIndexOf(functionOrName));
   },
 
   /**

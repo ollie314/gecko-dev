@@ -353,6 +353,12 @@ CodeGeneratorARM64::visitClzI(LClzI* lir)
 }
 
 void
+CodeGeneratorARM64::visitCtzI(LCtzI* lir)
+{
+    MOZ_CRASH("visitCtzI");
+}
+
+void
 CodeGeneratorARM64::emitRoundDouble(FloatRegister src, Register dest, Label* fail)
 {
     MOZ_CRASH("CodeGeneratorARM64::emitRoundDouble");
@@ -737,3 +743,47 @@ CodeGeneratorARM64::setReturnDoubleRegs(LiveRegisterSet* regs)
     regs->add(s1);
     regs->add(ReturnDoubleReg);
 }
+
+void
+CodeGeneratorARM64::visitCompareExchangeTypedArrayElement(LCompareExchangeTypedArrayElement* lir)
+{
+    Register elements = ToRegister(lir->elements());
+    AnyRegister output = ToAnyRegister(lir->output());
+    Register temp = lir->temp()->isBogusTemp() ? InvalidReg : ToRegister(lir->temp());
+
+    Register oldval = ToRegister(lir->oldval());
+    Register newval = ToRegister(lir->newval());
+
+    Scalar::Type arrayType = lir->mir()->arrayType();
+    int width = Scalar::byteSize(arrayType);
+
+    if (lir->index()->isConstant()) {
+        Address dest(elements, ToInt32(lir->index()) * width);
+        masm.compareExchangeToTypedIntArray(arrayType, dest, oldval, newval, temp, output);
+    } else {
+        BaseIndex dest(elements, ToRegister(lir->index()), ScaleFromElemWidth(width));
+        masm.compareExchangeToTypedIntArray(arrayType, dest, oldval, newval, temp, output);
+    }
+}
+
+void
+CodeGeneratorARM64::visitAtomicExchangeTypedArrayElement(LAtomicExchangeTypedArrayElement* lir)
+{
+    Register elements = ToRegister(lir->elements());
+    AnyRegister output = ToAnyRegister(lir->output());
+    Register temp = lir->temp()->isBogusTemp() ? InvalidReg : ToRegister(lir->temp());
+
+    Register value = ToRegister(lir->value());
+
+    Scalar::Type arrayType = lir->mir()->arrayType();
+    int width = Scalar::byteSize(arrayType);
+
+    if (lir->index()->isConstant()) {
+        Address dest(elements, ToInt32(lir->index()) * width);
+        masm.atomicExchangeToTypedIntArray(arrayType, dest, value, temp, output);
+    } else {
+        BaseIndex dest(elements, ToRegister(lir->index()), ScaleFromElemWidth(width));
+        masm.atomicExchangeToTypedIntArray(arrayType, dest, value, temp, output);
+    }
+}
+

@@ -11,7 +11,8 @@ this.EXPORTED_SYMBOLS = [ "EME_ADOBE_ID",
                           "GMP_PLUGIN_IDS",
                           "GMPPrefs",
                           "GMPUtils",
-                          "OPEN_H264_ID" ];
+                          "OPEN_H264_ID",
+                          "WIDEVINE_ID" ];
 
 Cu.import("resource://gre/modules/Preferences.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
@@ -20,7 +21,8 @@ Cu.import("resource://gre/modules/AppConstants.jsm");
 // GMP IDs
 const OPEN_H264_ID  = "gmp-gmpopenh264";
 const EME_ADOBE_ID  = "gmp-eme-adobe";
-const GMP_PLUGIN_IDS = [ OPEN_H264_ID, EME_ADOBE_ID ];
+const WIDEVINE_ID   = "gmp-widevinecdm";
+const GMP_PLUGIN_IDS = [ OPEN_H264_ID, EME_ADOBE_ID, WIDEVINE_ID ];
 
 var GMPPluginUnsupportedReason = {
   NOT_WINDOWS: 1,
@@ -68,24 +70,22 @@ this.GMPUtils = {
    *          The plugin to check.
    */
   _isPluginSupported: function(aPlugin) {
-    if (aPlugin.id != EME_ADOBE_ID) {
-      // Only checking Adobe EME at the moment.
-      return true;
-    }
-
-    if (Services.appinfo.OS != "WINNT") {
-      // Non-Windows OSes currently unsupported.
-      this.maybeReportTelemetry(aPlugin.id,
-                                "VIDEO_EME_ADOBE_UNSUPPORTED_REASON",
-                                GMPPluginUnsupportedReason.NOT_WINDOWS);
-      return false;
-    }
-
-    if (Services.sysinfo.getPropertyAsInt32("version") < 6) {
-      // Windows versions before Vista are unsupported.
-      this.maybeReportTelemetry(aPlugin.id,
-                                "VIDEO_EME_ADOBE_UNSUPPORTED_REASON",
-                                GMPPluginUnsupportedReason.WINDOWS_VERSION);
+    if (aPlugin.id == EME_ADOBE_ID) {
+      if (Services.appinfo.OS != "WINNT") {
+        // Non-Windows OSes currently unsupported by Adobe EME
+        this.maybeReportTelemetry(aPlugin.id,
+                                  "VIDEO_EME_ADOBE_UNSUPPORTED_REASON",
+                                  GMPPluginUnsupportedReason.NOT_WINDOWS);
+        return false;
+      }
+    } else if (aPlugin.id == WIDEVINE_ID) {
+      // The Widevine plugin is available for Windows versions Vista and later
+      // and Mac
+      if ((Services.appinfo.OS == "WINNT" &&
+          Services.sysinfo.getPropertyAsInt32("version") >= 6) ||
+          Services.appinfo.OS == "Darwin") {
+        return true;
+      }
       return false;
     }
 
@@ -138,7 +138,6 @@ this.GMPPrefs = {
   KEY_PLUGIN_VERSION:           "media.{0}.version",
   KEY_PLUGIN_AUTOUPDATE:        "media.{0}.autoupdate",
   KEY_PLUGIN_FORCEVISIBLE:      "media.{0}.forcevisible",
-  KEY_PLUGIN_TRIAL_CREATE:      "media.{0}.trial-create",
   KEY_PLUGIN_ABI:               "media.{0}.abi",
   KEY_URL:                      "media.gmp-manager.url",
   KEY_URL_OVERRIDE:             "media.gmp-manager.url.override",

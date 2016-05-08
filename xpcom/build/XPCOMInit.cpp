@@ -17,7 +17,7 @@
 #include "nsXPCOMCIDInternal.h"
 
 #include "mozilla/layers/ImageBridgeChild.h"
-#include "mozilla/layers/CompositorParent.h"
+#include "mozilla/layers/CompositorBridgeParent.h"
 #include "mozilla/layers/AsyncTransactionTracker.h"
 #include "mozilla/layers/SharedBufferManagerChild.h"
 
@@ -155,8 +155,13 @@ extern nsresult nsStringInputStreamConstructor(nsISupports*, REFNSIID, void**);
 #include "GeckoProfiler.h"
 
 #include "jsapi.h"
+#include "js/Initialization.h"
 
 #include "gfxPlatform.h"
+
+#if EXPOSE_INTL_API
+#include "unicode/putil.h"
+#endif
 
 using namespace mozilla;
 using base::AtExitManager;
@@ -186,23 +191,23 @@ extern nsresult CreateAnonTempFileRemover();
 
 NS_GENERIC_FACTORY_CONSTRUCTOR(nsProcess)
 
-NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsIDImpl)
-NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsStringImpl)
-NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsCStringImpl)
-NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsPRBoolImpl)
-NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsPRUint8Impl)
-NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsPRUint16Impl)
-NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsPRUint32Impl)
-NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsPRUint64Impl)
-NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsPRTimeImpl)
-NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsCharImpl)
-NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsPRInt16Impl)
-NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsPRInt32Impl)
-NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsPRInt64Impl)
-NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsFloatImpl)
-NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsDoubleImpl)
-NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsVoidImpl)
-NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsInterfacePointerImpl)
+NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsID)
+NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsString)
+NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsCString)
+NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsPRBool)
+NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsPRUint8)
+NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsPRUint16)
+NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsPRUint32)
+NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsPRUint64)
+NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsPRTime)
+NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsChar)
+NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsPRInt16)
+NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsPRInt32)
+NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsPRInt64)
+NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsFloat)
+NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsDouble)
+NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsVoid)
+NS_GENERIC_FACTORY_CONSTRUCTOR(nsSupportsInterfacePointer)
 
 NS_GENERIC_FACTORY_CONSTRUCTOR_INIT(nsConsoleService, Init)
 NS_GENERIC_FACTORY_CONSTRUCTOR(nsAtomService)
@@ -277,8 +282,6 @@ char16_t* gGREBinPath = nullptr;
 
 static NS_DEFINE_CID(kComponentManagerCID, NS_COMPONENTMANAGER_CID);
 static NS_DEFINE_CID(kINIParserFactoryCID, NS_INIPARSERFACTORY_CID);
-static NS_DEFINE_CID(kSimpleUnicharStreamFactoryCID,
-                     NS_SIMPLE_UNICHAR_STREAM_FACTORY_CID);
 
 NS_DEFINE_NAMED_CID(NS_CHROMEREGISTRY_CID);
 NS_DEFINE_NAMED_CID(NS_CHROMEPROTOCOLHANDLER_CID);
@@ -299,14 +302,6 @@ CreateINIParserFactory(const mozilla::Module& aModule,
   return f.forget();
 }
 
-static already_AddRefed<nsIFactory>
-CreateUnicharStreamFactory(const mozilla::Module& aModule,
-                           const mozilla::Module::CIDEntry& aEntry)
-{
-  return already_AddRefed<nsIFactory>(
-           nsSimpleUnicharStreamFactory::GetInstance());
-}
-
 #define COMPONENT(NAME, Ctor) static NS_DEFINE_CID(kNS_##NAME##_CID, NS_##NAME##_CID);
 #include "XPCOMModule.inc"
 #undef COMPONENT
@@ -315,7 +310,6 @@ CreateUnicharStreamFactory(const mozilla::Module& aModule,
 const mozilla::Module::CIDEntry kXPCOMCIDEntries[] = {
   { &kComponentManagerCID, true, nullptr, nsComponentManagerImpl::Create },
   { &kINIParserFactoryCID, false, CreateINIParserFactory },
-  { &kSimpleUnicharStreamFactoryCID, false, CreateUnicharStreamFactory },
 #include "XPCOMModule.inc"
   { &kNS_CHROMEREGISTRY_CID, false, nullptr, nsChromeRegistryConstructor },
   { &kNS_CHROMEPROTOCOLHANDLER_CID, false, nullptr, nsChromeProtocolHandlerConstructor },
@@ -531,12 +525,16 @@ NS_InitXPCOM2(nsIServiceManager** aResult,
     sExitManager = new AtExitManager();
   }
 
-  if (!MessageLoop::current()) {
-    sMessageLoop = new MessageLoopForUI(MessageLoop::TYPE_MOZILLA_UI);
+  MessageLoop* messageLoop = MessageLoop::current();
+  if (!messageLoop) {
+    sMessageLoop = new MessageLoopForUI(MessageLoop::TYPE_MOZILLA_PARENT);
     sMessageLoop->set_thread_name("Gecko");
     // Set experimental values for main thread hangs:
     // 128ms for transient hangs and 8192ms for permanent hangs
     sMessageLoop->set_hang_timeouts(128, 8192);
+  } else if (messageLoop->type() == MessageLoop::TYPE_MOZILLA_CHILD) {
+    messageLoop->set_thread_name("Gecko_Child");
+    messageLoop->set_hang_timeouts(128, 8192);
   }
 
   if (XRE_IsParentProcess() &&
@@ -694,9 +692,21 @@ NS_InitXPCOM2(nsIServiceManager** aResult,
   nestegg_set_halloc_func(NesteggReporter::CountingFreeingRealloc);
 #endif
 
+#if EXPOSE_INTL_API && defined(MOZ_ICU_DATA_ARCHIVE)
+  nsCOMPtr<nsIFile> greDir;
+  nsDirectoryService::gService->Get(NS_GRE_DIR,
+                                    NS_GET_IID(nsIFile),
+                                    getter_AddRefs(greDir));
+  MOZ_ASSERT(greDir);
+  nsAutoCString nativeGREPath;
+  greDir->GetNativePath(nativeGREPath);
+  u_setDataDirectory(nativeGREPath.get());
+#endif
+
   // Initialize the JS engine.
-  if (!JS_Init()) {
-    NS_RUNTIMEABORT("JS_Init failed");
+  const char* jsInitFailureReason = JS_InitWithFailureDiagnostic();
+  if (jsInitFailureReason) {
+    NS_RUNTIMEABORT(jsInitFailureReason);
   }
 
   rv = nsComponentManagerImpl::gComponentManager->Init();
@@ -842,6 +852,7 @@ ShutdownXPCOM(nsIServiceManager* aServMgr)
                    (nsObserverService**)getter_AddRefs(observerService));
 
     if (observerService) {
+      mozilla::KillClearOnShutdown(ShutdownPhase::WillShutdown);
       observerService->NotifyObservers(nullptr,
                                        NS_XPCOM_WILL_SHUTDOWN_OBSERVER_ID,
                                        nullptr);
@@ -849,6 +860,7 @@ ShutdownXPCOM(nsIServiceManager* aServMgr)
       nsCOMPtr<nsIServiceManager> mgr;
       rv = NS_GetServiceManager(getter_AddRefs(mgr));
       if (NS_SUCCEEDED(rv)) {
+        mozilla::KillClearOnShutdown(ShutdownPhase::Shutdown);
         observerService->NotifyObservers(mgr, NS_XPCOM_SHUTDOWN_OBSERVER_ID,
                                          nullptr);
       }
@@ -861,9 +873,12 @@ ShutdownXPCOM(nsIServiceManager* aServMgr)
 
     mozilla::scache::StartupCache::DeleteSingleton();
     if (observerService)
+    {
+      mozilla::KillClearOnShutdown(ShutdownPhase::ShutdownThreads);
       observerService->NotifyObservers(nullptr,
                                        NS_XPCOM_SHUTDOWN_THREADS_OBSERVER_ID,
                                        nullptr);
+    }
 
     gXPCOMThreadsShutDown = true;
     NS_ProcessPendingEvents(thread);
@@ -891,6 +906,7 @@ ShutdownXPCOM(nsIServiceManager* aServMgr)
     // We save the "xpcom-shutdown-loaders" observers to notify after
     // the observerservice is gone.
     if (observerService) {
+      mozilla::KillClearOnShutdown(ShutdownPhase::ShutdownLoaders);
       observerService->EnumerateObservers(NS_XPCOM_SHUTDOWN_LOADERS_OBSERVER_ID,
                                           getter_AddRefs(moduleLoaders));
 
@@ -901,7 +917,7 @@ ShutdownXPCOM(nsIServiceManager* aServMgr)
   // Free ClearOnShutdown()'ed smart pointers.  This needs to happen *after*
   // we've finished notifying observers of XPCOM shutdown, because shutdown
   // observers themselves might call ClearOnShutdown().
-  mozilla::KillClearOnShutdown();
+  mozilla::KillClearOnShutdown(ShutdownPhase::ShutdownFinal);
 
   // XPCOM is officially in shutdown mode NOW
   // Set this only after the observers have been notified as this
@@ -966,18 +982,6 @@ ShutdownXPCOM(nsIServiceManager* aServMgr)
   NS_ShutdownLocalFile();
 #ifdef XP_UNIX
   NS_ShutdownNativeCharsetUtils();
-#endif
-
-#if defined(XP_WIN)
-  // This exit(0) call is intended to be temporary, to get shutdown leak
-  // checking working on Linux.
-  // On Windows XP debug, there are intermittent failures in
-  // dom/media/tests/mochitest/test_peerConnection_basicH264Video.html
-  // if we don't exit early in a child process. See bug 1073310.
-  if (XRE_IsContentProcess() && !IsVistaOrLater()) {
-      NS_WARNING("Exiting child process early!");
-      exit(0);
-  }
 #endif
 
   // Shutdown xpcom. This will release all loaders and cause others holding
@@ -1054,13 +1058,13 @@ ShutdownXPCOM(nsIServiceManager* aServMgr)
   NS_LogTerm();
 
 #if defined(MOZ_WIDGET_GONK)
-  // This exit(0) call is intended to be temporary, to get shutdown leak
-  // checking working on Linux.
+  // This _exit(0) call is intended to be temporary, to get shutdown leak
+  // checking working on non-B2G platforms.
   // On debug B2G, the child process crashes very late.  Instead, just
   // give up so at least we exit cleanly. See bug 1071866.
   if (XRE_IsContentProcess()) {
       NS_WARNING("Exiting child process early!");
-      exit(0);
+      _exit(0);
   }
 #endif
 

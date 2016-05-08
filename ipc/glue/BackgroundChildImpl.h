@@ -61,6 +61,13 @@ protected:
   DeallocPBackgroundIDBFactoryChild(PBackgroundIDBFactoryChild* aActor)
                                     override;
 
+  virtual PBackgroundIndexedDBUtilsChild*
+  AllocPBackgroundIndexedDBUtilsChild() override;
+
+  virtual bool
+  DeallocPBackgroundIndexedDBUtilsChild(PBackgroundIndexedDBUtilsChild* aActor)
+                                        override;
+
   virtual PBlobChild*
   AllocPBlobChild(const BlobConstructorParams& aParams) override;
 
@@ -145,6 +152,19 @@ protected:
 
   virtual bool
   DeallocPAsmJSCacheEntryChild(PAsmJSCacheEntryChild* aActor) override;
+
+  virtual PQuotaChild*
+  AllocPQuotaChild() override;
+
+  virtual bool
+  DeallocPQuotaChild(PQuotaChild* aActor) override;
+
+  virtual PFileSystemRequestChild*
+  AllocPFileSystemRequestChild(const FileSystemParams&) override;
+
+  virtual bool
+  DeallocPFileSystemRequestChild(PFileSystemRequestChild*) override;
+
 };
 
 class BackgroundChildImpl::ThreadLocal final

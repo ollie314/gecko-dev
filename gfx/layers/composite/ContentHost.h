@@ -14,6 +14,7 @@
 #include "mozilla/Attributes.h"         // for override
 #include "mozilla/RefPtr.h"             // for RefPtr
 #include "mozilla/gfx/BasePoint.h"      // for BasePoint
+#include "mozilla/gfx/MatrixFwd.h"      // for Matrix4x4
 #include "mozilla/gfx/Point.h"          // for Point
 #include "mozilla/gfx/Rect.h"           // for Rect
 #include "mozilla/gfx/Types.h"          // for Filter
@@ -34,9 +35,6 @@
 #include "nscore.h"                     // for nsACString
 
 namespace mozilla {
-namespace gfx {
-class Matrix4x4;
-} // namespace gfx
 namespace layers {
 class Compositor;
 class ThebesBufferData;
@@ -60,6 +58,10 @@ public:
 
   virtual void SetPaintWillResample(bool aResample) { mPaintWillResample = aResample; }
   bool PaintWillResample() { return mPaintWillResample; }
+
+  // We use this to allow TiledContentHost to invalidate regions where
+  // tiles are fading in.
+  virtual void AddAnimationInvalidation(nsIntRegion& aRegion) { }
 
 protected:
   explicit ContentHost(const TextureInfo& aTextureInfo)

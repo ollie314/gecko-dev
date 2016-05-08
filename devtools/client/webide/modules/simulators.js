@@ -12,6 +12,7 @@ loader.lazyRequireGetter(this, "CustomSimulatorProcess", "devtools/client/webide
 const asyncStorage = require("devtools/shared/async-storage");
 const EventEmitter = require("devtools/shared/event-emitter");
 const promise = require("promise");
+const Services = require("Services");
 
 const SimulatorRegExp = new RegExp(Services.prefs.getCharPref("devtools.webide.simulatorAddonRegExp"));
 const LocaleCompare = (a, b) => {
@@ -44,13 +45,13 @@ var Simulators = {
 
           // If the simulator had a reference to an addon, fix it.
           if (options.addonID) {
-            let job = promise.defer();
+            let deferred = promise.defer();
             AddonManager.getAddonByID(options.addonID, addon => {
               simulator.addon = addon;
               delete simulator.options.addonID;
-              job.resolve();
+              deferred.resolve();
             });
-            jobs.push(job);
+            jobs.push(deferred.promise);
           }
         });
       }
@@ -139,8 +140,16 @@ var Simulators = {
     if (matching.length > 0) {
       return promise.resolve();
     }
-    let name = addon.name.replace(" Simulator", "");
-    return this.add(new Simulator({name}, addon), silently);
+    let options = {};
+    options.name = addon.name.replace(" Simulator", "");
+    // Some addons specify a simulator type at the end of their version string,
+    // e.g. "2_5_tv".
+    let type = this.simulatorAddonVersion(addon).split("_")[2];
+    if (type) {
+      // "tv" is shorthand for type "television".
+      options.type = (type === "tv" ? "television" : type);
+    }
+    return this.add(new Simulator(options, addon), silently);
   },
 
   // TODO (Bug 1146521) Maybe find a better way to deal with removed addons?
@@ -200,14 +209,31 @@ var Simulators = {
   },
 
   /**
+   * Compare an addon's ID against the expected form of a simulator addon ID,
+   * and try to extract its version if there is a match.
+   *
+   * Note: If a simulator addon is recognized, but no version can be extracted
+   * (e.g. custom RegExp pref value), we return "Unknown" to keep the returned
+   * value 'truthy'.
+   */
+  simulatorAddonVersion(addon) {
+    let match = SimulatorRegExp.exec(addon.id);
+    if (!match) {
+      return null;
+    }
+    let version = match[1];
+    return version || "Unknown";
+  },
+
+  /**
    * Detect simulator addons, including "unofficial" ones.
    */
   isSimulatorAddon(addon) {
-    return SimulatorRegExp.exec(addon.id);
+    return !!this.simulatorAddonVersion(addon);
   },
 
   emitUpdated() {
-    this.emit("updated");
+    this.emit("updated", { length: this._simulators.length });
     this._simulators.sort(LocaleCompare);
     this._save();
   },
@@ -250,7 +276,7 @@ function Simulator(options = {}, addon = null) {
   this.options = options;
 
   // Fill `this.options` with default values where needed.
-  let defaults = this._defaults;
+  let defaults = this.defaults;
   for (let option in defaults) {
     if (this.options[option] == null) {
       this.options[option] = defaults[option];
@@ -259,16 +285,26 @@ function Simulator(options = {}, addon = null) {
 }
 Simulator.prototype = {
 
-  // Default simulation options, based on the Firefox OS Flame.
+  // Default simulation options.
   _defaults: {
-    width: 320,
-    height: 570,
-    pixelRatio: 1.5
+    // Based on the Firefox OS Flame.
+    phone: {
+      width: 320,
+      height: 570,
+      pixelRatio: 1.5
+    },
+    // Based on a 720p HD TV.
+    television: {
+      width: 1280,
+      height: 720,
+      pixelRatio: 1,
+    }
   },
+  _defaultType: "phone",
 
   restoreDefaults() {
+    let defaults = this.defaults;
     let options = this.options;
-    let defaults = this._defaults;
     for (let option in defaults) {
       options[option] = defaults[option];
     }
@@ -307,12 +343,21 @@ Simulator.prototype = {
     return process.kill();
   },
 
+  get defaults() {
+    let defaults = this._defaults;
+    return defaults[this.type] || defaults[this._defaultType];
+  },
+
   get id() {
     return this.name;
   },
 
   get name() {
     return this.options.name;
+  },
+
+  get type() {
+    return this.options.type || this._defaultType;
   },
 
   get version() {

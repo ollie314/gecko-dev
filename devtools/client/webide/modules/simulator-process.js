@@ -11,7 +11,7 @@ const Environment = require("sdk/system/environment").env;
 const EventEmitter = require("devtools/shared/event-emitter");
 const promise = require("promise");
 const Subprocess = require("sdk/system/child_process/subprocess");
-const { Services } = Cu.import("resource://gre/modules/Services.jsm", {});
+const Services = require("Services");
 
 loader.lazyGetter(this, "OS", () => {
   const Runtime = require("sdk/system/runtime");
@@ -228,8 +228,8 @@ Object.defineProperty(ASPp, "b2gBinary", {
       file = this.addon.getResourceURI().QueryInterface(Ci.nsIFileURL).file;
       file.append("firefox");
       let binaries = {
-        win32: "firefox-bin.exe",
-        mac64: "B2G.app/Contents/MacOS/firefox-bin",
+        win32: "firefox.exe",
+        mac64: "FirefoxNightly.app/Contents/MacOS/firefox-bin",
         linux32: "firefox-bin",
         linux64: "firefox-bin",
       };

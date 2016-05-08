@@ -114,8 +114,6 @@ function _check_autocomplete_matches(match, result) {
   let { uri, title, tags, searchEngine, style } = match;
   if (tags)
     title += " \u2013 " + tags.sort().join(", ");
-  if (searchEngine)
-    title += TITLE_SEARCH_ENGINE_SEPARATOR + searchEngine;
   if (style)
     style = style.sort();
   else
@@ -346,7 +344,11 @@ function stripPrefix(spec)
 }
 
 function makeActionURI(action, params) {
-  let url = "moz-action:" + action + "," + JSON.stringify(params);
+  let encodedParams = {};
+  for (let key in params) {
+    encodedParams[key] = encodeURIComponent(params[key]);
+  }
+  let url = "moz-action:" + action + "," + JSON.stringify(encodedParams);
   return NetUtil.newURI(url);
 }
 
@@ -360,9 +362,16 @@ function makeSearchMatch(input, extra = {}) {
     engineName: extra.engineName || "MozSearch",
     input,
     searchQuery: "searchQuery" in extra ? extra.searchQuery : input,
-    alias: extra.alias, // may be undefined which is expected.
+  };
+  if ("alias" in extra) {
+    // May be undefined, which is expected, but in that case make sure it's not
+    // included in the params of the moz-action URL.
+    params.alias = extra.alias;
   }
   let style = [ "action", "searchengine" ];
+  if (Array.isArray(extra.style)) {
+    style.push(...extra.style);
+  }
   if (extra.heuristic) {
     style.push("heuristic");
   }
@@ -409,7 +418,8 @@ function setFaviconForHref(href, iconHref) {
       NetUtil.newURI(iconHref),
       true,
       PlacesUtils.favicons.FAVICON_LOAD_NON_PRIVATE,
-      resolve
+      resolve,
+      Services.scriptSecurityManager.getSystemPrincipal()
     );
   });
 }
@@ -448,7 +458,7 @@ function* addTestEngine(basename, httpServer=undefined) {
 
 // Ensure we have a default search engine and the keyword.enabled preference
 // set.
-add_task(function ensure_search_engine() {
+add_task(function* ensure_search_engine() {
   // keyword.enabled is necessary for the tests to see keyword searches.
   Services.prefs.setBoolPref("keyword.enabled", true);
 

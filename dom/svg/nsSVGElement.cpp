@@ -54,7 +54,8 @@
 #include "nsSMILAnimationController.h"
 #include "mozilla/dom/SVGElementBinding.h"
 #include "mozilla/unused.h"
-#include "RestyleManager.h"
+#include "mozilla/RestyleManagerHandle.h"
+#include "mozilla/RestyleManagerHandleInlines.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -257,7 +258,7 @@ nsSVGElement::BindToTree(nsIDocument* aDocument, nsIContent* aParent,
   }
   const nsAttrValue* oldVal = mAttrsAndChildren.GetAttr(nsGkAtoms::style);
 
-  if (oldVal && oldVal->Type() == nsAttrValue::eCSSStyleRule) {
+  if (oldVal && oldVal->Type() == nsAttrValue::eCSSDeclaration) {
     // we need to force a reparse because the baseURI of the document
     // may have changed, and in particular because we may be clones of
     // XBL anonymous content now being bound to the document we should
@@ -269,8 +270,8 @@ nsSVGElement::BindToTree(nsIDocument* aDocument, nsIContent* aParent,
     oldVal->ToString(stringValue);
     // Force in data doc, since we already have a style rule
     ParseStyleAttribute(stringValue, attrValue, true);
-    // Don't bother going through SetInlineStyleRule, we don't want to fire off
-    // mutation events or document notifications anyway
+    // Don't bother going through SetInlineStyleDeclaration; we don't
+    // want to fire off mutation events or document notifications anyway
     rv = mAttrsAndChildren.SetAndSwapAttr(nsGkAtoms::style, attrValue);
     NS_ENSURE_SUCCESS(rv, rv);
   }
@@ -526,7 +527,7 @@ nsSVGElement::ParseAttribute(int32_t aNamespaceID,
       EnumAttributesInfo enumInfo = GetEnumInfo();
       for (i = 0; i < enumInfo.mEnumCount; i++) {
         if (aAttribute == *enumInfo.mEnumInfo[i].mName) {
-          nsCOMPtr<nsIAtom> valAtom = do_GetAtom(aValue);
+          nsCOMPtr<nsIAtom> valAtom = NS_Atomize(aValue);
           rv = enumInfo.mEnums[i].SetBaseValueAtom(valAtom, this);
           if (NS_FAILED(rv)) {
             enumInfo.Reset(i);
@@ -903,8 +904,9 @@ nsSVGElement::WalkContentStyleRules(nsRuleWalker* aRuleWalker)
     UpdateContentStyleRule();
 
   if (mContentStyleRule) {
-    mContentStyleRule->RuleMatched();
-    aRuleWalker->Forward(mContentStyleRule);
+    css::Declaration* declaration = mContentStyleRule->GetDeclaration();
+    declaration->SetImmutable();
+    aRuleWalker->Forward(declaration);
   }
 
   return NS_OK;
@@ -918,8 +920,12 @@ nsSVGElement::WalkAnimatedContentStyleRules(nsRuleWalker* aRuleWalker)
   // whether this is a "no-animation restyle". (This should match the check
   // in nsHTMLCSSStyleSheet::RulesMatching(), where we determine whether to
   // apply the SMILOverrideStyle.)
-  RestyleManager* restyleManager = aRuleWalker->PresContext()->RestyleManager();
-  if (!restyleManager->SkipAnimationRules()) {
+  RestyleManagerHandle restyleManager =
+    aRuleWalker->PresContext()->RestyleManager();
+  MOZ_ASSERT(restyleManager->IsGecko(),
+             "stylo: Servo-backed style system should not be calling "
+             "WalkAnimatedContentStyleRules");
+  if (!restyleManager->AsGecko()->SkipAnimationRules()) {
     // update/walk the animated content style rule.
     css::StyleRule* animContentStyleRule = GetAnimatedContentStyleRule();
     if (!animContentStyleRule) {
@@ -927,8 +933,9 @@ nsSVGElement::WalkAnimatedContentStyleRules(nsRuleWalker* aRuleWalker)
       animContentStyleRule = GetAnimatedContentStyleRule();
     }
     if (animContentStyleRule) {
-      animContentStyleRule->RuleMatched();
-      aRuleWalker->Forward(animContentStyleRule);
+      css::Declaration* declaration = animContentStyleRule->GetDeclaration();
+      declaration->SetImmutable();
+      aRuleWalker->Forward(declaration);
     }
   }
 }
@@ -988,14 +995,12 @@ nsSVGElement::sTextContentElementsMap[] = {
   // { &nsGkAtoms::baseline_shift },
   { &nsGkAtoms::direction },
   { &nsGkAtoms::dominant_baseline },
-  // { &nsGkAtoms::glyph_orientation_horizontal },
-  // { &nsGkAtoms::glyph_orientation_vertical },
-  // { &nsGkAtoms::kerning },
   { &nsGkAtoms::letter_spacing },
   { &nsGkAtoms::text_anchor },
   { &nsGkAtoms::text_decoration },
   { &nsGkAtoms::unicode_bidi },
   { &nsGkAtoms::word_spacing },
+  { &nsGkAtoms::writing_mode },
   { nullptr }
 };
 
@@ -1356,7 +1361,7 @@ nsSVGElement::UpdateAnimatedContentStyleRule()
                   SMIL_MAPPED_ATTR_STYLERULE_ATOM,
                   animContentStyleRule.get(),
                   ReleaseStyleRule);
-    unused << animContentStyleRule.forget();
+    Unused << animContentStyleRule.forget();
     MOZ_ASSERT(rv == NS_OK,
                "SetProperty failed (or overwrote something)");
   }
@@ -1552,8 +1557,8 @@ nsSVGElement::GetCtx() const
 }
 
 /* virtual */ gfxMatrix
-nsSVGElement::PrependLocalTransformsTo(const gfxMatrix &aMatrix,
-                                       TransformTypes aWhich) const
+nsSVGElement::PrependLocalTransformsTo(
+  const gfxMatrix &aMatrix, SVGTransformTypes aWhich) const
 {
   return aMatrix;
 }

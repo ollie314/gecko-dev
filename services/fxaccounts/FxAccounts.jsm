@@ -30,13 +30,18 @@ XPCOMUtils.defineLazyModuleGetter(this, "FxAccountsOAuthGrantClient",
 XPCOMUtils.defineLazyModuleGetter(this, "FxAccountsProfile",
   "resource://gre/modules/FxAccountsProfile.jsm");
 
+XPCOMUtils.defineLazyModuleGetter(this, "Utils",
+  "resource://services-sync/util.js");
+
 // All properties exposed by the public FxAccounts API.
 var publicProperties = [
   "accountStatus",
+  "checkVerificationStatus",
   "getAccountsClient",
   "getAccountsSignInURI",
   "getAccountsSignUpURI",
   "getAssertion",
+  "getDeviceId",
   "getKeys",
   "getSignedInUser",
   "getOAuthToken",
@@ -51,6 +56,8 @@ var publicProperties = [
   "resendVerificationEmail",
   "setSignedInUser",
   "signOut",
+  "updateUserAccountData",
+  "updateDeviceRegistration",
   "whenVerified"
 ];
 
@@ -130,7 +137,7 @@ AccountState.prototype = {
     });
   },
 
-  // Get user account data. Optionally specify explcit field names to fetch
+  // Get user account data. Optionally specify explicit field names to fetch
   // (and note that if you require an in-memory field you *must* specify the
   // field name(s).)
   getUserAccountData(fieldNames = null) {
@@ -310,6 +317,16 @@ this.FxAccounts = function (mockInternal) {
     external.internal = internal;
   }
 
+  if (!internal.fxaPushService) {
+    // internal.fxaPushService option is used in testing.
+    // Otherwise we load the service lazily.
+    XPCOMUtils.defineLazyGetter(internal, "fxaPushService", function () {
+      return Components.classes["@mozilla.org/fxaccounts/push;1"]
+        .getService(Components.interfaces.nsISupports)
+        .wrappedJSObject;
+    });
+  }
+
   // wait until after the mocks are setup before initializing.
   internal.initialize();
 
@@ -332,9 +349,12 @@ function FxAccountsInternal() {
  */
 FxAccountsInternal.prototype = {
   // The timeout (in ms) we use to poll for a verified mail for the first 2 mins.
-  VERIFICATION_POLL_TIMEOUT_INITIAL: 5000, // 5 seconds
+  VERIFICATION_POLL_TIMEOUT_INITIAL: 15000, // 15 seconds
   // And how often we poll after the first 2 mins.
-  VERIFICATION_POLL_TIMEOUT_SUBSEQUENT: 15000, // 15 seconds.
+  VERIFICATION_POLL_TIMEOUT_SUBSEQUENT: 30000, // 30 seconds.
+  // The current version of the device registration, we use this to re-register
+  // devices after we update what we send on device registration.
+  DEVICE_REGISTRATION_VERSION: 1,
 
   _fxAccountsClient: null,
 
@@ -399,8 +419,13 @@ FxAccountsInternal.prototype = {
   /**
    * Ask the server whether the user's email has been verified
    */
-  checkEmailStatus: function checkEmailStatus(sessionToken) {
-    return this.fxAccountsClient.recoveryEmailStatus(sessionToken);
+  checkEmailStatus: function checkEmailStatus(sessionToken, options = {}) {
+    if (!sessionToken) {
+      return Promise.reject(new Error(
+        "checkEmailStatus called without a session token"));
+    }
+    return this.fxAccountsClient.recoveryEmailStatus(sessionToken,
+      options).catch(error => this._handleTokenError(error));
   },
 
   /**
@@ -491,17 +516,49 @@ FxAccountsInternal.prototype = {
       // really something we should commit to? Why not let the write happen in
       // the background? Already does for updateAccountData ;)
       return currentAccountState.promiseInitialized.then(() => {
-        Services.telemetry.getHistogramById("FXA_CONFIGURED").add(1);
-        this.notifyObservers(ONLOGIN_NOTIFICATION);
+        // Starting point for polling if new user
         if (!this.isUserEmailVerified(credentials)) {
           this.startVerifiedCheck(credentials);
         }
+
+        return this.updateDeviceRegistration();
+      }).then(() => {
+        Services.telemetry.getHistogramById("FXA_CONFIGURED").add(1);
+        this.notifyObservers(ONLOGIN_NOTIFICATION);
       }).then(() => {
         return currentAccountState.resolve();
       });
     })
   },
 
+  /**
+   * Update account data for the currently signed in user.
+   *
+   * @param credentials
+   *        The credentials object containing the fields to be updated.
+   *        This object must contain |email| and |uid| fields and they must
+   *        match the currently signed in user.
+   */
+  updateUserAccountData(credentials) {
+    log.debug("updateUserAccountData called with fields", Object.keys(credentials));
+    if (logPII) {
+      log.debug("updateUserAccountData called with data", credentials);
+    }
+    let currentAccountState = this.currentAccountState;
+    return currentAccountState.promiseInitialized.then(() => {
+      return currentAccountState.getUserAccountData(["email", "uid"]);
+    }).then(existing => {
+      if (existing.email != credentials.email || existing.uid != credentials.uid) {
+        throw new Error("The specified credentials aren't for the current user");
+      }
+      // We need to nuke email and uid as storage will complain if we try and
+      // update them (even when the value is the same)
+      credentials = Cu.cloneInto(credentials, {}); // clone it first
+      delete credentials.email;
+      delete credentials.uid;
+      return currentAccountState.updateUserAccountData(credentials);
+    });
+  },
 
   /**
    * returns a promise that fires with the assertion.  If there is no verified
@@ -526,17 +583,40 @@ FxAccountsInternal.prototype = {
         return null;
       }
       if (!data.sessionToken) {
-        // can't get a signed certificate without a session token, but that
-        // should be impossible - make log noise about it.
-        log.error("getAssertion called without a session token!");
-        return null;
+        // can't get a signed certificate without a session token. This
+        // can happen if we request an assertion after clearing an invalid
+        // session token from storage.
+        throw this._error(ERROR_AUTH_ERROR, "getAssertion called without a session token");
       }
       return this.getKeypairAndCertificate(currentState).then(
         ({keyPair, certificate}) => {
           return this.getAssertionFromCert(data, keyPair, certificate, audience);
         }
       );
-    }).then(result => currentState.resolve(result));
+    }).catch(err =>
+      this._handleTokenError(err)
+    ).then(result => currentState.resolve(result));
+  },
+
+  getDeviceId() {
+    return this.currentAccountState.getUserAccountData()
+      .then(data => {
+        if (data) {
+          if (!data.deviceId || !data.deviceRegistrationVersion ||
+              data.deviceRegistrationVersion < this.DEVICE_REGISTRATION_VERSION) {
+            // There is no device id or the device registration is outdated.
+            // Either way, we should register the device with FxA
+            // before returning the id to the caller.
+            return this._registerOrUpdateDevice(data);
+          }
+
+          // Return the device id that we already registered with the server.
+          return data.deviceId;
+        }
+
+        // Without a signed-in user, there can be no device id.
+        return null;
+      });
   },
 
   /**
@@ -550,8 +630,13 @@ FxAccountsInternal.prototype = {
       // no signed-in user to begin with, this is probably best regarded as an
       // error.
       if (data) {
+        if (!data.sessionToken) {
+          return Promise.reject(new Error(
+            "resendVerificationEmail called without a session token"));
+        }
         this.pollEmailStatus(currentState, data.sessionToken, "start");
-        return this.fxAccountsClient.resendVerificationEmail(data.sessionToken);
+        return this.fxAccountsClient.resendVerificationEmail(
+          data.sessionToken).catch(err => this._handleTokenError(err));
       }
       throw new Error("Cannot resend verification email; no signed-in user");
     });
@@ -584,6 +669,23 @@ FxAccountsInternal.prototype = {
     });
   },
 
+  checkVerificationStatus: function() {
+    log.trace('checkVerificationStatus');
+    let currentState = this.currentAccountState;
+    return currentState.getUserAccountData().then(data => {
+      if (!data) {
+        log.trace("checkVerificationStatus - no user data");
+        return null;
+      }
+
+      // Always check the verification status, even if the local state indicates
+      // we're already verified. If the user changed their password, the check
+      // will fail, and we'll enter the reauth state.
+      log.trace("checkVerificationStatus - forcing verification status check");
+      return this.pollEmailStatus(currentState, data.sessionToken, "push");
+    });
+  },
+
   _destroyOAuthToken: function(tokenData) {
     let client = new FxAccountsOAuthGrantClient({
       serverURL: tokenData.server,
@@ -605,10 +707,15 @@ FxAccountsInternal.prototype = {
     let currentState = this.currentAccountState;
     let sessionToken;
     let tokensToRevoke;
+    let deviceId;
     return currentState.getUserAccountData().then(data => {
-      // Save the session token for use in the call to signOut below.
-      sessionToken = data && data.sessionToken;
-      tokensToRevoke = data && data.oauthTokens;
+      // Save the session token, tokens to revoke and the
+      // device id for use in the call to signOut below.
+      if (data) {
+        sessionToken = data.sessionToken;
+        tokensToRevoke = data.oauthTokens;
+        deviceId = data.deviceId;
+      }
       return this._signOutLocal();
     }).then(() => {
       // FxAccountsManager calls here, then does its own call
@@ -620,7 +727,10 @@ FxAccountsInternal.prototype = {
           // This can happen in the background and shouldn't block
           // the user from signing out. The server must tolerate
           // clients just disappearing, so this call should be best effort.
-          return this._signOutServer(sessionToken);
+          if (sessionToken) {
+            return this._signOutServer(sessionToken, deviceId);
+          }
+          log.warn("Missing session token; skipping remote sign out");
         }).catch(err => {
           log.error("Error during remote sign out of Firefox Accounts", err);
         }).then(() => {
@@ -652,11 +762,21 @@ FxAccountsInternal.prototype = {
     });
   },
 
-  _signOutServer: function signOutServer(sessionToken) {
-    // For now we assume the service being logged out from is Sync - we might
-    // need to revisit this when this FxA code is used in a context that
-    // isn't Sync.
-    return this.fxAccountsClient.signOut(sessionToken, {service: "sync"});
+  _signOutServer(sessionToken, deviceId) {
+    // For now we assume the service being logged out from is Sync, so
+    // we must tell the server to either destroy the device or sign out
+    // (if no device exists). We might need to revisit this when this
+    // FxA code is used in a context that isn't Sync.
+
+    const options = { service: "sync" };
+
+    if (deviceId) {
+      log.debug("destroying device and session");
+      return this.fxAccountsClient.signOutAndDestroyDevice(sessionToken, deviceId, options);
+    }
+
+    log.debug("destroying session");
+    return this.fxAccountsClient.signOut(sessionToken, options);
   },
 
   /**
@@ -709,7 +829,9 @@ FxAccountsInternal.prototype = {
         }
       }
       return currentState.whenKeysReadyDeferred.promise;
-    }).then(result => currentState.resolve(result));
+    }).catch(err =>
+      this._handleTokenError(err)
+    ).then(result => currentState.resolve(result));
    },
 
   fetchAndUnwrapKeys: function(keyFetchToken) {
@@ -960,7 +1082,7 @@ FxAccountsInternal.prototype = {
   // XXX - pollEmailStatus should maybe be on the AccountState object?
   pollEmailStatus: function pollEmailStatus(currentState, sessionToken, why) {
     log.debug("entering pollEmailStatus: " + why);
-    if (why == "start") {
+    if (why == "start" || why == "push") {
       if (this.currentTimer) {
         log.debug("pollEmailStatus starting while existing timer is running");
         clearTimeout(this.currentTimer);
@@ -983,7 +1105,9 @@ FxAccountsInternal.prototype = {
       }
     }
 
-    this.checkEmailStatus(sessionToken)
+    // We return a promise for testing only. Other callers can ignore this,
+    // since verification polling continues in the background.
+    return this.checkEmailStatus(sessionToken, { reason: why })
       .then((response) => {
         log.debug("checkEmailStatus -> " + JSON.stringify(response));
         if (response && response.verified) {
@@ -1014,8 +1138,16 @@ FxAccountsInternal.prototype = {
         // if the session token expired. Let's continue polling otherwise.
         if (!error || !error.code || error.code != 401) {
           this.pollEmailStatusAgain(currentState, sessionToken, timeoutMs);
+        } else {
+          let error = new Error("Verification status check failed");
+          this._rejectWhenVerified(currentState, error);
         }
       });
+  },
+
+  _rejectWhenVerified(currentState, error) {
+    currentState.whenVerifiedDeferred.reject(error);
+    delete currentState.whenVerifiedDeferred;
   },
 
   // Poll email status using truncated exponential back-off.
@@ -1023,9 +1155,8 @@ FxAccountsInternal.prototype = {
     let ageMs = Date.now() - this.pollStartDate;
     if (ageMs >= this.POLL_SESSION) {
       if (currentState.whenVerifiedDeferred) {
-        let error = new Error("User email verification timed out.")
-        currentState.whenVerifiedDeferred.reject(error);
-        delete currentState.whenVerifiedDeferred;
+        let error = new Error("User email verification timed out.");
+        this._rejectWhenVerified(currentState, error);
       }
       log.debug("polling session exceeded, giving up");
       return;
@@ -1284,7 +1415,8 @@ FxAccountsInternal.prototype = {
     } else if (aError.message &&
         (aError.message === "INVALID_PARAMETER" ||
         aError.message === "NO_ACCOUNT" ||
-        aError.message === "UNVERIFIED_ACCOUNT")) {
+        aError.message === "UNVERIFIED_ACCOUNT" ||
+        aError.message === "AUTH_ERROR")) {
       return aError;
     }
     return this._error(ERROR_UNKNOWN, aError);
@@ -1333,6 +1465,175 @@ FxAccountsInternal.prototype = {
         return currentState.reject(error);
       }
     ).catch(err => Promise.reject(this._errorToErrorClass(err)));
+  },
+
+  // Attempt to update the auth server with whatever device details are stored
+  // in the account data. Returns a promise that always resolves, never rejects.
+  // If the promise resolves to a value, that value is the device id.
+  updateDeviceRegistration() {
+    return this.getSignedInUser().then(signedInUser => {
+      if (signedInUser) {
+        return this._registerOrUpdateDevice(signedInUser);
+      }
+    }).catch(error => this._logErrorAndResetDeviceRegistrationVersion(error));
+  },
+
+  // If you change what we send to the FxA servers during device registration,
+  // you'll have to bump the DEVICE_REGISTRATION_VERSION number to force older
+  // devices to re-register when Firefox updates
+  _registerOrUpdateDevice(signedInUser) {
+    try {
+      // Allow tests to skip device registration because:
+      //   1. It makes remote requests to the auth server.
+      //   2. _getDeviceName does not work from xpcshell.
+      //   3. The B2G tests fail when attempting to import services-sync/util.js.
+      if (Services.prefs.getBoolPref("identity.fxaccounts.skipDeviceRegistration")) {
+        return Promise.resolve();
+      }
+    } catch(ignore) {}
+
+    if (!signedInUser.sessionToken) {
+      return Promise.reject(new Error(
+        "_registerOrUpdateDevice called without a session token"));
+    }
+
+    return this.fxaPushService.registerPushEndpoint().then(subscription => {
+      const deviceName = this._getDeviceName();
+      let deviceOptions = {};
+
+      // if we were able to obtain a subscription
+      if (subscription && subscription.endpoint) {
+        deviceOptions.pushCallback = subscription.endpoint;
+      }
+
+      if (signedInUser.deviceId) {
+        log.debug("updating existing device details");
+        return this.fxAccountsClient.updateDevice(
+          signedInUser.sessionToken, signedInUser.deviceId, deviceName, deviceOptions);
+      }
+
+      log.debug("registering new device details");
+      return this.fxAccountsClient.registerDevice(
+        signedInUser.sessionToken, deviceName, this._getDeviceType(), deviceOptions);
+    }).then(device =>
+      this.currentAccountState.updateUserAccountData({
+        deviceId: device.id,
+        deviceRegistrationVersion: this.DEVICE_REGISTRATION_VERSION
+      }).then(() => device.id)
+    ).catch(error => this._handleDeviceError(error, signedInUser.sessionToken));
+  },
+
+  _getDeviceName() {
+    return Utils.getDeviceName();
+  },
+
+  _getDeviceType() {
+    return Utils.getDeviceType();
+  },
+
+  _handleDeviceError(error, sessionToken) {
+    return Promise.resolve().then(() => {
+      if (error.code === 400) {
+        if (error.errno === ERRNO_UNKNOWN_DEVICE) {
+          return this._recoverFromUnknownDevice();
+        }
+
+        if (error.errno === ERRNO_DEVICE_SESSION_CONFLICT) {
+          return this._recoverFromDeviceSessionConflict(error, sessionToken);
+        }
+      }
+
+      // `_handleTokenError` re-throws the error.
+      return this._handleTokenError(error);
+    }).catch(error =>
+      this._logErrorAndResetDeviceRegistrationVersion(error)
+    ).catch(() => {});
+  },
+
+  _recoverFromUnknownDevice() {
+    // FxA did not recognise the device id. Handle it by clearing the device
+    // id on the account data. At next sync or next sign-in, registration is
+    // retried and should succeed.
+    log.warn("unknown device id, clearing the local device data");
+    return this.currentAccountState.updateUserAccountData({ deviceId: null })
+      .catch(error => this._logErrorAndResetDeviceRegistrationVersion(error));
+  },
+
+  _recoverFromDeviceSessionConflict(error, sessionToken) {
+    // FxA has already associated this session with a different device id.
+    // Perhaps we were beaten in a race to register. Handle the conflict:
+    //   1. Fetch the list of devices for the current user from FxA.
+    //   2. Look for ourselves in the list.
+    //   3. If we find a match, set the correct device id and device registration
+    //      version on the account data and return the correct device id. At next
+    //      sync or next sign-in, registration is retried and should succeed.
+    //   4. If we don't find a match, log the original error.
+    log.warn("device session conflict, attempting to ascertain the correct device id");
+    return this.fxAccountsClient.getDeviceList(sessionToken)
+      .then(devices => {
+        const matchingDevices = devices.filter(device => device.isCurrentDevice);
+        const length = matchingDevices.length;
+        if (length === 1) {
+          const deviceId = matchingDevices[0].id;
+          return this.currentAccountState.updateUserAccountData({
+            deviceId,
+            deviceRegistrationVersion: null
+          }).then(() => deviceId);
+        }
+        if (length > 1) {
+          log.error("insane server state, " + length + " devices for this session");
+        }
+        return this._logErrorAndResetDeviceRegistrationVersion(error);
+      }).catch(secondError => {
+        log.error("failed to recover from device-session conflict", secondError);
+        this._logErrorAndResetDeviceRegistrationVersion(error)
+      });
+  },
+
+  _logErrorAndResetDeviceRegistrationVersion(error) {
+    // Device registration should never cause other operations to fail.
+    // If we've reached this point, just log the error and reset the device
+    // registration version on the account data. At next sync or next sign-in,
+    // registration will be retried.
+    log.error("device registration failed", error);
+    return this.currentAccountState.updateUserAccountData({
+      deviceRegistrationVersion: null
+    }).catch(secondError => {
+      log.error(
+        "failed to reset the device registration version, device registration won't be retried",
+        secondError);
+    }).then(() => {});
+  },
+
+  _handleTokenError(err) {
+    if (!err || err.code != 401 || err.errno != ERRNO_INVALID_AUTH_TOKEN) {
+      throw err;
+    }
+    log.warn("recovering from invalid token error", err);
+    return this.accountStatus().then(exists => {
+      if (!exists) {
+        // Delete all local account data. Since the account no longer
+        // exists, we can skip the remote calls.
+        log.info("token invalidated because the account no longer exists");
+        return this.signOut(true);
+      }
+
+      // Delete all fields except those required for the user to
+      // reauthenticate.
+      log.info("clearing credentials to handle invalid token error");
+      let updateData = {};
+      let clearField = field => {
+        if (!FXA_PWDMGR_REAUTH_WHITELIST.has(field)) {
+          updateData[field] = null;
+        }
+      }
+      FXA_PWDMGR_PLAINTEXT_FIELDS.forEach(clearField);
+      FXA_PWDMGR_SECURE_FIELDS.forEach(clearField);
+      FXA_PWDMGR_MEMORY_FIELDS.forEach(clearField);
+
+      let currentState = this.currentAccountState;
+      return currentState.updateUserAccountData(updateData);
+    }).then(() => Promise.reject(err));
   },
 };
 

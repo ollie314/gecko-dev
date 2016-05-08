@@ -28,6 +28,22 @@
   border-bottom-width: 0;
 }
 
+.devtools-responsiveui-textinput {
+  -moz-appearance: none;
+  background: #333;
+  color: #fff;
+  border: 1px solid #111;
+  border-radius: 2px;
+  padding: 5px;
+  width: 200px;
+  margin: 0;
+}
+
+.devtools-responsiveui-textinput[attention] {
+  border-color: #38ace6;
+  background: rgba(56,172,230,0.4);
+}
+
 .devtools-responsiveui-menulist,
 .devtools-responsiveui-toolbarbutton {
   -moz-appearance: none;
@@ -111,7 +127,7 @@
   -moz-appearance: none;
   display: -moz-box;
   background-color: transparent;
-  list-style-image: url("chrome://devtools/skin/themes/images/dropmarker.svg");
+  list-style-image: url("chrome://devtools/skin/images/dropmarker.svg");
   -moz-box-align: center;
   border-width: 0;
   min-width: 16px;
@@ -137,7 +153,7 @@
 .devtools-responsiveui-toolbarbutton[type=menu] > .toolbarbutton-menu-dropmarker,
 .devtools-responsiveui-toolbarbutton[type=menu-button] > .toolbarbutton-menubutton-dropmarker {
   -moz-appearance: none !important;
-  list-style-image: url("chrome://devtools/skin/themes/images/dropmarker.svg");
+  list-style-image: url("chrome://devtools/skin/images/dropmarker.svg");
   -moz-box-align: center;
   padding: 0 3px;
 }
@@ -148,25 +164,21 @@
 }
 
 .devtools-responsiveui-close {
-  list-style-image: url("chrome://devtools/skin/themes/images/close.png");
+  list-style-image: url("chrome://devtools/skin/images/close.svg");
 }
 
 .devtools-responsiveui-rotate {
-  list-style-image: url("chrome://devtools/skin/themes/images/responsivemode/responsiveui-rotate.png");
+  list-style-image: url("chrome://devtools/skin/images/responsivemode/responsiveui-rotate.png");
 }
 
 @media (min-resolution: 1.1dppx) {
-  .devtools-responsiveui-close {
-    list-style-image: url("chrome://devtools/skin/themes/images/close@2x.png");
-  }
-
   .devtools-responsiveui-rotate {
-    list-style-image: url("chrome://devtools/skin/themes/images/responsivemode/responsiveui-rotate@2x.png");
+    list-style-image: url("chrome://devtools/skin/images/responsivemode/responsiveui-rotate@2x.png");
   }
 }
 
 .devtools-responsiveui-touch {
-  list-style-image: url("chrome://devtools/skin/themes/images/responsivemode/responsiveui-touch.png");
+  list-style-image: url("chrome://devtools/skin/images/responsivemode/responsiveui-touch.png");
   -moz-image-region: rect(0px,16px,16px,0px);
 }
 
@@ -176,7 +188,7 @@
 
 @media (min-resolution: 1.1dppx) {
   .devtools-responsiveui-touch {
-    list-style-image: url("chrome://devtools/skin/themes/images/responsivemode/responsiveui-touch@2x.png");
+    list-style-image: url("chrome://devtools/skin/images/responsivemode/responsiveui-touch@2x.png");
     -moz-image-region: rect(0px,32px,32px,0px);
   }
 
@@ -186,12 +198,12 @@
 }
 
 .devtools-responsiveui-screenshot {
-  list-style-image: url("chrome://devtools/skin/themes/images/responsivemode/responsiveui-screenshot.png");
+  list-style-image: url("chrome://devtools/skin/images/responsivemode/responsiveui-screenshot.png");
 }
 
 @media (min-resolution: 1.1dppx) {
   .devtools-responsiveui-screenshot {
-    list-style-image: url("chrome://devtools/skin/themes/images/responsivemode/responsiveui-screenshot@2x.png");
+    list-style-image: url("chrome://devtools/skin/images/responsivemode/responsiveui-screenshot@2x.png");
   }
 }
 
@@ -201,7 +213,7 @@
   cursor: ew-resize;
   transform: translate(12px, -12px);
   background-size: cover;
-  background-image: url("chrome://devtools/skin/themes/images/responsivemode/responsive-vertical-resizer.png");
+  background-image: url("chrome://devtools/skin/images/responsivemode/responsive-vertical-resizer.png");
 }
 
 .devtools-responsiveui-resizebarH {
@@ -210,7 +222,7 @@
   cursor: ns-resize;
   transform: translate(-12px, 12px);
   background-size: cover;
-  background-image: url("chrome://devtools/skin/themes/images/responsivemode/responsive-horizontal-resizer.png");
+  background-image: url("chrome://devtools/skin/images/responsivemode/responsive-horizontal-resizer.png");
 }
 
 .devtools-responsiveui-resizehandle {
@@ -219,7 +231,7 @@
   cursor: se-resize;
   transform: translate(12px, 12px);
   background-size: cover;
-  background-image: url("chrome://devtools/skin/themes/images/responsivemode/responsive-se-resizer.png");
+  background-image: url("chrome://devtools/skin/images/responsivemode/responsive-se-resizer.png");
 }
 
 /* FxOS custom mode with additional buttons and phone look'n feel */
@@ -267,7 +279,7 @@
   -moz-user-focus: ignore;
   width: 40px;
   height: 30px;
-  list-style-image: url("chrome://devtools/skin/themes/images/responsivemode/responsiveui-home.png");
+  list-style-image: url("chrome://devtools/skin/images/responsivemode/responsiveui-home.png");
 }
 
 .devtools-responsiveui-sleep-button {
@@ -326,14 +338,14 @@
 
 @media (min-resolution: 1.1dppx) {
   .devtools-responsiveui-resizebarV {
-    background-image: url("chrome://devtools/skin/themes/images/responsivemode/responsive-vertical-resizer@2x.png");
+    background-image: url("chrome://devtools/skin/images/responsivemode/responsive-vertical-resizer@2x.png");
   }
 
   .devtools-responsiveui-resizebarH {
-    background-image: url("chrome://devtools/skin/themes/images/responsivemode/responsive-horizontal-resizer@2x.png");
+    background-image: url("chrome://devtools/skin/images/responsivemode/responsive-horizontal-resizer@2x.png");
   }
 
   .devtools-responsiveui-resizehandle {
-    background-image: url("chrome://devtools/skin/themes/images/responsivemode/responsive-se-resizer@2x.png");
+    background-image: url("chrome://devtools/skin/images/responsivemode/responsive-se-resizer@2x.png");
   }
 }

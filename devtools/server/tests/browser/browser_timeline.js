@@ -13,7 +13,8 @@
 const {TimelineFront} = require("devtools/server/actors/timeline");
 
 add_task(function*() {
-  let doc = yield addTab("data:text/html;charset=utf-8,mop");
+  let browser = yield addTab("data:text/html;charset=utf-8,mop");
+  let doc = browser.contentDocument;
 
   initDebuggerServer();
   let client = new DebuggerClient(DebuggerServer.connectPipe());
@@ -29,7 +30,7 @@ add_task(function*() {
   let forceSyncReflow = doc.body.innerHeight;
 
   info("Start recording");
-  yield front.start();
+  yield front.start({ withMarkers: true });
 
   isActive = yield front.isRecording();
   ok(isActive, "The TimelineFront is now recording");

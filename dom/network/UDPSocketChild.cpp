@@ -20,7 +20,7 @@ using mozilla::net::gNeckoChild;
 //
 // set NSPR_LOG_MODULES=UDPSocket:5
 //
-extern PRLogModuleInfo *gUDPSocketLog;
+extern mozilla::LazyLogModule gUDPSocketLog;
 #define UDPSOCKET_LOG(args)     MOZ_LOG(gUDPSocketLog, mozilla::LogLevel::Debug, args)
 #define UDPSOCKET_LOG_ENABLED() MOZ_LOG_TEST(gUDPSocketLog, mozilla::LogLevel::Debug)
 
@@ -171,7 +171,9 @@ UDPSocketChild::Bind(nsIUDPSocketInternal* aSocket,
                      const nsACString& aHost,
                      uint16_t aPort,
                      bool aAddressReuse,
-                     bool aLoopback)
+                     bool aLoopback,
+                     uint32_t recvBufferSize,
+                     uint32_t sendBufferSize)
 {
   UDPSOCKET_LOG(("%s: %s:%u", __FUNCTION__, PromiseFlatCString(aHost).get(), aPort));
 
@@ -190,7 +192,20 @@ UDPSocketChild::Bind(nsIUDPSocketInternal* aSocket,
                                            mFilterName);
   }
 
-  SendBind(UDPAddressInfo(nsCString(aHost), aPort), aAddressReuse, aLoopback);
+  SendBind(UDPAddressInfo(nsCString(aHost), aPort), aAddressReuse, aLoopback,
+           recvBufferSize, sendBufferSize);
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+UDPSocketChild::Connect(nsIUDPSocketInternal* aSocket, const nsACString & aHost, uint16_t aPort)
+{
+  UDPSOCKET_LOG(("%s: %s:%u", __FUNCTION__, PromiseFlatCString(aHost).get(), aPort));
+
+  mSocket = aSocket;
+
+  SendConnect(UDPAddressInfo(nsCString(aHost), aPort));
+
   return NS_OK;
 }
 
@@ -339,7 +354,21 @@ UDPSocketChild::RecvCallbackOpened(const UDPAddressInfo& aAddressInfo)
 
   UDPSOCKET_LOG(("%s: %s:%u", __FUNCTION__, mLocalAddress.get(), mLocalPort));
   nsresult rv = mSocket->CallListenerOpened();
-  mozilla::unused << NS_WARN_IF(NS_FAILED(rv));
+  mozilla::Unused << NS_WARN_IF(NS_FAILED(rv));
+
+  return true;
+}
+
+// PUDPSocketChild Methods
+bool
+UDPSocketChild::RecvCallbackConnected(const UDPAddressInfo& aAddressInfo)
+{
+  mLocalAddress = aAddressInfo.addr();
+  mLocalPort = aAddressInfo.port();
+
+  UDPSOCKET_LOG(("%s: %s:%u", __FUNCTION__, mLocalAddress.get(), mLocalPort));
+  nsresult rv = mSocket->CallListenerConnected();
+  mozilla::Unused << NS_WARN_IF(NS_FAILED(rv));
 
   return true;
 }
@@ -348,7 +377,7 @@ bool
 UDPSocketChild::RecvCallbackClosed()
 {
   nsresult rv = mSocket->CallListenerClosed();
-  mozilla::unused << NS_WARN_IF(NS_FAILED(rv));
+  mozilla::Unused << NS_WARN_IF(NS_FAILED(rv));
 
   return true;
 }
@@ -361,7 +390,7 @@ UDPSocketChild::RecvCallbackReceivedData(const UDPAddressInfo& aAddressInfo,
                  aAddressInfo.addr().get(), aAddressInfo.port(), aData.Length()));
   nsresult rv = mSocket->CallListenerReceivedData(aAddressInfo.addr(), aAddressInfo.port(),
                                                   aData.Elements(), aData.Length());
-  mozilla::unused << NS_WARN_IF(NS_FAILED(rv));
+  mozilla::Unused << NS_WARN_IF(NS_FAILED(rv));
 
   return true;
 }
@@ -373,7 +402,7 @@ UDPSocketChild::RecvCallbackError(const nsCString& aMessage,
 {
   UDPSOCKET_LOG(("%s: %s:%s:%u", __FUNCTION__, aMessage.get(), aFilename.get(), aLineNumber));
   nsresult rv = mSocket->CallListenerError(aMessage, aFilename, aLineNumber);
-  mozilla::unused << NS_WARN_IF(NS_FAILED(rv));
+  mozilla::Unused << NS_WARN_IF(NS_FAILED(rv));
 
   return true;
 }

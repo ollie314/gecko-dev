@@ -2,10 +2,10 @@
 # waitpid to dispatch tasks.  This avoids several deadlocks that are possible
 # with fork/exec + threads + Python.
 
-import errno, os, select
+import errno, os, select, sys
 from datetime import datetime, timedelta
 from progressbar import ProgressBar
-from results import NullTestOutput, TestOutput
+from results import NullTestOutput, TestOutput, escape_cmdline
 
 class Task(object):
     def __init__(self, test, prefix, pid, stdout, stderr):
@@ -18,8 +18,15 @@ class Task(object):
         self.out = []
         self.err = []
 
-def spawn_test(test, prefix, passthrough=False):
+def spawn_test(test, prefix, passthrough, run_skipped, show_cmd):
     """Spawn one child, return a task struct."""
+    if not test.enable and not run_skipped:
+        return None
+
+    cmd = test.get_command(prefix)
+    if show_cmd:
+        print(escape_cmdline(cmd))
+
     if not passthrough:
         (rout, wout) = os.pipe()
         (rerr, werr) = os.pipe()
@@ -39,7 +46,6 @@ def spawn_test(test, prefix, passthrough=False):
         os.dup2(wout, 1)
         os.dup2(werr, 2)
 
-    cmd = test.get_command(prefix)
     os.execvp(cmd[0], cmd)
 
 def total_seconds(td):
@@ -66,6 +72,16 @@ def get_max_wait(tasks, timeout):
             remaining = task.start + timeout_delta - now
             if remaining < wait:
                 wait = remaining
+
+    if wait > ProgressBar.update_granularity():
+        print >> sys.stderr, "Inconsistent return value in get_max_wait:"
+        for task in tasks:
+            print >> sys.stderr, "\tstart={} elapsed={} remaining={}".format(\
+                    task.start, total_seconds(now - task.start), \
+                    total_seconds(task.start + timeout_delta - now))
+        print >> sys.stderr, "wait={} total_seconds(wait)={} timeout={} \
+        update_granularity={} now={}".format(wait, total_seconds(wait), \
+                timeout, total_seconds(ProgressBar.update_granularity()), now)
 
     # Return the wait time in seconds, clamped to zero.
     return max(total_seconds(wait), 0)
@@ -104,7 +120,13 @@ def read_input(tasks, timeout):
         # us to respond immediately and not leave cores idle.
         exlist.append(t.stdout)
 
-    readable, _, _ = select.select(rlist, [], exlist, timeout)
+    readable = []
+    try:
+        readable, _, _ = select.select(rlist, [], exlist, timeout)
+    except OverflowError as e:
+        print >> sys.stderr, "timeout value", timeout
+        raise
+
     for fd in readable:
         flush_input(fd, outmap[fd])
 
@@ -194,10 +216,12 @@ def run_all_tests(tests, prefix, pb, options):
     while len(tests) or len(tasks):
         while len(tests) and len(tasks) < options.worker_count:
             test = tests.pop()
-            if not test.enable and not options.run_skipped:
-                yield NullTestOutput(test)
+            task = spawn_test(test, prefix,
+                    options.passthrough, options.run_skipped, options.show_cmd)
+            if task:
+                tasks.append(task)
             else:
-                tasks.append(spawn_test(test, prefix, options.passthrough))
+                yield NullTestOutput(test)
 
         timeout = get_max_wait(tasks, options.timeout)
         read_input(tasks, timeout)

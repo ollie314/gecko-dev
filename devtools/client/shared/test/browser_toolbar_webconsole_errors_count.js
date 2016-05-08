@@ -6,11 +6,8 @@
 function test() {
   const TEST_URI = TEST_URI_ROOT + "browser_toolbar_webconsole_errors_count.html";
 
-  let gDevTools = Cu.import("resource://devtools/client/framework/gDevTools.jsm",
-                             {}).gDevTools;
 
-  let webconsole = document.getElementById("developer-toolbar-toolbox-button");
-  let tab1, tab2;
+  let tab1, tab2, webconsole;
 
   Services.prefs.setBoolPref("javascript.options.strict", true);
 
@@ -19,9 +16,9 @@ function test() {
   });
 
   ignoreAllUncaughtExceptions();
-  addTab(TEST_URI, openToolbar);
+  addTab(TEST_URI).then(openToolbar);
 
-  function openToolbar(browser, tab) {
+  function openToolbar(tab) {
     tab1 = tab;
     ignoreAllUncaughtExceptions(false);
 
@@ -37,6 +34,7 @@ function test() {
 
   function onOpenToolbar() {
     ok(DeveloperToolbar.visible, "DeveloperToolbar is visible");
+    webconsole = document.getElementById("developer-toolbar-toolbox-button");
 
     waitForButtonUpdate({
       name: "web console button shows page errors",
@@ -62,12 +60,12 @@ function test() {
       warnings: 1,
       callback: () => {
         ignoreAllUncaughtExceptions();
-        addTab(TEST_URI, onOpenSecondTab);
+        addTab(TEST_URI).then(onOpenSecondTab);
       },
     });
   }
 
-  function onOpenSecondTab(browser, tab) {
+  function onOpenSecondTab(tab) {
     tab2 = tab;
 
     ignoreAllUncaughtExceptions(false);

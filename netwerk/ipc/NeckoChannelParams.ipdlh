@@ -12,6 +12,7 @@ include URIParams;
 include InputStreamParams;
 include PBackgroundSharedTypes;
 
+using mozilla::NeckoOriginAttributes from "mozilla/ipc/BackgroundUtils.h";
 using struct mozilla::void_t from "ipc/IPCMessageUtils.h";
 using RequestHeaderTuples from "mozilla/net/PHttpChannelParams.h";
 using struct nsHttpAtom from "nsHttp.h";
@@ -26,18 +27,26 @@ namespace net {
 
 struct LoadInfoArgs
 {
-  PrincipalInfo    requestingPrincipalInfo;
-  PrincipalInfo    triggeringPrincipalInfo;
-  uint32_t         securityFlags;
-  uint32_t         contentPolicyType;
-  bool             upgradeInsecureRequests;
-  uint64_t         innerWindowID;
-  uint64_t         outerWindowID;
-  uint64_t         parentOuterWindowID;
-  bool             enforceSecurity;
-  bool             initialSecurityCheckDone;
-  OriginAttributes originAttributes;
-  PrincipalInfo[]  redirectChain;
+  OptionalPrincipalInfo requestingPrincipalInfo;
+  PrincipalInfo         triggeringPrincipalInfo;
+  uint32_t              securityFlags;
+  uint32_t              contentPolicyType;
+  uint32_t              tainting;
+  bool                  upgradeInsecureRequests;
+  bool                  verifySignedContent;
+  bool                  enforceSRI;
+  uint64_t              innerWindowID;
+  uint64_t              outerWindowID;
+  uint64_t              parentOuterWindowID;
+  bool                  enforceSecurity;
+  bool                  initialSecurityCheckDone;
+  bool                  isInThirdPartyContext;
+  NeckoOriginAttributes originAttributes;
+  PrincipalInfo[]       redirectChainIncludingInternalRedirects;
+  PrincipalInfo[]       redirectChain;
+  nsCString[]           corsUnsafeHeaders;
+  bool                  forcePreflight;
+  bool                  isPreflight;
 };
 
 /**
@@ -61,8 +70,6 @@ union OptionalHttpResponseHead
 
 struct CorsPreflightArgs
 {
-  bool          withCredentials;
-  PrincipalInfo preflightPrincipal;
   nsCString[]   unsafeHeaders;
 };
 
@@ -107,9 +114,13 @@ struct HttpChannelOpenArgs
   OptionalHttpResponseHead    synthesizedResponseHead;
   nsCString                   synthesizedSecurityInfoSerialization;
   uint32_t                    cacheKey;
-  nsCString                   schedulingContextID;
+  nsCString                   requestContextID;
   OptionalCorsPreflightArgs   preflightArgs;
   uint32_t                    initialRwin;
+  bool                        blockAuthPrompt;
+  bool                        suspendAfterSynthesizeResponse;
+  bool                        allowStaleCacheContent;
+  nsCString                   contentTypeHint;
 };
 
 struct HttpChannelConnectArgs

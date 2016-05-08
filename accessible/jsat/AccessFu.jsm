@@ -46,7 +46,7 @@ this.AccessFu = { // jshint ignore:line
           this._enableOrDisable();
         });
         aWindow.navigator.mozSettings.addObserver(
-          SCREENREADER_SETTING, this.handleEvent.bind(this));
+          SCREENREADER_SETTING, this.handleEvent);
       }
     }
 
@@ -68,10 +68,19 @@ this.AccessFu = { // jshint ignore:line
       Services.obs.removeObserver(this, 'Accessibility:Settings');
     } else if (Utils.win.navigator.mozSettings) {
       Utils.win.navigator.mozSettings.removeObserver(
-        SCREENREADER_SETTING, this.handleEvent.bind(this));
+        SCREENREADER_SETTING, this.handleEvent);
     }
     delete this._activatePref;
     Utils.uninit();
+  },
+
+  /**
+   * A lazy getter for event handler that binds the scope to AccessFu object.
+   */
+  get handleEvent() {
+    delete this.handleEvent;
+    this.handleEvent = this._handleEvent.bind(this);
+    return this.handleEvent;
   },
 
   /**
@@ -87,8 +96,6 @@ this.AccessFu = { // jshint ignore:line
     Cu.import('resource://gre/modules/accessibility/Utils.jsm');
     Cu.import('resource://gre/modules/accessibility/PointerAdapter.jsm');
     Cu.import('resource://gre/modules/accessibility/Presentation.jsm');
-
-    Logger.info('Enabled');
 
     for (let mm of Utils.AllMessageManagers) {
       this._addMessageListeners(mm);
@@ -146,9 +153,7 @@ this.AccessFu = { // jshint ignore:line
       delete this.readyCallback;
     }
 
-    if (Utils.MozBuildApp !== 'mobile/android') {
-      this.announce('screenReaderStarted');
-    }
+    Logger.info('AccessFu:Enabled');
   },
 
   /**
@@ -161,13 +166,7 @@ this.AccessFu = { // jshint ignore:line
 
     this._enabled = false;
 
-    Logger.info('Disabled');
-
     Utils.win.document.removeChild(this.stylesheet.get());
-
-    if (Utils.MozBuildApp !== 'mobile/android') {
-      this.announce('screenReaderStopped');
-    }
 
     for (let mm of Utils.AllMessageManagers) {
       mm.sendAsyncMessage('AccessFu:Stop');
@@ -200,6 +199,8 @@ this.AccessFu = { // jshint ignore:line
       this.doneCallback();
       delete this.doneCallback;
     }
+
+    Logger.info('AccessFu:Disabled');
   },
 
   _enableOrDisable: function _enableOrDisable() {
@@ -343,7 +344,7 @@ this.AccessFu = { // jshint ignore:line
       {
         // Ignore notifications that aren't from a BrowserOrApp
         let frameLoader = aSubject.QueryInterface(Ci.nsIFrameLoader);
-        if (!frameLoader.ownerIsBrowserOrAppFrame) {
+        if (!frameLoader.ownerIsMozBrowserOrAppFrame) {
           return;
         }
         this._handleMessageManager(frameLoader.messageManager);
@@ -352,7 +353,7 @@ this.AccessFu = { // jshint ignore:line
     }
   },
 
-  handleEvent: function handleEvent(aEvent) {
+  _handleEvent: function _handleEvent(aEvent) {
     switch (aEvent.type) {
       case 'TabOpen':
       {
@@ -522,9 +523,10 @@ var Output = {
 
   stop: function stop() {
     if (this.highlightBox) {
-      let doc = Utils.win.document;
-      (doc.body || doc.documentElement).documentElement.removeChild(
-        this.highlightBox.get());
+      let highlightBox = this.highlightBox.get();
+      if (highlightBox) {
+        highlightBox.remove();
+      }
       delete this.highlightBox;
     }
   },

@@ -22,7 +22,7 @@ namespace dom {
  * CameraClosedListenerProxy and CameraClosedMessage
  */
 template<class T>
-class CameraClosedMessage : public nsRunnable
+class CameraClosedMessage : public Runnable
 {
 public:
   explicit CameraClosedMessage(nsMainThreadPtrHandle<T> aListener)
@@ -317,7 +317,7 @@ CameraCapabilities::HasSupport(JSContext* aCx, JSObject* aGlobal)
   return Navigator::HasCameraSupport(aCx, aGlobal);
 }
 
-CameraCapabilities::CameraCapabilities(nsPIDOMWindow* aWindow,
+CameraCapabilities::CameraCapabilities(nsPIDOMWindowInner* aWindow,
                                        ICameraControl* aCameraControl)
   : mWindow(aWindow)
   , mCameraControl(aCameraControl)

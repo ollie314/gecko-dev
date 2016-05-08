@@ -19,6 +19,7 @@
 #include "nsISupportsImpl.h" // For mozilla::ThreadSafeAutoRefCnt
 #include "mozilla/FileUtils.h"
 #include "mozilla/FileLocation.h"
+#include "mozilla/UniquePtr.h"
 
 #ifdef HAVE_SEH_EXCEPTIONS
 #define MOZ_WIN_MEM_TRY_BEGIN __try {
@@ -26,7 +27,7 @@
   __except(GetExceptionCode()==EXCEPTION_IN_PAGE_ERROR ?            \
            EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH)   \
   {                                                                 \
-    NS_WARNING("EXCEPTION_IN_PAGE_ERROR in " __FUNCTION__);         \
+    NS_WARNING("unexpected EXCEPTION_IN_PAGE_ERROR");               \
     cmd;                                                            \
   }
 #else
@@ -101,6 +102,8 @@ class nsZipArchive final
   ~nsZipArchive();
 
 public:
+  static const char* sFileCorruptedReason;
+
   /** constructing does not open the archive. See OpenArchive() */
   nsZipArchive();
 
@@ -339,7 +342,7 @@ public:
 
 protected:
   RefPtr<nsZipHandle> mZipHandle;
-  nsAutoArrayPtr<uint8_t> mAutoBuf;
+  mozilla::UniquePtr<uint8_t[]> mAutoBuf;
   uint8_t *mReturnBuf;
   uint32_t mReadlen;
 };
@@ -347,6 +350,10 @@ protected:
 template <class T>
 class nsZipItemPtr final : public nsZipItemPtr_base
 {
+  static_assert(sizeof(T) == sizeof(char),
+                "This class cannot be used with larger T without re-examining"
+                " a number of assumptions.");
+
 public:
   nsZipItemPtr(nsZipArchive *aZip, const char *aEntryName, bool doCRC = false) : nsZipItemPtr_base(aZip, aEntryName, doCRC) { }
   /**
@@ -366,16 +373,16 @@ public:
    * Copy member into a new buffer if uncompressed.
    * @return a buffer with whole zip member. It is caller's responsibility to free() it.
    */
-  T* Forget() {
+  mozilla::UniquePtr<T[]> Forget() {
     if (!mReturnBuf)
       return nullptr;
     // In uncompressed mmap case, give up buffer
     if (mAutoBuf.get() == mReturnBuf) {
       mReturnBuf = nullptr;
-      return (T*) mAutoBuf.forget();
+      return mozilla::UniquePtr<T[]>(reinterpret_cast<T*>(mAutoBuf.release()));
     }
-    T *ret = (T*) malloc(Length());
-    memcpy(ret, mReturnBuf, Length());
+    auto ret = mozilla::MakeUnique<T[]>(Length());
+    memcpy(ret.get(), mReturnBuf, Length());
     mReturnBuf = nullptr;
     return ret;
   }
@@ -401,19 +408,27 @@ public:
   nsresult GetNSPRFileDesc(PRFileDesc** aNSPRFileDesc);
 
 protected:
-  const uint8_t * mFileData; /* pointer to mmaped file */
-  uint32_t        mLen;      /* length of file and memory mapped area */
+  const uint8_t * mFileData; /* pointer to zip data */
+  uint32_t        mLen;      /* length of zip data */
   mozilla::FileLocation mFile; /* source file if any, for logging */
 
 private:
   nsZipHandle();
   ~nsZipHandle();
 
+  nsresult findDataStart();
+
   PRFileMap *                       mMap;    /* nspr datastructure for mmap */
   mozilla::AutoFDClose              mNSPRFileDesc;
   nsAutoPtr<nsZipItemPtr<uint8_t> > mBuf;
   mozilla::ThreadSafeAutoRefCnt     mRefCnt; /* ref count */
   NS_DECL_OWNINGTHREAD
+
+  const uint8_t * mFileStart; /* pointer to mmaped file */
+  uint32_t        mTotalLen;  /* total length of the mmaped file */
+
+  /* Magic number for CRX type expressed in Big Endian since it is a literal */
+  static const uint32_t kCRXMagic = 0x34327243;
 };
 
 nsresult gZlibInit(z_stream *zs);

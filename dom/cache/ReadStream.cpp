@@ -20,7 +20,7 @@ namespace mozilla {
 namespace dom {
 namespace cache {
 
-using mozilla::unused;
+using mozilla::Unused;
 using mozilla::ipc::FileDescriptor;
 
 // ----------------------------------------------------------------------------
@@ -117,7 +117,7 @@ private:
 // be done on the thread associated with the PBackground actor.  Must be
 // cancelable to execute on Worker threads (which can occur when the
 // ReadStream is constructed on a child process Worker thread).
-class ReadStream::Inner::NoteClosedRunnable final : public nsCancelableRunnable
+class ReadStream::Inner::NoteClosedRunnable final : public CancelableRunnable
 {
 public:
   explicit NoteClosedRunnable(ReadStream::Inner* aStream)
@@ -133,7 +133,7 @@ public:
 
   // Note, we must proceed with the Run() method since our actor will not
   // clean itself up until we note that the stream is closed.
-  NS_IMETHOD Cancel()
+  nsresult Cancel()
   {
     Run();
     return NS_OK;
@@ -152,7 +152,7 @@ private:
 // it on the thread associated with the PBackground actor.  Must be
 // cancelable to execute on Worker threads (which can occur when the
 // ReadStream is constructed on a child process Worker thread).
-class ReadStream::Inner::ForgetRunnable final : public nsCancelableRunnable
+class ReadStream::Inner::ForgetRunnable final : public CancelableRunnable
 {
 public:
   explicit ForgetRunnable(ReadStream::Inner* aStream)
@@ -168,7 +168,7 @@ public:
 
   // Note, we must proceed with the Run() method so that we properly
   // call RemoveListener on the actor.
-  NS_IMETHOD Cancel()
+  nsresult Cancel()
   {
     Run();
     return NS_OK;
@@ -222,7 +222,7 @@ ReadStream::Inner::Serialize(CacheReadStream* aReadStreamOut)
   aReadStreamOut->id() = mId;
   mControl->SerializeControl(aReadStreamOut);
 
-  nsAutoTArray<FileDescriptor, 4> fds;
+  AutoTArray<FileDescriptor, 4> fds;
   SerializeInputStream(mStream, aReadStreamOut->params(), fds);
 
   mControl->SerializeFds(aReadStreamOut, fds);
@@ -358,8 +358,8 @@ ReadStream::Inner::NoteClosed()
   }
 
   nsCOMPtr<nsIRunnable> runnable = new NoteClosedRunnable(this);
-  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(
-    mOwningThread->Dispatch(runnable, nsIThread::DISPATCH_NORMAL)));
+  MOZ_ALWAYS_SUCCEEDS(
+    mOwningThread->Dispatch(runnable, nsIThread::DISPATCH_NORMAL));
 }
 
 void
@@ -376,8 +376,8 @@ ReadStream::Inner::Forget()
   }
 
   nsCOMPtr<nsIRunnable> runnable = new ForgetRunnable(this);
-  MOZ_ALWAYS_TRUE(NS_SUCCEEDED(
-    mOwningThread->Dispatch(runnable, nsIThread::DISPATCH_NORMAL)));
+  MOZ_ALWAYS_SUCCEEDS(
+    mOwningThread->Dispatch(runnable, nsIThread::DISPATCH_NORMAL));
 }
 
 void
@@ -451,7 +451,7 @@ ReadStream::Create(const CacheReadStream& aReadStream)
   }
   MOZ_ASSERT(control);
 
-  nsAutoTArray<FileDescriptor, 4> fds;
+  AutoTArray<FileDescriptor, 4> fds;
   control->DeserializeFds(aReadStream, fds);
 
   nsCOMPtr<nsIInputStream> stream =

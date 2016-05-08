@@ -29,23 +29,18 @@
 #include "mozilla/BasePrincipal.h"
 #include "nsProxyRelease.h"
 #include "nsContentSecurityManager.h"
+#include "nsContentUtils.h"
 
 typedef mozilla::net::LoadContextInfo LoadContextInfo;
 
 // Must release mChannel on the main thread
-class nsWyciwygAsyncEvent : public nsRunnable {
+class nsWyciwygAsyncEvent : public mozilla::Runnable {
 public:
   explicit nsWyciwygAsyncEvent(nsWyciwygChannel *aChannel) : mChannel(aChannel) {}
 
   ~nsWyciwygAsyncEvent()
   {
-    nsCOMPtr<nsIThread> thread = do_GetMainThread();
-    NS_WARN_IF_FALSE(thread, "Couldn't get the main thread!");
-    if (thread) {
-      nsIWyciwygChannel *chan = static_cast<nsIWyciwygChannel *>(mChannel);
-      mozilla::unused << mChannel.forget();
-      NS_ProxyRelease(thread, chan);
-    }
+    NS_ReleaseOnMainThread(mChannel.forget());
   }
 protected:
   RefPtr<nsWyciwygChannel> mChannel;
@@ -108,12 +103,7 @@ nsWyciwygChannel::nsWyciwygChannel()
 nsWyciwygChannel::~nsWyciwygChannel() 
 {
   if (mLoadInfo) {
-    nsCOMPtr<nsIThread> mainThread;
-    NS_GetMainThread(getter_AddRefs(mainThread));
-
-    nsILoadInfo *forgetableLoadInfo;
-    mLoadInfo.forget(&forgetableLoadInfo);
-    NS_ProxyRelease(mainThread, forgetableLoadInfo, false);
+    NS_ReleaseOnMainThread(mLoadInfo.forget(), false);
   }
 }
 
@@ -231,7 +221,7 @@ nsWyciwygChannel::SetLoadGroup(nsILoadGroup* aLoadGroup)
                                 mLoadGroup,
                                 NS_GET_IID(nsIProgressEventSink),
                                 getter_AddRefs(mProgressSink));
-  mPrivateBrowsing = NS_UsePrivateBrowsing(this);
+  UpdatePrivateBrowsing();
   NS_GetOriginAttributes(this, mOriginAttributes);
 
   return NS_OK;
@@ -328,7 +318,7 @@ nsWyciwygChannel::SetNotificationCallbacks(nsIInterfaceRequestor* aNotificationC
                                 NS_GET_IID(nsIProgressEventSink),
                                 getter_AddRefs(mProgressSink));
 
-  mPrivateBrowsing = NS_UsePrivateBrowsing(this);
+  UpdatePrivateBrowsing();
   NS_GetOriginAttributes(this, mOriginAttributes);
 
   return NS_OK;
@@ -431,8 +421,11 @@ nsWyciwygChannel::Open2(nsIInputStream** aStream)
 NS_IMETHODIMP
 nsWyciwygChannel::AsyncOpen(nsIStreamListener *listener, nsISupports *ctx)
 {
-  MOZ_ASSERT(!mLoadInfo || mLoadInfo->GetSecurityMode() == 0 ||
-             mLoadInfo->GetInitialSecurityCheckDone(),
+  MOZ_ASSERT(!mLoadInfo ||
+             mLoadInfo->GetSecurityMode() == 0 ||
+             mLoadInfo->GetInitialSecurityCheckDone() ||
+             (mLoadInfo->GetSecurityMode() == nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL &&
+              nsContentUtils::IsSystemPrincipal(mLoadInfo->LoadingPrincipal())),
              "security flags in loadInfo but asyncOpen2() not called");
 
   LOG(("nsWyciwygChannel::AsyncOpen [this=%p]\n", this));
@@ -707,7 +700,7 @@ nsWyciwygChannel::OnCacheEntryAvailable(nsICacheEntry *aCacheEntry,
     if (!aNew) {
       // Since OnCacheEntryAvailable can be called directly from AsyncOpen
       // we must dispatch.
-      NS_DispatchToCurrentThread(NS_NewRunnableMethod(
+      NS_DispatchToCurrentThread(mozilla::NewRunnableMethod(
         this, &nsWyciwygChannel::NotifyListener));
     }
   }

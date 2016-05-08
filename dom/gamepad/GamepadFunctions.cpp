@@ -29,7 +29,7 @@ NotifyGamepadChange(const T& aInfo)
   nsTArray<ContentParent*> t;
   ContentParent::GetAll(t);
   for(uint32_t i = 0; i < t.Length(); ++i) {
-    unused << t[i]->SendGamepadUpdate(e);
+    Unused << t[i]->SendGamepadUpdate(e);
   }
   // If we have a GamepadService in the main process, send directly to it.
   if (GamepadService::IsServiceRunning()) {
@@ -50,7 +50,6 @@ AddGamepad(const char* aID,
   gGamepadIndex++;
   GamepadAdded a(NS_ConvertUTF8toUTF16(nsDependentCString(aID)), index,
                  (uint32_t)aMapping, aNumButtons, aNumAxes);
-  gGamepadIndex++;
   NotifyGamepadChange<GamepadAdded>(a);
   return index;
 }

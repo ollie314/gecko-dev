@@ -10,7 +10,7 @@
 #include "mozilla/Attributes.h"
 #include "nsGenericHTMLFrameElement.h"
 #include "nsIDOMHTMLIFrameElement.h"
-#include "nsDOMSettableTokenList.h"
+#include "nsDOMTokenList.h"
 
 namespace mozilla {
 namespace dom {
@@ -84,9 +84,9 @@ public:
   {
     SetHTMLAttr(nsGkAtoms::name, aName, aError);
   }
-  nsDOMSettableTokenList* Sandbox()
+  nsDOMTokenList* Sandbox()
   {
-    return GetTokenList(nsGkAtoms::sandbox);
+    return GetTokenList(nsGkAtoms::sandbox, sSupportedSandboxTokens);
   }
   bool AllowFullscreen() const
   {
@@ -159,15 +159,14 @@ public:
   {
     SetHTMLAttr(nsGkAtoms::marginheight, aMarginHeight, aError);
   }
-  void SetReferrer(const nsAString& aReferrer, ErrorResult& aError)
+  void SetReferrerPolicy(const nsAString& aReferrer, ErrorResult& aError)
   {
-    SetHTMLAttr(nsGkAtoms::referrer, aReferrer, aError);
+    SetHTMLAttr(nsGkAtoms::referrerpolicy, aReferrer, aError);
   }
-  void GetReferrer(nsAString& aReferrer)
+  void GetReferrerPolicy(nsAString& aReferrer)
   {
-    GetHTMLAttr(nsGkAtoms::referrer, aReferrer);
+    GetEnumAttr(nsGkAtoms::referrerpolicy, EmptyCString().get(), aReferrer);
   }
-
   nsIDocument* GetSVGDocument()
   {
     return GetContentDocument();
@@ -202,6 +201,8 @@ protected:
 private:
   static void MapAttributesIntoRule(const nsMappedAttributes* aAttributes,
                                     nsRuleData* aData);
+
+  static const DOMTokenListSupportedToken sSupportedSandboxTokens[];
 };
 
 } // namespace dom

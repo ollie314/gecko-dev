@@ -108,7 +108,7 @@ LazyIdleThread::EnableIdleTimeout()
   }
 
   if (mThread) {
-    nsCOMPtr<nsIRunnable> runnable(new nsRunnable());
+    nsCOMPtr<nsIRunnable> runnable(new Runnable());
     if (NS_FAILED(Dispatch(runnable.forget(), NS_DISPATCH_NORMAL))) {
       NS_WARNING("Failed to dispatch!");
     }
@@ -163,7 +163,7 @@ LazyIdleThread::EnsureThread()
   }
 
   nsCOMPtr<nsIRunnable> runnable =
-    NS_NewRunnableMethod(this, &LazyIdleThread::InitThread);
+    NewRunnableMethod(this, &LazyIdleThread::InitThread);
   if (NS_WARN_IF(!runnable)) {
     return NS_ERROR_UNEXPECTED;
   }
@@ -179,10 +179,8 @@ LazyIdleThread::EnsureThread()
 void
 LazyIdleThread::InitThread()
 {
-#if !defined(MOZILLA_XPCOMRT_API)
   char aLocal;
   profiler_register_thread(mName.get(), &aLocal);
-#endif // !defined(MOZILLA_XPCOMRT_API)
 
   PR_SetCurrentThreadName(mName.get());
 
@@ -213,9 +211,7 @@ LazyIdleThread::CleanupThread()
     mThreadIsShuttingDown = true;
   }
 
-#if !defined(MOZILLA_XPCOMRT_API)
   profiler_unregister_thread();
-#endif // !defined(MOZILLA_XPCOMRT_API)
 }
 
 void
@@ -254,7 +250,7 @@ LazyIdleThread::ShutdownThread()
   // Before calling Shutdown() on the real thread we need to put a queue in
   // place in case a runnable is posted to the thread while it's in the
   // process of shutting down. This will be our queue.
-  nsAutoTArray<nsCOMPtr<nsIRunnable>, 10> queuedRunnables;
+  AutoTArray<nsCOMPtr<nsIRunnable>, 10> queuedRunnables;
 
   nsresult rv;
 
@@ -295,7 +291,7 @@ LazyIdleThread::ShutdownThread()
 #endif
 
     nsCOMPtr<nsIRunnable> runnable =
-      NS_NewRunnableMethod(this, &LazyIdleThread::CleanupThread);
+      NewRunnableMethod(this, &LazyIdleThread::CleanupThread);
     if (NS_WARN_IF(!runnable)) {
       return NS_ERROR_UNEXPECTED;
     }
@@ -372,7 +368,7 @@ LazyIdleThread::Release()
     mRefCnt = 1;
 
     nsCOMPtr<nsIRunnable> runnable =
-      NS_NewNonOwningRunnableMethod(this, &LazyIdleThread::SelfDestruct);
+      NewNonOwningRunnableMethod(this, &LazyIdleThread::SelfDestruct);
     NS_WARN_IF_FALSE(runnable, "Couldn't make runnable!");
 
     if (NS_FAILED(NS_DispatchToCurrentThread(runnable))) {
@@ -565,7 +561,7 @@ LazyIdleThread::AfterProcessNextEvent(nsIThreadInternal* /* aThread */,
 
   if (shouldNotifyIdle) {
     nsCOMPtr<nsIRunnable> runnable =
-      NS_NewRunnableMethod(this, &LazyIdleThread::ScheduleTimer);
+      NewRunnableMethod(this, &LazyIdleThread::ScheduleTimer);
     if (NS_WARN_IF(!runnable)) {
       return NS_ERROR_UNEXPECTED;
     }

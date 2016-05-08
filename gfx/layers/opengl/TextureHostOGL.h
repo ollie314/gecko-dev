@@ -29,9 +29,8 @@
 #include "nsCOMPtr.h"                   // for already_AddRefed
 #include "nsDebug.h"                    // for NS_WARNING
 #include "nsISupportsImpl.h"            // for TextureImage::Release, etc
+#include "nsRegionFwd.h"                // for nsIntRegion
 #include "OGLShaderProgram.h"           // for ShaderProgramType, etc
-
-class nsIntRegion;
 
 namespace mozilla {
 namespace gfx {
@@ -143,6 +142,7 @@ public:
     , mIterating(false)
   {}
 
+  virtual const char* Name() const override { return "TextureImageTextureSourceOGL"; }
   // DataTextureSource
 
   virtual bool Update(gfx::DataSourceSurface* aSurface,
@@ -237,6 +237,8 @@ public:
                   bool aExternallyOwned = false);
 
   ~GLTextureSource();
+
+  virtual const char* Name() const override { return "GLTextureSource"; }
 
   virtual GLTextureSource* AsGLTextureSource() override { return this; }
 
@@ -345,6 +347,8 @@ public:
                        GLenum aWrapMode,
                        gfx::IntSize aSize);
 
+  virtual const char* Name() const override { return "SurfaceTextureSource"; }
+
   virtual TextureSourceOGL* AsSourceOGL() { return this; }
 
   virtual void BindTexture(GLenum activetex, gfx::Filter aFilter) override;
@@ -361,8 +365,7 @@ public:
 
   virtual GLenum GetWrapMode() const override { return mWrapMode; }
 
-  // We don't own anything.
-  virtual void DeallocateDeviceData() override {}
+  virtual void DeallocateDeviceData() override;
 
   virtual void SetCompositor(Compositor* aCompositor) override;
 
@@ -370,7 +373,7 @@ public:
 
 protected:
   RefPtr<CompositorOGL> mCompositor;
-  mozilla::gl::AndroidSurfaceTexture* const mSurfTex;
+  RefPtr<gl::AndroidSurfaceTexture> mSurfTex;
   const gfx::SurfaceFormat mFormat;
   const GLenum mTextureTarget;
   const GLenum mWrapMode;
@@ -386,8 +389,7 @@ public:
 
   virtual ~SurfaceTextureHost();
 
-  // We don't own anything.
-  virtual void DeallocateDeviceData() override {}
+  virtual void DeallocateDeviceData() override;
 
   virtual void SetCompositor(Compositor* aCompositor) override;
 
@@ -415,7 +417,7 @@ public:
   virtual const char* Name() { return "SurfaceTextureHost"; }
 
 protected:
-  mozilla::gl::AndroidSurfaceTexture* const mSurfTex;
+  RefPtr<gl::AndroidSurfaceTexture> mSurfTex;
   const gfx::IntSize mSize;
   RefPtr<CompositorOGL> mCompositor;
   RefPtr<SurfaceTextureSource> mTextureSource;
@@ -436,6 +438,8 @@ public:
                         GLenum aTarget,
                         GLenum aWrapMode,
                         gfx::IntSize aSize);
+
+  virtual const char* Name() const override { return "EGLImageTextureSource"; }
 
   virtual TextureSourceOGL* AsSourceOGL() override { return this; }
 
@@ -516,6 +520,8 @@ protected:
   RefPtr<CompositorOGL> mCompositor;
   RefPtr<EGLImageTextureSource> mTextureSource;
 };
+
+CompositorOGL* AssertGLCompositor(Compositor* aCompositor);
 
 } // namespace layers
 } // namespace mozilla

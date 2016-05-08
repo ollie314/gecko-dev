@@ -17,17 +17,27 @@ namespace mozilla {
 class JavascriptTimelineMarker : public TimelineMarker
 {
 public:
-  explicit JavascriptTimelineMarker(const char* aReason,
-                                    const char16_t* aFunctionName,
-                                    const char16_t* aFileName,
-                                    uint32_t aLineNumber,
-                                    MarkerTracingType aTracingType)
+  // The caller owns |aAsyncCause| here, so we must copy it into a separate
+  // string for use later on.
+  JavascriptTimelineMarker(const char* aReason,
+                           const char16_t* aFunctionName,
+                           const char16_t* aFileName,
+                           uint32_t aLineNumber,
+                           MarkerTracingType aTracingType,
+                           JS::Handle<JS::Value> aAsyncStack,
+                           const char* aAsyncCause)
     : TimelineMarker("Javascript", aTracingType, MarkerStackRequest::NO_STACK)
     , mCause(NS_ConvertUTF8toUTF16(aReason))
     , mFunctionName(aFunctionName)
     , mFileName(aFileName)
     , mLineNumber(aLineNumber)
-  {}
+    , mAsyncCause(aAsyncCause)
+  {
+    JSContext* ctx = nsContentUtils::GetCurrentJSContext();
+    if (ctx) {
+      mAsyncStack.init(ctx, aAsyncStack);
+    }
+  }
 
   virtual void AddDetails(JSContext* aCx, dom::ProfileTimelineMarker& aMarker) override
   {
@@ -40,6 +50,25 @@ public:
       stackFrame.mLine.Construct(mLineNumber);
       stackFrame.mSource.Construct(mFileName);
       stackFrame.mFunctionDisplayName.Construct(mFunctionName);
+
+      if (mAsyncStack.isObject() && !mAsyncStack.isNullOrUndefined() &&
+          !mAsyncCause.IsEmpty()) {
+        JS::Rooted<JSObject*> asyncStack(aCx, mAsyncStack.toObjectOrNull());
+        JS::Rooted<JSObject*> parentFrame(aCx);
+        JS::Rooted<JSString*> asyncCause(aCx, JS_NewUCStringCopyN(aCx, mAsyncCause.BeginReading(),
+                                                                  mAsyncCause.Length()));
+        if (!asyncCause) {
+          JS_ClearPendingException(aCx);
+          return;
+        }
+
+        if (JS::IsSavedFrame(asyncStack) &&
+            !JS::CopyAsyncStack(aCx, asyncStack, asyncCause, &parentFrame, 0)) {
+          JS_ClearPendingException(aCx);
+        } else {
+          stackFrame.mAsyncParent = parentFrame;
+        }
+      }
 
       JS::Rooted<JS::Value> newStack(aCx);
       if (ToJSValue(aCx, stackFrame, &newStack)) {
@@ -57,6 +86,8 @@ private:
   nsString mFunctionName;
   nsString mFileName;
   uint32_t mLineNumber;
+  JS::PersistentRooted<JS::Value> mAsyncStack;
+  NS_ConvertUTF8toUTF16 mAsyncCause;
 };
 
 } // namespace mozilla

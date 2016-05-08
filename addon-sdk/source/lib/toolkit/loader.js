@@ -238,7 +238,8 @@ const Sandbox = iced(function Sandbox(options) {
     sandboxPrototype: 'prototype' in options ? options.prototype : {},
     invisibleToDebugger: 'invisibleToDebugger' in options ?
                          options.invisibleToDebugger : false,
-    metadata: 'metadata' in options ? options.metadata : {}
+    metadata: 'metadata' in options ? options.metadata : {},
+    waiveIntereposition: !!options.waiveIntereposition
   };
 
   if (options.metadata && options.metadata.addonID) {
@@ -282,7 +283,7 @@ Loader.evaluate = evaluate;
 // Populates `exports` of the given CommonJS `module` object, in the context
 // of the given `loader` by evaluating code associated with it.
 const load = iced(function load(loader, module) {
-  let { sandboxes, globals } = loader;
+  let { sandboxes, globals, loadModuleHook } = loader;
   let require = Require(loader, module);
 
   // We expose set of properties defined by `CommonJS` specification via
@@ -301,7 +302,7 @@ const load = iced(function load(loader, module) {
 
   let sandbox;
   if (loader.sharedGlobalSandbox &&
-      loader.sharedGlobalBlacklist.indexOf(module.id) == -1) {
+      loader.sharedGlobalBlocklist.indexOf(module.id) == -1) {
     // Create a new object in this sandbox, that will be used as
     // the scope object for this particular module
     sandbox = new loader.sharedGlobalSandbox.Object();
@@ -365,6 +366,10 @@ const load = iced(function load(loader, module) {
       stack: { value: serializeStack(frames), writable: true, configurable: true },
       toString: { value: () => toString, writable: true, configurable: true },
     });
+  }
+
+  if(loadModuleHook) {
+    module = loadModuleHook(module, require);
   }
 
   if (loader.checkCompatibility) {
@@ -556,8 +561,24 @@ const resolveURI = iced(function resolveURI(id, mapping) {
 
   while (index < count) {
     let [ path, uri ] = mapping[index++];
-    if (id.indexOf(path) === 0)
+
+    // Strip off any trailing slashes to make comparisons simpler
+    let stripped = path.endsWith('/') ? path.slice(0, -1) : path;
+
+    // We only want to match path segments explicitly. Examples:
+    // * "foo/bar" matches for "foo/bar"
+    // * "foo/bar" matches for "foo/bar/baz"
+    // * "foo/bar" does not match for "foo/bar-1"
+    // * "foo/bar/" does not match for "foo/bar"
+    // * "foo/bar/" matches for "foo/bar/baz"
+    //
+    // Check for an empty path, an exact match, or a substring match
+    // with the next character being a forward slash.
+    if(stripped === "" ||
+       (id.indexOf(stripped) === 0 &&
+        (id.length === path.length || id[stripped.length] === '/'))) {
       return normalizeExt(id.replace(path, uri));
+    }
   }
   return void 0; // otherwise we raise a warning, see bug 910304
 });
@@ -571,7 +592,7 @@ const Require = iced(function Require(loader, requirer) {
   let {
     modules, mapping, resolve: loaderResolve, load,
     manifest, rootURI, isNative, requireMap,
-    overrideRequire
+    requireHook
   } = loader;
 
   function require(id) {
@@ -579,8 +600,8 @@ const Require = iced(function Require(loader, requirer) {
       throw Error('You must provide a module name when calling require() from '
                   + requirer.id, requirer.uri);
 
-    if (overrideRequire) {
-      return overrideRequire(id, _require);
+    if (requireHook) {
+      return requireHook(id, _require);
     }
 
     return _require(id);
@@ -789,9 +810,12 @@ Loader.unload = unload;
 //   If `resolve` does not returns `uri` string exception will be thrown by
 //   an associated `require` call.
 function Loader(options) {
+  if (options.sharedGlobalBlacklist && !options.sharedGlobalBlocklist) {
+    options.sharedGlobalBlocklist = options.sharedGlobalBlacklist;
+  }
   let {
     modules, globals, resolve, paths, rootURI, manifest, requireMap, isNative,
-    metadata, sharedGlobal, sharedGlobalBlacklist, checkCompatibility
+    metadata, sharedGlobal, sharedGlobalBlocklist, checkCompatibility, waiveIntereposition
   } = override({
     paths: {},
     modules: {},
@@ -811,7 +835,8 @@ function Loader(options) {
       // Make the returned resolve function have the same signature
       (id, requirer) => Loader.nodeResolve(id, requirer, { rootURI: rootURI }) :
       Loader.resolve,
-    sharedGlobalBlacklist: ["sdk/indexed-db"]
+    sharedGlobalBlocklist: ["sdk/indexed-db"],
+    waiveIntereposition: false
   }, options);
 
   // Create overrides defaults, none at the moment
@@ -901,7 +926,8 @@ function Loader(options) {
     modules: { enumerable: false, value: modules },
     metadata: { enumerable: false, value: metadata },
     sharedGlobalSandbox: { enumerable: false, value: sharedGlobalSandbox },
-    sharedGlobalBlacklist: { enumerable: false, value: sharedGlobalBlacklist },
+    sharedGlobalBlocklist: { enumerable: false, value: sharedGlobalBlocklist },
+    sharedGlobalBlacklist: { enumerable: false, value: sharedGlobalBlocklist },
     // Map of module sandboxes indexed by module URIs.
     sandboxes: { enumerable: false, value: {} },
     resolve: { enumerable: false, value: resolve },
@@ -912,7 +938,8 @@ function Loader(options) {
                            value: options.invisibleToDebugger || false },
     load: { enumerable: false, value: options.load || load },
     checkCompatibility: { enumerable: false, value: checkCompatibility },
-    overrideRequire: { enumerable: false, value: options.require },
+    requireHook: { enumerable: false, value: options.requireHook },
+    loadModuleHook: { enumerable: false, value: options.loadModuleHook },
     // Main (entry point) module, it can be set only once, since loader
     // instance can have only one main module.
     main: new function() {
@@ -1057,7 +1084,8 @@ function traverse (node, cb) {
     cb(node);
     keys(node).map(key => {
       if (key === 'parent' || !node[key]) return;
-      node[key].parent = node;
+      if (typeof node[key] === "object")
+        node[key].parent = node;
       traverse(node[key], cb);
     });
   }

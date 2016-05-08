@@ -359,8 +359,9 @@ static void* SignalSender(void* arg) {
           printf_stderr("profiler failed to signal tid=%d\n", threadId);
 #ifdef DEBUG
           abort();
-#endif
+#else
           continue;
+#endif
         }
 
         // Wait for the signal handler to run before moving on to the next one
@@ -671,7 +672,7 @@ static void DoStartTask() {
 }
 
 static void StartSignalHandler(int signal, siginfo_t* info, void* context) {
-  class StartTask : public nsRunnable {
+  class StartTask : public Runnable {
   public:
     NS_IMETHOD Run() {
       DoStartTask();

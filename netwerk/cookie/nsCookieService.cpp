@@ -12,11 +12,13 @@
 #include "mozilla/net/NeckoCommon.h"
 
 #include "nsCookieService.h"
+#include "nsContentUtils.h"
 #include "nsIServiceManager.h"
 
 #include "nsIIOService.h"
 #include "nsIPrefBranch.h"
 #include "nsIPrefService.h"
+#include "nsIScriptError.h"
 #include "nsICookiePermission.h"
 #include "nsIURI.h"
 #include "nsIURL.h"
@@ -51,6 +53,7 @@
 #include "mozIApplication.h"
 #include "mozIApplicationClearPrivateDataParams.h"
 #include "nsIConsoleService.h"
+#include "nsVariant.h"
 
 using namespace mozilla;
 using namespace mozilla::net;
@@ -60,7 +63,7 @@ using namespace mozilla::net;
 // on content processes (see bug 777620), change to use the appropriate app
 // namespace.  For now those IDLs aren't supported on child processes.
 #define DEFAULT_APP_KEY(baseDomain) \
-        nsCookieKey(baseDomain, OriginAttributes())
+        nsCookieKey(baseDomain, NeckoOriginAttributes())
 
 /******************************************************************************
  * nsCookieService impl:
@@ -74,7 +77,7 @@ static nsCookieService *gCookieService;
 #define HTTP_ONLY_PREFIX "#HttpOnly_"
 
 #define COOKIES_FILE "cookies.sqlite"
-#define COOKIES_SCHEMA_VERSION 6
+#define COOKIES_SCHEMA_VERSION 7
 
 // parameter indexes; see EnsureReadDomain, EnsureReadComplete and
 // ReadCookieDBListener::HandleResult
@@ -184,55 +187,48 @@ struct nsListIter
 #define SET_COOKIE true
 #define GET_COOKIE false
 
-static PRLogModuleInfo *
-GetCookieLog()
-{
-  static PRLogModuleInfo *sCookieLog;
-  if (!sCookieLog)
-    sCookieLog = PR_NewLogModule("cookie");
-  return sCookieLog;
-}
+static LazyLogModule gCookieLog("cookie");
 
 #define COOKIE_LOGFAILURE(a, b, c, d)    LogFailure(a, b, c, d)
 #define COOKIE_LOGSUCCESS(a, b, c, d, e) LogSuccess(a, b, c, d, e)
 
 #define COOKIE_LOGEVICTED(a, details)          \
   PR_BEGIN_MACRO                               \
-  if (MOZ_LOG_TEST(GetCookieLog(), LogLevel::Debug))  \
+  if (MOZ_LOG_TEST(gCookieLog, LogLevel::Debug))  \
       LogEvicted(a, details);                  \
   PR_END_MACRO
 
 #define COOKIE_LOGSTRING(lvl, fmt)   \
   PR_BEGIN_MACRO                     \
-    MOZ_LOG(GetCookieLog(), lvl, fmt);  \
-    MOZ_LOG(GetCookieLog(), lvl, ("\n")); \
+    MOZ_LOG(gCookieLog, lvl, fmt);  \
+    MOZ_LOG(gCookieLog, lvl, ("\n")); \
   PR_END_MACRO
 
 static void
 LogFailure(bool aSetCookie, nsIURI *aHostURI, const char *aCookieString, const char *aReason)
 {
   // if logging isn't enabled, return now to save cycles
-  if (!MOZ_LOG_TEST(GetCookieLog(), LogLevel::Warning))
+  if (!MOZ_LOG_TEST(gCookieLog, LogLevel::Warning))
     return;
 
   nsAutoCString spec;
   if (aHostURI)
     aHostURI->GetAsciiSpec(spec);
 
-  MOZ_LOG(GetCookieLog(), LogLevel::Warning,
+  MOZ_LOG(gCookieLog, LogLevel::Warning,
     ("===== %s =====\n", aSetCookie ? "COOKIE NOT ACCEPTED" : "COOKIE NOT SENT"));
-  MOZ_LOG(GetCookieLog(), LogLevel::Warning,("request URL: %s\n", spec.get()));
+  MOZ_LOG(gCookieLog, LogLevel::Warning,("request URL: %s\n", spec.get()));
   if (aSetCookie)
-    MOZ_LOG(GetCookieLog(), LogLevel::Warning,("cookie string: %s\n", aCookieString));
+    MOZ_LOG(gCookieLog, LogLevel::Warning,("cookie string: %s\n", aCookieString));
 
   PRExplodedTime explodedTime;
   PR_ExplodeTime(PR_Now(), PR_GMTParameters, &explodedTime);
   char timeString[40];
   PR_FormatTimeUSEnglish(timeString, 40, "%c GMT", &explodedTime);
 
-  MOZ_LOG(GetCookieLog(), LogLevel::Warning,("current time: %s", timeString));
-  MOZ_LOG(GetCookieLog(), LogLevel::Warning,("rejected because %s\n", aReason));
-  MOZ_LOG(GetCookieLog(), LogLevel::Warning,("\n"));
+  MOZ_LOG(gCookieLog, LogLevel::Warning,("current time: %s", timeString));
+  MOZ_LOG(gCookieLog, LogLevel::Warning,("rejected because %s\n", aReason));
+  MOZ_LOG(gCookieLog, LogLevel::Warning,("\n"));
 }
 
 static void
@@ -243,27 +239,27 @@ LogCookie(nsCookie *aCookie)
   char timeString[40];
   PR_FormatTimeUSEnglish(timeString, 40, "%c GMT", &explodedTime);
 
-  MOZ_LOG(GetCookieLog(), LogLevel::Debug,("current time: %s", timeString));
+  MOZ_LOG(gCookieLog, LogLevel::Debug,("current time: %s", timeString));
 
   if (aCookie) {
-    MOZ_LOG(GetCookieLog(), LogLevel::Debug,("----------------\n"));
-    MOZ_LOG(GetCookieLog(), LogLevel::Debug,("name: %s\n", aCookie->Name().get()));
-    MOZ_LOG(GetCookieLog(), LogLevel::Debug,("value: %s\n", aCookie->Value().get()));
-    MOZ_LOG(GetCookieLog(), LogLevel::Debug,("%s: %s\n", aCookie->IsDomain() ? "domain" : "host", aCookie->Host().get()));
-    MOZ_LOG(GetCookieLog(), LogLevel::Debug,("path: %s\n", aCookie->Path().get()));
+    MOZ_LOG(gCookieLog, LogLevel::Debug,("----------------\n"));
+    MOZ_LOG(gCookieLog, LogLevel::Debug,("name: %s\n", aCookie->Name().get()));
+    MOZ_LOG(gCookieLog, LogLevel::Debug,("value: %s\n", aCookie->Value().get()));
+    MOZ_LOG(gCookieLog, LogLevel::Debug,("%s: %s\n", aCookie->IsDomain() ? "domain" : "host", aCookie->Host().get()));
+    MOZ_LOG(gCookieLog, LogLevel::Debug,("path: %s\n", aCookie->Path().get()));
 
     PR_ExplodeTime(aCookie->Expiry() * int64_t(PR_USEC_PER_SEC),
                    PR_GMTParameters, &explodedTime);
     PR_FormatTimeUSEnglish(timeString, 40, "%c GMT", &explodedTime);
-    MOZ_LOG(GetCookieLog(), LogLevel::Debug,
+    MOZ_LOG(gCookieLog, LogLevel::Debug,
       ("expires: %s%s", timeString, aCookie->IsSession() ? " (at end of session)" : ""));
 
     PR_ExplodeTime(aCookie->CreationTime(), PR_GMTParameters, &explodedTime);
     PR_FormatTimeUSEnglish(timeString, 40, "%c GMT", &explodedTime);
-    MOZ_LOG(GetCookieLog(), LogLevel::Debug,("created: %s", timeString));
+    MOZ_LOG(gCookieLog, LogLevel::Debug,("created: %s", timeString));
 
-    MOZ_LOG(GetCookieLog(), LogLevel::Debug,("is secure: %s\n", aCookie->IsSecure() ? "true" : "false"));
-    MOZ_LOG(GetCookieLog(), LogLevel::Debug,("is httpOnly: %s\n", aCookie->IsHttpOnly() ? "true" : "false"));
+    MOZ_LOG(gCookieLog, LogLevel::Debug,("is secure: %s\n", aCookie->IsSecure() ? "true" : "false"));
+    MOZ_LOG(gCookieLog, LogLevel::Debug,("is httpOnly: %s\n", aCookie->IsHttpOnly() ? "true" : "false"));
   }
 }
 
@@ -271,7 +267,7 @@ static void
 LogSuccess(bool aSetCookie, nsIURI *aHostURI, const char *aCookieString, nsCookie *aCookie, bool aReplacing)
 {
   // if logging isn't enabled, return now to save cycles
-  if (!MOZ_LOG_TEST(GetCookieLog(), LogLevel::Debug)) {
+  if (!MOZ_LOG_TEST(gCookieLog, LogLevel::Debug)) {
     return;
   }
 
@@ -279,27 +275,27 @@ LogSuccess(bool aSetCookie, nsIURI *aHostURI, const char *aCookieString, nsCooki
   if (aHostURI)
     aHostURI->GetAsciiSpec(spec);
 
-  MOZ_LOG(GetCookieLog(), LogLevel::Debug,
+  MOZ_LOG(gCookieLog, LogLevel::Debug,
     ("===== %s =====\n", aSetCookie ? "COOKIE ACCEPTED" : "COOKIE SENT"));
-  MOZ_LOG(GetCookieLog(), LogLevel::Debug,("request URL: %s\n", spec.get()));
-  MOZ_LOG(GetCookieLog(), LogLevel::Debug,("cookie string: %s\n", aCookieString));
+  MOZ_LOG(gCookieLog, LogLevel::Debug,("request URL: %s\n", spec.get()));
+  MOZ_LOG(gCookieLog, LogLevel::Debug,("cookie string: %s\n", aCookieString));
   if (aSetCookie)
-    MOZ_LOG(GetCookieLog(), LogLevel::Debug,("replaces existing cookie: %s\n", aReplacing ? "true" : "false"));
+    MOZ_LOG(gCookieLog, LogLevel::Debug,("replaces existing cookie: %s\n", aReplacing ? "true" : "false"));
 
   LogCookie(aCookie);
 
-  MOZ_LOG(GetCookieLog(), LogLevel::Debug,("\n"));
+  MOZ_LOG(gCookieLog, LogLevel::Debug,("\n"));
 }
 
 static void
 LogEvicted(nsCookie *aCookie, const char* details)
 {
-  MOZ_LOG(GetCookieLog(), LogLevel::Debug,("===== COOKIE EVICTED =====\n"));
-  MOZ_LOG(GetCookieLog(), LogLevel::Debug,("%s\n", details));
+  MOZ_LOG(gCookieLog, LogLevel::Debug,("===== COOKIE EVICTED =====\n"));
+  MOZ_LOG(gCookieLog, LogLevel::Debug,("%s\n", details));
 
   LogCookie(aCookie);
 
-  MOZ_LOG(GetCookieLog(), LogLevel::Debug,("\n"));
+  MOZ_LOG(gCookieLog, LogLevel::Debug,("\n"));
 }
 
 // inline wrappers to make passing in nsAFlatCStrings easier
@@ -345,7 +341,7 @@ protected:
 public:
   NS_IMETHOD HandleError(mozIStorageError* aError) override
   {
-    if (MOZ_LOG_TEST(GetCookieLog(), LogLevel::Warning)) {
+    if (MOZ_LOG_TEST(gCookieLog, LogLevel::Warning)) {
       int32_t result = -1;
       aError->GetResult(&result);
 
@@ -497,7 +493,8 @@ public:
       row->GetUTF8String(IDX_ORIGIN_ATTRIBUTES, suffix);
       tuple->key.mOriginAttributes.PopulateFromSuffix(suffix);
 
-      tuple->cookie = gCookieService->GetCookieFromRow(row);
+      tuple->cookie =
+        gCookieService->GetCookieFromRow(row, tuple->key.mOriginAttributes);
     }
 
     return NS_OK;
@@ -579,7 +576,7 @@ public:
     MOZ_ASSERT(!nsCRT::strcmp(aTopic, TOPIC_CLEAR_ORIGIN_DATA));
 
     MOZ_ASSERT(XRE_IsParentProcess());
-    OriginAttributes attrs;
+    NeckoOriginAttributes attrs;
     MOZ_ALWAYS_TRUE(attrs.Init(nsDependentString(aData)));
 
     nsCOMPtr<nsICookieManager2> cookieManager
@@ -588,7 +585,7 @@ public:
 
     // TODO: We should add a new interface RemoveCookiesForOriginAttributes in
     // nsICookieManager2 and use it instead of RemoveCookiesForApp.
-    return cookieManager->RemoveCookiesForApp(attrs.mAppId, attrs.mInBrowser);
+    return cookieManager->RemoveCookiesForApp(attrs.mAppId, attrs.mInIsolatedMozBrowser);
   }
 };
 
@@ -827,27 +824,86 @@ NS_IMPL_ISUPPORTS(ConvertAppIdToOriginAttrsSQLFunction, mozIStorageFunction);
 
 NS_IMETHODIMP
 ConvertAppIdToOriginAttrsSQLFunction::OnFunctionCall(
-    mozIStorageValueArray* aFunctionArguments, nsIVariant** aResult)
+  mozIStorageValueArray* aFunctionArguments, nsIVariant** aResult)
 {
   nsresult rv;
-  int32_t appId, inBrowser;
+  int32_t appId, inIsolatedMozBrowser;
 
   rv = aFunctionArguments->GetInt32(0, &appId);
   NS_ENSURE_SUCCESS(rv, rv);
-  rv = aFunctionArguments->GetInt32(1, &inBrowser);
+  rv = aFunctionArguments->GetInt32(1, &inIsolatedMozBrowser);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  // Create an originAttributes object by appId and inBrowserElemnt.
+  // Create an originAttributes object by appId and inIsolatedMozBrowser.
   // Then create the originSuffix string from this object.
-  OriginAttributes attrs(appId, (inBrowser ? 1 : 0));
+  NeckoOriginAttributes attrs(appId, (inIsolatedMozBrowser ? 1 : 0));
   nsAutoCString suffix;
   attrs.CreateSuffix(suffix);
 
-  nsCOMPtr<nsIWritableVariant> outVar(do_CreateInstance(
-    NS_VARIANT_CONTRACTID, &rv));
+  RefPtr<nsVariant> outVar(new nsVariant());
+  rv = outVar->SetAsAUTF8String(suffix);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  rv = outVar->SetAsAUTF8String(suffix);
+  outVar.forget(aResult);
+  return NS_OK;
+}
+
+class SetAppIdFromOriginAttributesSQLFunction final : public mozIStorageFunction
+{
+  ~SetAppIdFromOriginAttributesSQLFunction() {}
+
+  NS_DECL_ISUPPORTS
+  NS_DECL_MOZISTORAGEFUNCTION
+};
+
+NS_IMPL_ISUPPORTS(SetAppIdFromOriginAttributesSQLFunction, mozIStorageFunction);
+
+NS_IMETHODIMP
+SetAppIdFromOriginAttributesSQLFunction::OnFunctionCall(
+  mozIStorageValueArray* aFunctionArguments, nsIVariant** aResult)
+{
+  nsresult rv;
+  nsAutoCString suffix;
+  NeckoOriginAttributes attrs;
+
+  rv = aFunctionArguments->GetUTF8String(0, suffix);
+  NS_ENSURE_SUCCESS(rv, rv);
+  attrs.PopulateFromSuffix(suffix);
+
+  RefPtr<nsVariant> outVar(new nsVariant());
+  rv = outVar->SetAsInt32(attrs.mAppId);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  outVar.forget(aResult);
+  return NS_OK;
+}
+
+class SetInBrowserFromOriginAttributesSQLFunction final :
+  public mozIStorageFunction
+{
+  ~SetInBrowserFromOriginAttributesSQLFunction() {}
+
+  NS_DECL_ISUPPORTS
+  NS_DECL_MOZISTORAGEFUNCTION
+};
+
+NS_IMPL_ISUPPORTS(SetInBrowserFromOriginAttributesSQLFunction,
+                  mozIStorageFunction);
+
+NS_IMETHODIMP
+SetInBrowserFromOriginAttributesSQLFunction::OnFunctionCall(
+  mozIStorageValueArray* aFunctionArguments, nsIVariant** aResult)
+{
+  nsresult rv;
+  nsAutoCString suffix;
+  NeckoOriginAttributes attrs;
+
+  rv = aFunctionArguments->GetUTF8String(0, suffix);
+  NS_ENSURE_SUCCESS(rv, rv);
+  attrs.PopulateFromSuffix(suffix);
+
+  RefPtr<nsVariant> outVar(new nsVariant());
+  rv = outVar->SetAsInt32(attrs.mInIsolatedMozBrowser);
   NS_ENSURE_SUCCESS(rv, rv);
 
   outVar.forget(aResult);
@@ -942,6 +998,7 @@ nsCookieService::TryInitDB(bool aRecreateDB)
         NS_ENSURE_SUCCESS(rv, RESULT_RETRY);
       }
       // Fall through to the next upgrade.
+      MOZ_FALLTHROUGH;
 
     case 2:
       {
@@ -1000,6 +1057,7 @@ nsCookieService::TryInitDB(bool aRecreateDB)
         NS_ENSURE_SUCCESS(rv, RESULT_RETRY);
       }
       // Fall through to the next upgrade.
+      MOZ_FALLTHROUGH;
 
     case 3:
       {
@@ -1096,6 +1154,7 @@ nsCookieService::TryInitDB(bool aRecreateDB)
         NS_ENSURE_SUCCESS(rv, RESULT_RETRY);
       }
       // Fall through to the next upgrade.
+      MOZ_FALLTHROUGH;
 
     case 4:
       {
@@ -1143,15 +1202,16 @@ nsCookieService::TryInitDB(bool aRecreateDB)
           ("Upgraded database to schema version 5"));
       }
       // Fall through to the next upgrade.
+      MOZ_FALLTHROUGH;
 
     case 5:
       {
         // Change in the version: Replace the columns |appId| and
-        // |isBrowserElement| by a single column |originAttributes|.
+        // |inBrowserElement| by a single column |originAttributes|.
         //
         // Why we made this change: FxOS new security model (NSec) encapsulates
-        // "appId/inBrowser" in nsIPrincipal::originAttributes to make it easier
-        // to modify the contents of this structure in the future.
+        // "appId/inIsolatedMozBrowser" in nsIPrincipal::originAttributes to make
+        // it easier to modify the contents of this structure in the future.
         //
         // We do the migration in several steps:
         // 1. Rename the old table.
@@ -1170,7 +1230,7 @@ nsCookieService::TryInitDB(bool aRecreateDB)
         NS_ENSURE_SUCCESS(rv, RESULT_RETRY);
 
         // Create new table with new fields and new unique constraint.
-        rv = CreateTable();
+        rv = CreateTableForSchemaVersion6();
         NS_ENSURE_SUCCESS(rv, RESULT_RETRY);
 
         // Copy data from old table without the two deprecated columns appId and
@@ -1179,9 +1239,11 @@ nsCookieService::TryInitDB(bool aRecreateDB)
           convertToOriginAttrs(new ConvertAppIdToOriginAttrsSQLFunction());
         NS_ENSURE_TRUE(convertToOriginAttrs, RESULT_RETRY);
 
-        rv = mDefaultDBState->dbConn->CreateFunction(
-             NS_LITERAL_CSTRING("CONVERT_TO_ORIGIN_ATTRIBUTES"), 2,
-             convertToOriginAttrs);
+        NS_NAMED_LITERAL_CSTRING(convertToOriginAttrsName,
+                                 "CONVERT_TO_ORIGIN_ATTRIBUTES");
+
+        rv = mDefaultDBState->dbConn->CreateFunction(convertToOriginAttrsName,
+                                                     2, convertToOriginAttrs);
         NS_ENSURE_SUCCESS(rv, RESULT_RETRY);
 
         rv = mDefaultDBState->dbConn->ExecuteSimpleSQL(NS_LITERAL_CSTRING(
@@ -1195,6 +1257,9 @@ nsCookieService::TryInitDB(bool aRecreateDB)
           "FROM moz_cookies_old"));
         NS_ENSURE_SUCCESS(rv, RESULT_RETRY);
 
+        rv = mDefaultDBState->dbConn->RemoveFunction(convertToOriginAttrsName);
+        NS_ENSURE_SUCCESS(rv, RESULT_RETRY);
+
         // Drop old table
         rv = mDefaultDBState->dbConn->ExecuteSimpleSQL(NS_LITERAL_CSTRING(
              "DROP TABLE moz_cookies_old"));
@@ -1203,10 +1268,67 @@ nsCookieService::TryInitDB(bool aRecreateDB)
         COOKIE_LOGSTRING(LogLevel::Debug,
           ("Upgraded database to schema version 6"));
       }
+      MOZ_FALLTHROUGH;
+
+    case 6:
+      {
+        // We made a mistake in schema version 6. We cannot remove expected
+        // columns of any version (checked in the default case) from cookie
+        // database, because doing this would destroy the possibility of
+        // downgrading database.
+        //
+        // This version simply restores appId and inBrowserElement columns in
+        // order to fix downgrading issue even though these two columns are no
+        // longer used in the latest schema.
+        rv = mDefaultDBState->dbConn->ExecuteSimpleSQL(NS_LITERAL_CSTRING(
+          "ALTER TABLE moz_cookies ADD appId INTEGER DEFAULT 0;"));
+        NS_ENSURE_SUCCESS(rv, RESULT_RETRY);
+
+        rv = mDefaultDBState->dbConn->ExecuteSimpleSQL(NS_LITERAL_CSTRING(
+          "ALTER TABLE moz_cookies ADD inBrowserElement INTEGER DEFAULT 0;"));
+        NS_ENSURE_SUCCESS(rv, RESULT_RETRY);
+
+        // Compute and populate the values of appId and inBrwoserElement from
+        // originAttributes.
+        nsCOMPtr<mozIStorageFunction>
+          setAppId(new SetAppIdFromOriginAttributesSQLFunction());
+        NS_ENSURE_TRUE(setAppId, RESULT_RETRY);
+
+        NS_NAMED_LITERAL_CSTRING(setAppIdName, "SET_APP_ID");
+
+        rv = mDefaultDBState->dbConn->CreateFunction(setAppIdName, 1, setAppId);
+        NS_ENSURE_SUCCESS(rv, RESULT_RETRY);
+
+        nsCOMPtr<mozIStorageFunction>
+          setInBrowser(new SetInBrowserFromOriginAttributesSQLFunction());
+        NS_ENSURE_TRUE(setInBrowser, RESULT_RETRY);
+
+        NS_NAMED_LITERAL_CSTRING(setInBrowserName, "SET_IN_BROWSER");
+
+        rv = mDefaultDBState->dbConn->CreateFunction(setInBrowserName, 1,
+                                                     setInBrowser);
+        NS_ENSURE_SUCCESS(rv, RESULT_RETRY);
+
+        rv = mDefaultDBState->dbConn->ExecuteSimpleSQL(NS_LITERAL_CSTRING(
+          "UPDATE moz_cookies SET appId = SET_APP_ID(originAttributes), "
+          "inBrowserElement = SET_IN_BROWSER(originAttributes);"
+        ));
+        NS_ENSURE_SUCCESS(rv, RESULT_RETRY);
+
+        rv = mDefaultDBState->dbConn->RemoveFunction(setAppIdName);
+        NS_ENSURE_SUCCESS(rv, RESULT_RETRY);
+
+        rv = mDefaultDBState->dbConn->RemoveFunction(setInBrowserName);
+        NS_ENSURE_SUCCESS(rv, RESULT_RETRY);
+
+        COOKIE_LOGSTRING(LogLevel::Debug,
+          ("Upgraded database to schema version 7"));
+      }
 
       // No more upgrades. Update the schema version.
       rv = mDefaultDBState->dbConn->SetSchemaVersion(COOKIES_SCHEMA_VERSION);
       NS_ENSURE_SUCCESS(rv, RESULT_RETRY);
+      MOZ_FALLTHROUGH;
 
     case COOKIES_SCHEMA_VERSION:
       break;
@@ -1214,7 +1336,7 @@ nsCookieService::TryInitDB(bool aRecreateDB)
     case 0:
       {
         NS_WARNING("couldn't get schema version!");
-          
+
         // the table may be usable; someone might've just clobbered the schema
         // version. we can treat this case like a downgrade using the codepath
         // below, by verifying the columns we care about are all there. for now,
@@ -1224,6 +1346,7 @@ nsCookieService::TryInitDB(bool aRecreateDB)
         NS_ENSURE_SUCCESS(rv, RESULT_RETRY);
       }
       // fall through to downgrade check
+      MOZ_FALLTHROUGH;
 
     // downgrading.
     // if columns have been added to the table, we can still use the ones we
@@ -1351,6 +1474,44 @@ nsCookieService::CreateTable()
   // Set the schema version, before creating the table.
   nsresult rv = mDefaultDBState->dbConn->SetSchemaVersion(
     COOKIES_SCHEMA_VERSION);
+  if (NS_FAILED(rv)) return rv;
+
+  // Create the table.
+  // We default originAttributes to empty string: this is so if users revert to
+  // an older Firefox version that doesn't know about this field, any cookies
+  // set will still work once they upgrade back.
+  rv = mDefaultDBState->dbConn->ExecuteSimpleSQL(NS_LITERAL_CSTRING(
+    "CREATE TABLE moz_cookies ("
+      "id INTEGER PRIMARY KEY, "
+      "baseDomain TEXT, "
+      "originAttributes TEXT NOT NULL DEFAULT '', "
+      "name TEXT, "
+      "value TEXT, "
+      "host TEXT, "
+      "path TEXT, "
+      "expiry INTEGER, "
+      "lastAccessed INTEGER, "
+      "creationTime INTEGER, "
+      "isSecure INTEGER, "
+      "isHttpOnly INTEGER, "
+      "appId INTEGER DEFAULT 0, "
+      "inBrowserElement INTEGER DEFAULT 0, "
+      "CONSTRAINT moz_uniqueid UNIQUE (name, host, path, originAttributes)"
+    ")"));
+  if (NS_FAILED(rv)) return rv;
+
+  // Create an index on baseDomain.
+  return mDefaultDBState->dbConn->ExecuteSimpleSQL(NS_LITERAL_CSTRING(
+    "CREATE INDEX moz_basedomain ON moz_cookies (baseDomain, "
+                                                "originAttributes)"));
+}
+
+// Sets the schema version and creates the moz_cookies table.
+nsresult
+nsCookieService::CreateTableForSchemaVersion6()
+{
+  // Set the schema version, before creating the table.
+  nsresult rv = mDefaultDBState->dbConn->SetSchemaVersion(6);
   if (NS_FAILED(rv)) return rv;
 
   // Create the table.
@@ -1744,7 +1905,7 @@ nsCookieService::GetCookieStringCommon(nsIURI *aHostURI,
   mThirdPartyUtil->IsThirdPartyChannel(aChannel, aHostURI, &isForeign);
 
   // Get originAttributes.
-  OriginAttributes attrs;
+  NeckoOriginAttributes attrs;
   if (aChannel) {
     NS_GetOriginAttributes(aChannel, attrs);
   }
@@ -1785,7 +1946,7 @@ nsCookieService::SetCookieStringFromHttp(nsIURI     *aHostURI,
                                          nsIPrompt  *aPrompt,
                                          const char *aCookieHeader,
                                          const char *aServerTime,
-                                         nsIChannel *aChannel) 
+                                         nsIChannel *aChannel)
 {
   // The aPrompt argument is deprecated and unused.  Avoid introducing new
   // code that uses this argument by warning if the value is non-null.
@@ -1807,7 +1968,7 @@ nsCookieService::SetCookieStringCommon(nsIURI *aHostURI,
                                        const char *aCookieHeader,
                                        const char *aServerTime,
                                        nsIChannel *aChannel,
-                                       bool aFromHttp) 
+                                       bool aFromHttp)
 {
   NS_ENSURE_ARG(aHostURI);
   NS_ENSURE_ARG(aCookieHeader);
@@ -1817,7 +1978,7 @@ nsCookieService::SetCookieStringCommon(nsIURI *aHostURI,
   mThirdPartyUtil->IsThirdPartyChannel(aChannel, aHostURI, &isForeign);
 
   // Get originAttributes.
-  OriginAttributes attrs;
+  NeckoOriginAttributes attrs;
   if (aChannel) {
     NS_GetOriginAttributes(aChannel, attrs);
   }
@@ -1838,7 +1999,7 @@ nsCookieService::SetCookieStringInternal(nsIURI                 *aHostURI,
                                          nsDependentCString     &aCookieHeader,
                                          const nsCString        &aServerTime,
                                          bool                    aFromHttp,
-                                         const OriginAttributes &aOriginAttrs,
+                                         const NeckoOriginAttributes &aOriginAttrs,
                                          bool                    aIsPrivate,
                                          nsIChannel             *aChannel)
 {
@@ -2130,6 +2291,7 @@ nsCookieService::Add(const nsACString &aHost,
   NS_ENSURE_SUCCESS(rv, rv);
 
   int64_t currentTimeInUsec = PR_Now();
+  nsCookieKey key = DEFAULT_APP_KEY(baseDomain);
 
   RefPtr<nsCookie> cookie =
     nsCookie::Create(aName, aValue, host, aPath,
@@ -2138,18 +2300,19 @@ nsCookieService::Add(const nsACString &aHost,
                      nsCookie::GenerateUniqueCreationTime(currentTimeInUsec),
                      aIsSession,
                      aIsSecure,
-                     aIsHttpOnly);
+                     aIsHttpOnly,
+                     key.mOriginAttributes);
   if (!cookie) {
     return NS_ERROR_OUT_OF_MEMORY;
   }
 
-  AddInternal(DEFAULT_APP_KEY(baseDomain), cookie, currentTimeInUsec, nullptr, nullptr, true);
+  AddInternal(key, cookie, currentTimeInUsec, nullptr, nullptr, true);
   return NS_OK;
 }
 
 
 nsresult
-nsCookieService::Remove(const nsACString& aHost, const OriginAttributes& aAttrs,
+nsCookieService::Remove(const nsACString& aHost, const NeckoOriginAttributes& aAttrs,
                         const nsACString& aName, const nsACString& aPath,
                         bool aBlocked)
 {
@@ -2205,10 +2368,46 @@ NS_IMETHODIMP
 nsCookieService::Remove(const nsACString &aHost,
                         const nsACString &aName,
                         const nsACString &aPath,
-                        bool             aBlocked)
+                        bool             aBlocked,
+                        JS::HandleValue  aOriginAttributes,
+                        JSContext*       aCx,
+                        uint8_t          aArgc)
 {
-  OriginAttributes attrs;
-  return Remove(aHost, attrs, aName, aPath, aBlocked);
+  MOZ_ASSERT(aArgc == 0 || aArgc == 1);
+  if (aArgc == 0) {
+    // This is supposed to be temporary and in 1 or 2 releases we want to
+    // have originAttributes param as mandatory. But for now, we don't want to
+    // break existing addons, so we write a console message to inform the addon
+    // developers about it.
+    nsContentUtils::ReportToConsole(nsIScriptError::warningFlag,
+                                    NS_LITERAL_CSTRING("Cookie Manager"),
+                                    nullptr,
+                                    nsContentUtils::eNECKO_PROPERTIES,
+                                    "nsICookieManagerRemoveDeprecated");
+  }
+
+  NeckoOriginAttributes attrs;
+  MOZ_ASSERT(attrs.Init(aCx, aOriginAttributes));
+  return RemoveNative(aHost, aName, aPath, aBlocked, &attrs);
+}
+
+NS_IMETHODIMP_(nsresult)
+nsCookieService::RemoveNative(const nsACString &aHost,
+                              const nsACString &aName,
+                              const nsACString &aPath,
+                              bool aBlocked,
+                              NeckoOriginAttributes* aOriginAttributes)
+{
+  if (NS_WARN_IF(!aOriginAttributes)) {
+    return NS_ERROR_FAILURE;
+  }
+
+  nsresult rv = Remove(aHost, *aOriginAttributes, aName, aPath, aBlocked);
+  if (NS_WARN_IF(NS_FAILED(rv))) {
+    return rv;
+  }
+
+  return NS_OK;
 }
 
 /******************************************************************************
@@ -2278,7 +2477,7 @@ nsCookieService::Read()
 // Extract data from a single result row and create an nsCookie.
 // This is templated since 'T' is different for sync vs async results.
 template<class T> nsCookie*
-nsCookieService::GetCookieFromRow(T &aRow)
+nsCookieService::GetCookieFromRow(T &aRow, const OriginAttributes& aOriginAttributes)
 {
   // Skip reading 'baseDomain' -- up to the caller.
   nsCString name, value, host, path;
@@ -2304,7 +2503,8 @@ nsCookieService::GetCookieFromRow(T &aRow)
                           creationTime,
                           false,
                           isSecure,
-                          isHttpOnly);
+                          isHttpOnly,
+                          aOriginAttributes);
 }
 
 void
@@ -2436,7 +2636,7 @@ nsCookieService::EnsureReadDomain(const nsCookieKey &aKey)
 
   bool hasResult;
   nsCString name, value, host, path;
-  nsAutoTArray<RefPtr<nsCookie>, kMaxCookiesPerHost> array;
+  AutoTArray<RefPtr<nsCookie>, kMaxCookiesPerHost> array;
   while (1) {
     rv = mDefaultDBState->stmtReadDomain->ExecuteStep(&hasResult);
     if (NS_FAILED(rv)) {
@@ -2451,7 +2651,8 @@ nsCookieService::EnsureReadDomain(const nsCookieKey &aKey)
     if (!hasResult)
       break;
 
-    array.AppendElement(GetCookieFromRow(mDefaultDBState->stmtReadDomain));
+    array.AppendElement(GetCookieFromRow(mDefaultDBState->stmtReadDomain,
+                                         aKey.mOriginAttributes));
   }
 
   // Add the cookies to the table in a single operation. This makes sure that
@@ -2512,7 +2713,7 @@ nsCookieService::EnsureReadComplete()
 
   nsCString baseDomain, name, value, host, path;
   bool hasResult;
-  nsAutoTArray<CookieDomainTuple, kMaxNumberOfCookies> array;
+  nsTArray<CookieDomainTuple> array(kMaxNumberOfCookies);
   while (1) {
     rv = stmt->ExecuteStep(&hasResult);
     if (NS_FAILED(rv)) {
@@ -2531,7 +2732,7 @@ nsCookieService::EnsureReadComplete()
     stmt->GetUTF8String(IDX_BASE_DOMAIN, baseDomain);
 
     nsAutoCString suffix;
-    OriginAttributes attrs;
+    NeckoOriginAttributes attrs;
     stmt->GetUTF8String(IDX_ORIGIN_ATTRIBUTES, suffix);
     attrs.PopulateFromSuffix(suffix);
 
@@ -2541,7 +2742,7 @@ nsCookieService::EnsureReadComplete()
 
     CookieDomainTuple* tuple = array.AppendElement();
     tuple->key = key;
-    tuple->cookie = GetCookieFromRow(stmt);
+    tuple->cookie = GetCookieFromRow(stmt, attrs);
   }
 
   // Add the cookies to the table in a single operation. This makes sure that
@@ -2679,8 +2880,8 @@ nsCookieService::ImportCookies(nsIFile *aCookieFile)
     if (NS_FAILED(rv))
       continue;
 
-    // pre-existing cookies have appId=0, inBrowser=false set by default
-    // constructor of OriginAttributes().
+    // pre-existing cookies have appId=0, inIsolatedMozBrowser=false set by default
+    // constructor of NeckoOriginAttributes().
     nsCookieKey key = DEFAULT_APP_KEY(baseDomain);
 
     // Create a new nsCookie and assign the data. We don't know the cookie
@@ -2695,11 +2896,12 @@ nsCookieService::ImportCookies(nsIFile *aCookieFile)
                        nsCookie::GenerateUniqueCreationTime(currentTimeInUsec),
                        false,
                        Substring(buffer, secureIndex, expiresIndex - secureIndex - 1).EqualsLiteral(kTrue),
-                       isHttpOnly);
+                       isHttpOnly,
+                       key.mOriginAttributes);
     if (!newCookie) {
       return NS_ERROR_OUT_OF_MEMORY;
     }
-    
+
     // trick: preserve the most-recently-used cookie ordering,
     // by successively decrementing the lastAccessed time
     lastAccessedCounter--;
@@ -2771,7 +2973,7 @@ void
 nsCookieService::GetCookieStringInternal(nsIURI *aHostURI,
                                          bool aIsForeign,
                                          bool aHttpBound,
-                                         const OriginAttributes aOriginAttrs,
+                                         const NeckoOriginAttributes aOriginAttrs,
                                          bool aIsPrivate,
                                          nsCString &aCookieString)
 {
@@ -2814,6 +3016,11 @@ nsCookieService::GetCookieStringInternal(nsIURI *aHostURI,
     break;
   }
 
+  // Note: The following permissions logic is mirrored in
+  // toolkit/modules/addons/MatchPattern.jsm:MatchPattern.matchesCookie().
+  // If it changes, please update that function, or file a bug for someone
+  // else to do so.
+
   // check if aHostURI is using an https secure protocol.
   // if it isn't, then we can't send a secure cookie over the connection.
   // if SchemeIs fails, assume an insecure connection, to be on the safe side
@@ -2823,7 +3030,7 @@ nsCookieService::GetCookieStringInternal(nsIURI *aHostURI,
   }
 
   nsCookie *cookie;
-  nsAutoTArray<nsCookie*, 8> foundCookieList;
+  AutoTArray<nsCookie*, 8> foundCookieList;
   int64_t currentTimeInUsec = PR_Now();
   int64_t currentTime = currentTimeInUsec / PR_USEC_PER_SEC;
   bool stale = false;
@@ -3020,7 +3227,13 @@ nsCookieService::SetCookieInternal(nsIURI                        *aHostURI,
     return newCookie;
   }
 
-  if (cookieAttributes.name.Contains('\t')) {
+  const char illegalNameCharacters[] = { 0x01, 0x02, 0x03, 0x04, 0x05, 0x06,
+                                         0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C,
+                                         0x0D, 0x0E, 0x0F, 0x10, 0x11, 0x12,
+                                         0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+                                         0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E,
+                                         0x1F, 0x00 };
+  if (cookieAttributes.name.FindCharInSet(illegalNameCharacters, 0) != -1) {
     COOKIE_LOGFAILURE(SET_COOKIE, aHostURI, savedCookieHeader, "invalid name character");
     return newCookie;
   }
@@ -3063,7 +3276,8 @@ nsCookieService::SetCookieInternal(nsIURI                        *aHostURI,
                      nsCookie::GenerateUniqueCreationTime(currentTimeInUsec),
                      cookieAttributes.isSession,
                      cookieAttributes.isSecure,
-                     cookieAttributes.isHttpOnly);
+                     cookieAttributes.isHttpOnly,
+                     aKey.mOriginAttributes);
   if (!cookie)
     return newCookie;
 
@@ -3278,7 +3492,7 @@ nsCookieService::AddInternal(const nsCookieKey             &aKey,
     5. cookie <NAME> is optional, where spec requires it. This is a fairly
        trivial case, but allows the flexibility of setting only a cookie <VALUE>
        with a blank <NAME> and is required by some sites (see bug 169091).
-       
+
     6. Attribute "HttpOnly", not covered in the RFCs, is supported
        (see bug 178993).
 
@@ -3407,7 +3621,7 @@ nsCookieService::ParseAttributes(nsDependentCString &aCookieHeader,
 
   aCookieAttributes.isSecure = false;
   aCookieAttributes.isHttpOnly = false;
-  
+
   nsDependentCSubstring tokenString(cookieStart, cookieStart);
   nsDependentCSubstring tokenValue (cookieStart, cookieStart);
   bool newCookie, equalsFound;
@@ -3450,7 +3664,7 @@ nsCookieService::ParseAttributes(nsDependentCString &aCookieHeader,
     // ignore any tokenValue for isSecure; just set the boolean
     else if (tokenString.LowerCaseEqualsLiteral(kSecure))
       aCookieAttributes.isSecure = true;
-      
+
     // ignore any tokenValue for isHttpOnly (see bug 178993);
     // just set the boolean
     else if (tokenString.LowerCaseEqualsLiteral(kHttpOnly))
@@ -3675,6 +3889,11 @@ nsCookieService::CheckDomain(nsCookieAttributes &aCookieAttributes,
                              const nsCString    &aBaseDomain,
                              bool                aRequireHostMatch)
 {
+  // Note: The logic in this function is mirrored in
+  // toolkit/components/extensions/ext-cookies.js:checkSetCookiePermissions().
+  // If it changes, please update that function, or file a bug for someone
+  // else to do so.
+
   // get host from aHostURI
   nsAutoCString hostFromURI;
   aHostURI->GetAsciiHost(hostFromURI);
@@ -3772,8 +3991,8 @@ nsCookieService::GetExpiry(nsCookieAttributes &aCookieAttributes,
                            int64_t             aServerTime,
                            int64_t             aCurrentTime)
 {
-  /* Determine when the cookie should expire. This is done by taking the difference between 
-   * the server time and the time the server wants the cookie to expire, and adding that 
+  /* Determine when the cookie should expire. This is done by taking the difference between
+   * the server time and the time the server wants the cookie to expire, and adding that
    * difference to the client time. This localizes the client time regardless of whether or
    * not the TZ environment variable was set on the client.
    *
@@ -3884,8 +4103,8 @@ nsCookieService::PurgeCookies(int64_t aCurrentTimeInUsec)
     ("PurgeCookies(): beginning purge with %ld cookies and %lld oldest age",
      mDBState->cookieCount, aCurrentTimeInUsec - mDBState->cookieOldestTime));
 
-  typedef nsAutoTArray<nsListIter, kMaxNumberOfCookies> PurgeList;
-  PurgeList purgeList;
+  typedef nsTArray<nsListIter> PurgeList;
+  PurgeList purgeList(kMaxNumberOfCookies);
 
   nsCOMPtr<nsIMutableArray> removedList = do_CreateInstance(NS_ARRAY_CONTRACTID);
 
@@ -4112,7 +4331,7 @@ nsCookieService::GetCookiesFromHost(const nsACString     &aHost,
 }
 
 NS_IMETHODIMP
-nsCookieService::GetCookiesForApp(uint32_t aAppId, bool aOnlyBrowserElement,
+nsCookieService::GetCookiesForApp(uint32_t aAppId, bool aOnlyIsolatedMozBrowser,
                                   nsISimpleEnumerator** aEnumerator)
 {
   if (!mDBState) {
@@ -4127,7 +4346,7 @@ nsCookieService::GetCookiesForApp(uint32_t aAppId, bool aOnlyBrowserElement,
     nsCookieEntry* entry = iter.Get();
 
     if (entry->mOriginAttributes.mAppId != aAppId ||
-        (aOnlyBrowserElement && !entry->mOriginAttributes.mInBrowser)) {
+        (aOnlyIsolatedMozBrowser && !entry->mOriginAttributes.mInIsolatedMozBrowser)) {
       continue;
     }
 
@@ -4142,10 +4361,11 @@ nsCookieService::GetCookiesForApp(uint32_t aAppId, bool aOnlyBrowserElement,
 }
 
 NS_IMETHODIMP
-nsCookieService::RemoveCookiesForApp(uint32_t aAppId, bool aOnlyBrowserElement)
+nsCookieService::RemoveCookiesForApp(uint32_t aAppId,
+                                     bool aOnlyIsolatedMozBrowser)
 {
   nsCOMPtr<nsISimpleEnumerator> enumerator;
-  nsresult rv = GetCookiesForApp(aAppId, aOnlyBrowserElement,
+  nsresult rv = GetCookiesForApp(aAppId, aOnlyIsolatedMozBrowser,
                                  getter_AddRefs(enumerator));
 
   NS_ENSURE_SUCCESS(rv, rv);
@@ -4168,21 +4388,21 @@ nsCookieService::RemoveCookiesForApp(uint32_t aAppId, bool aOnlyBrowserElement)
     nsAutoCString path;
     cookie->GetPath(path);
 
-    // nsICookie do not carry the appId/inBrowserElement information.
+    // nsICookie do not carry the appId/isIsolatedBrowser information.
     // That means we have to guess. This is easy for appId but not for
-    // inBrowserElement flag.
+    // isIsolatedBrowser flag.
     // A simple solution is to always ask to remove the cookie with
-    // inBrowserElement = true and only ask for the other one to be removed if
+    // isIsolatedBrowser = true and only ask for the other one to be removed if
     // we happen to be in the case of !aOnlyBrowserElement.
-    // Anyway, with this solution, we will likely be looking for unexistant
+    // Anyway, with this solution, we will likely be looking for non-existent
     // cookies.
     //
     // NOTE: we could make this better by getting nsCookieEntry objects instead
     // of plain nsICookie.
-    OriginAttributes attrs(aAppId, true);
+    NeckoOriginAttributes attrs(aAppId, true);
     Remove(host, attrs, name, path, false);
-    if (!aOnlyBrowserElement) {
-      attrs.mInBrowser = false;
+    if (!aOnlyIsolatedMozBrowser) {
+      attrs.mInIsolatedMozBrowser = false;
       Remove(host, attrs, name, path, false);
     }
   }

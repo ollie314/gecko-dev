@@ -31,11 +31,11 @@ import shutil
 import textwrap
 import fnmatch
 import subprocess
+import time
 import ctypes
 import urlparse
 import concurrent.futures
 import multiprocessing
-import collections
 
 from optparse import OptionParser
 from xml.dom.minidom import parse
@@ -395,13 +395,13 @@ class Dumper:
     symbol files--|copy_debug|, mostly useful for creating a
     Microsoft Symbol Server from the resulting output.
 
-    You don't want to use this directly if you intend to call
-    ProcessDir.  Instead, call GetPlatformSpecificDumper to
-    get an instance of a subclass.
- 
+    You don't want to use this directly if you intend to process files.
+    Instead, call GetPlatformSpecificDumper to get an instance of a
+    subclass.
+
     Processing is performed asynchronously via worker processes; in
     order to wait for processing to finish and cleanup correctly, you
-    must call Finish after all Process/ProcessDir calls have been made.
+    must call Finish after all ProcessFiles calls have been made.
     You must also call Dumper.GlobalInit before creating or using any
     instances."""
     def __init__(self, dump_syms, symbol_path,
@@ -555,26 +555,40 @@ class Dumper:
         if stop_pool:
             JobPool.shutdown()
 
-    def Process(self, file_or_dir):
-        """Process a file or all the (valid) files in a directory; processing is performed
-        asynchronously, and Finish must be called to wait for it complete and cleanup."""
-        if os.path.isdir(file_or_dir) and not self.ShouldSkipDir(file_or_dir):
-            self.ProcessDir(file_or_dir)
-        elif os.path.isfile(file_or_dir):
-            self.ProcessFiles((file_or_dir,))
+    def Process(self, *args):
+        """Process files recursively in args."""
+        # We collect all files to process first then sort by size to schedule
+        # larger files first because larger files tend to take longer and we
+        # don't like long pole stragglers.
+        files = set()
+        for arg in args:
+            for f in self.get_files_to_process(arg):
+                files.add(f)
 
-    def ProcessDir(self, dir):
-        """Process all the valid files in this directory.  Valid files
-        are determined by calling ShouldProcess; processing is performed
-        asynchronously, and Finish must be called to wait for it complete and cleanup."""
-        for root, dirs, files in os.walk(dir):
+        for f in sorted(files, key=os.path.getsize, reverse=True):
+            self.ProcessFiles((f,))
+
+    def get_files_to_process(self, file_or_dir):
+        """Generate the files to process from an input."""
+        if os.path.isdir(file_or_dir) and not self.ShouldSkipDir(file_or_dir):
+            for f in self.get_files_to_process_in_dir(file_or_dir):
+                yield f
+        elif os.path.isfile(file_or_dir):
+            yield file_or_dir
+
+    def get_files_to_process_in_dir(self, path):
+        """Generate the files to process in a directory.
+
+        Valid files are are determined by calling ShouldProcess.
+        """
+        for root, dirs, files in os.walk(path):
             for d in dirs[:]:
                 if self.ShouldSkipDir(d):
                     dirs.remove(d)
             for f in files:
                 fullpath = os.path.join(root, f)
                 if self.ShouldProcess(fullpath):
-                    self.ProcessFiles((fullpath,))
+                    yield fullpath
 
     def SubmitJob(self, file_key, func_name, args, callback):
         """Submits a job to the pool of workers"""
@@ -605,7 +619,15 @@ class Dumper:
             self.files_record[files] = 0 # record that we submitted jobs for this tuple of files
             self.SubmitJob(files[-1], 'ProcessFilesWork', args=(files, arch_num, arch, vcs_root, after, after_arg), callback=self.ProcessFilesFinished)
 
+    def dump_syms_cmdline(self, file, arch, files):
+        '''
+        Get the commandline used to invoke dump_syms.
+        '''
+        # The Mac dumper overrides this.
+        return [self.dump_syms, file]
+
     def ProcessFilesWork(self, files, arch_num, arch, vcs_root, after, after_arg):
+        t_start = time.time()
         self.output_pid(sys.stderr, "Worker processing files: %s" % (files,))
 
         # our result is a status, a cleanup function, an argument to that function, and the tuple of files we were called on
@@ -616,7 +638,7 @@ class Dumper:
         for file in files:
             # files is a tuple of files, containing fallbacks in case the first file doesn't process successfully
             try:
-                cmd = [self.dump_syms] + arch.split() + [file]
+                cmd = self.dump_syms_cmdline(file, arch, files)
                 self.output_pid(sys.stderr, ' '.join(cmd))
                 proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
                                         stderr=open(os.devnull, 'wb'))
@@ -692,6 +714,10 @@ class Dumper:
             if result['status']:
                 # we only need 1 file to work
                 break
+
+        elapsed = time.time() - t_start
+        self.output_pid(sys.stderr, 'Worker finished processing %s in %.2fs' %
+                        (files, elapsed))
         return result
 
 # Platform-specific subclasses.  For the most part, these just have
@@ -723,13 +749,32 @@ class Dumper_Win32(Dumper):
         result = file
 
         ctypes.windll.kernel32.SetErrorMode(ctypes.c_uint(1))
-        (path, filename) = os.path.split(file)
-        if os.path.isdir(path):
-            lc_filename = filename.lower()
-            for f in os.listdir(path):
-                if f.lower() == lc_filename:
-                    result = os.path.join(path, f)
-                    break
+        if not isinstance(file, unicode):
+            file = unicode(file, sys.getfilesystemencoding())
+        handle = ctypes.windll.kernel32.CreateFileW(file,
+                                                    # GENERIC_READ
+                                                    0x80000000,
+                                                    # FILE_SHARE_READ
+                                                    1,
+                                                    None,
+                                                    # OPEN_EXISTING
+                                                    3,
+                                                    0,
+                                                    None)
+        if handle != -1:
+            size = ctypes.windll.kernel32.GetFinalPathNameByHandleW(handle,
+                                                                    None,
+                                                                    0,
+                                                                    0)
+            buf = ctypes.create_unicode_buffer(size)
+            if ctypes.windll.kernel32.GetFinalPathNameByHandleW(handle,
+                                                                buf,
+                                                                size,
+                                                                0) > 0:
+                # The return value of GetFinalPathNameByHandleW uses the
+                # '\\?\' prefix.
+                result = buf.value.encode(sys.getfilesystemencoding())[4:]
+            ctypes.windll.kernel32.CloseHandle(handle)
 
         # Cache the corrected version to avoid future filesystem hits.
         self.fixedFilenameCaseCache[file] = result
@@ -889,10 +934,22 @@ class Dumper_Mac(Dumper):
             # kick off new jobs per-arch with our new list of files
             Dumper.ProcessFiles(self, result['files'], after=AfterMac, after_arg=result['files'][0])
 
+    def dump_syms_cmdline(self, file, arch, files):
+        '''
+        Get the commandline used to invoke dump_syms.
+        '''
+        # dump_syms wants the path to the original binary and the .dSYM
+        # in order to dump all the symbols.
+        if len(files) == 2 and file == files[0] and file.endswith('.dSYM'):
+            # This is the .dSYM bundle.
+            return [self.dump_syms] + arch.split() + ['-g', file, files[1]]
+        return Dumper.dump_syms_cmdline(self, file, arch, files)
+
     def ProcessFilesWorkMac(self, file):
         """dump_syms on Mac needs to be run on a dSYM bundle produced
         by dsymutil(1), so run dsymutil here and pass the bundle name
         down to the superclass method instead."""
+        t_start = time.time()
         self.output_pid(sys.stderr, "Worker running Mac pre-processing on file: %s" % (file,))
 
         # our return is a status and a tuple of files to dump symbols for
@@ -921,6 +978,9 @@ class Dumper_Mac(Dumper):
 
         result['status'] = True
         result['files'] = (dsymbundle, file)
+        elapsed = time.time() - t_start
+        self.output_pid(sys.stderr, 'Worker finished processing %s in %.2fs' %
+                        (file, elapsed))
         return result
 
     def CopyDebug(self, file, debug_file, guid, code_file, code_id):
@@ -1002,8 +1062,8 @@ to canonical locations in the source repository. Specify
                                        exclude=options.exclude,
                                        repo_manifest=options.repo_manifest,
                                        file_mapping=file_mapping)
-    for arg in args[2:]:
-        dumper.Process(arg)
+
+    dumper.Process(*args[2:])
     dumper.Finish()
 
 # run main if run directly

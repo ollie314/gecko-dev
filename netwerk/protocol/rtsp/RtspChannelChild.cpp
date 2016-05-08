@@ -5,6 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "nsContentSecurityManager.h"
+#include "nsContentUtils.h"
 #include "RtspChannelChild.h"
 #include "mozilla/ipc/URIUtils.h"
 #include "nsServiceManagerUtils.h"
@@ -81,7 +82,7 @@ RtspChannelChild::GetContentType(nsACString& aContentType)
   return NS_OK;
 }
 
-class CallListenerOnStartRequestEvent : public nsRunnable
+class CallListenerOnStartRequestEvent : public Runnable
 {
 public:
   CallListenerOnStartRequestEvent(nsIStreamListener *aListener,
@@ -107,8 +108,11 @@ private:
 NS_IMETHODIMP
 RtspChannelChild::AsyncOpen(nsIStreamListener *aListener, nsISupports *aContext)
 {
-  MOZ_ASSERT(!mLoadInfo || mLoadInfo->GetSecurityMode() == 0 ||
-             mLoadInfo->GetInitialSecurityCheckDone(),
+  MOZ_ASSERT(!mLoadInfo ||
+             mLoadInfo->GetSecurityMode() == 0 ||
+             mLoadInfo->GetInitialSecurityCheckDone() ||
+             (mLoadInfo->GetSecurityMode() == nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL &&
+              nsContentUtils::IsSystemPrincipal(mLoadInfo->LoadingPrincipal())),
              "security flags in loadInfo but asyncOpen2() not called");
 
   // Precondition checks.
@@ -181,7 +185,7 @@ RtspChannelChild::OnDataAvailable(nsIRequest *aRequest,
 //-----------------------------------------------------------------------------
 // nsBaseChannel::nsIChannel::nsIRequest
 //-----------------------------------------------------------------------------
-class CallListenerOnStopRequestEvent : public nsRunnable
+class CallListenerOnStopRequestEvent : public Runnable
 {
 public:
   CallListenerOnStopRequestEvent(nsIStreamListener *aListener,

@@ -17,7 +17,10 @@
 #include "jswrapper.h"
 
 #include "gc/Marking.h"
+#include "gc/Policy.h"
 #include "jit/JitCompartment.h"
+#include "jit/JitOptions.h"
+#include "js/Date.h"
 #include "js/Proxy.h"
 #include "js/RootingAPI.h"
 #include "proxy/DeadObjectProxy.h"
@@ -39,16 +42,16 @@ using mozilla::DebugOnly;
 using mozilla::PodArrayZero;
 
 JSCompartment::JSCompartment(Zone* zone, const JS::CompartmentOptions& options = JS::CompartmentOptions())
-  : options_(options),
+  : creationOptions_(options.creationOptions()),
+    behaviors_(options.behaviors()),
     zone_(zone),
     runtime_(zone->runtimeFromMainThread()),
     principals_(nullptr),
     isSystem_(false),
     isSelfHosting(false),
     marked(true),
-    warnedAboutNoSuchMethod(false),
     warnedAboutFlagsArgument(false),
-    addonId(options.addonIdOrNull()),
+    warnedAboutExprClosure(false),
 #ifdef DEBUG
     firedOnNewGlobalObject(false),
 #endif
@@ -56,27 +59,27 @@ JSCompartment::JSCompartment(Zone* zone, const JS::CompartmentOptions& options =
     enterCompartmentDepth(0),
     performanceMonitoring(runtime_),
     data(nullptr),
-    objectMetadataCallback(nullptr),
+    allocationMetadataBuilder(nullptr),
     lastAnimationTime(0),
     regExps(runtime_),
     globalWriteBarriered(false),
-    neuteredTypedObjects(0),
+    detachedTypedObjects(0),
     objectMetadataState(ImmediateMetadata()),
     propertyTree(thisForCtor()),
+    baseShapes(zone, BaseShapeSet()),
+    initialShapes(zone, InitialShapeSet()),
     selfHostingScriptSource(nullptr),
     objectMetadataTable(nullptr),
     lazyArrayBuffers(nullptr),
     nonSyntacticLexicalScopes_(nullptr),
     gcIncomingGrayPointers(nullptr),
-    gcPreserveJitCode(options.preserveJitCode()),
     debugModeBits(0),
-    rngState(0),
     watchpointMap(nullptr),
     scriptCountsMap(nullptr),
     debugScriptMap(nullptr),
     debugScopes(nullptr),
     enumerators(nullptr),
-    compartmentStats(nullptr),
+    compartmentStats_(nullptr),
     scheduledForDestruction(false),
     maybeAlive(true),
     jitCompartment_(nullptr),
@@ -86,7 +89,8 @@ JSCompartment::JSCompartment(Zone* zone, const JS::CompartmentOptions& options =
 {
     PodArrayZero(sawDeprecatedLanguageExtension);
     runtime_->numCompartments++;
-    MOZ_ASSERT_IF(options.mergeable(), options.invisibleToDebugger());
+    MOZ_ASSERT_IF(creationOptions_.mergeable(),
+                  creationOptions_.invisibleToDebugger());
 }
 
 JSCompartment::~JSCompartment()
@@ -120,11 +124,10 @@ JSCompartment::init(JSContext* maybecx)
      *
      * As a hack, we clear our timezone cache every time we create a new
      * compartment. This ensures that the cache is always relatively fresh, but
-     * shouldn't interfere with benchmarks which create tons of date objects
+     * shouldn't interfere with benchmarks that create tons of date objects
      * (unless they also create tons of iframes, which seems unlikely).
      */
-    if (maybecx)
-        maybecx->runtime()->dateTimeInfo.updateTimeZoneAdjustment();
+    JS::ResetTimeZone();
 
     if (!crossCompartmentWrappers.init(0)) {
         if (maybecx)
@@ -157,29 +160,22 @@ JSRuntime::createJitRuntime(JSContext* cx)
 
     MOZ_ASSERT(!jitRuntime_);
 
-    jit::JitRuntime* jrt = cx->new_<jit::JitRuntime>();
+    jit::JitRuntime* jrt = cx->new_<jit::JitRuntime>(cx->runtime());
     if (!jrt)
         return nullptr;
 
     // Protect jitRuntime_ from being observed (by InterruptRunningJitCode)
     // while it is being initialized. Unfortunately, initialization depends on
     // jitRuntime_ being non-null, so we can't just wait to assign jitRuntime_.
-    JitRuntime::AutoMutateBackedges amb(jrt);
+    JitRuntime::AutoPreventBackedgePatching apbp(cx->runtime(), jrt);
     jitRuntime_ = jrt;
 
+    AutoEnterOOMUnsafeRegion noOOM;
     if (!jitRuntime_->initialize(cx)) {
-        ReportOutOfMemory(cx);
-
-        js_delete(jitRuntime_);
-        jitRuntime_ = nullptr;
-
-        JSCompartment* comp = cx->runtime()->atomsCompartment();
-        if (comp->jitCompartment_) {
-            js_delete(comp->jitCompartment_);
-            comp->jitCompartment_ = nullptr;
-        }
-
-        return nullptr;
+        // Handling OOM here is complicated: if we delete jitRuntime_ now, we
+        // will destroy the ExecutableAllocator, even though there may still be
+        // JitCode instances holding references to ExecutablePools.
+        noOOM.crash("OOM in createJitRuntime");
     }
 
     return jitRuntime_;
@@ -231,7 +227,9 @@ class WrapperMapRef : public BufferableRef
         if (key.kind == CrossCompartmentKey::ObjectWrapper ||
             key.kind == CrossCompartmentKey::DebuggerObject ||
             key.kind == CrossCompartmentKey::DebuggerEnvironment ||
-            key.kind == CrossCompartmentKey::DebuggerSource)
+            key.kind == CrossCompartmentKey::DebuggerSource ||
+            key.kind == CrossCompartmentKey::DebuggerWasmScript ||
+            key.kind == CrossCompartmentKey::DebuggerWasmSource)
         {
             MOZ_ASSERT(IsInsideNursery(key.wrapped) ||
                        key.wrapped->asTenured().getTraceKind() == JS::TraceKind::Object);
@@ -403,7 +401,7 @@ JSCompartment::wrap(JSContext* cx, MutableHandleObject obj, HandleObject existin
     const JSWrapObjectCallbacks* cb = cx->runtime()->wrapObjectCallbacks;
 
     if (obj->compartment() == this) {
-        obj.set(GetOuterObject(cx, obj));
+        obj.set(ToWindowProxyIfWindow(obj));
         return true;
     }
 
@@ -416,10 +414,10 @@ JSCompartment::wrap(JSContext* cx, MutableHandleObject obj, HandleObject existin
 
     // Unwrap the object, but don't unwrap outer windows.
     RootedObject objectPassedToWrap(cx, obj);
-    obj.set(UncheckedUnwrap(obj, /* stopAtOuter = */ true));
+    obj.set(UncheckedUnwrap(obj, /* stopAtWindowProxy = */ true));
 
     if (obj->compartment() == this) {
-        MOZ_ASSERT(obj == GetOuterObject(cx, obj));
+        MOZ_ASSERT(!IsWindow(obj));
         return true;
     }
 
@@ -442,7 +440,7 @@ JSCompartment::wrap(JSContext* cx, MutableHandleObject obj, HandleObject existin
         if (!obj)
             return false;
     }
-    MOZ_ASSERT(obj == GetOuterObject(cx, obj));
+    MOZ_ASSERT(!IsWindow(obj));
 
     if (obj->compartment() == this)
         return true;
@@ -458,7 +456,7 @@ JSCompartment::wrap(JSContext* cx, MutableHandleObject obj, HandleObject existin
     RootedObject existing(cx, existingArg);
     if (existing) {
         // Is it possible to reuse |existing|?
-        if (!existing->getTaggedProto().isLazy() ||
+        if (existing->hasStaticPrototype() ||
             // Note: Class asserted above, so all that's left to check is callability
             existing->isCallable() ||
             obj->isCallable())
@@ -506,6 +504,16 @@ JSCompartment::wrap(JSContext* cx, MutableHandle<PropertyDescriptor> desc)
     }
 
     return wrap(cx, desc.value());
+}
+
+bool
+JSCompartment::wrap(JSContext* cx, MutableHandle<GCVector<Value>> vec)
+{
+    for (size_t i = 0; i < vec.length(); ++i) {
+        if (!wrap(cx, vec[i]))
+            return false;
+    }
+    return true;
 }
 
 ClonedBlockObject*
@@ -637,8 +645,7 @@ JSCompartment::traceRoots(JSTracer* trc, js::gc::GCRuntime::TraceOrMarkRuntime t
     // structures. It uses a HashMap instead of a WeakMap, so that we can keep
     // the data alive for the JSScript::finalize call. Thus, we do not trace the
     // keys of the HashMap to avoid adding a strong reference to the JSScript
-    // pointers. Additionally, we assert that the JSScripts have not been moved
-    // in JSCompartment::fixupAfterMovingGC.
+    // pointers.
     //
     // If the code coverage is either enabled with the --dump-bytecode command
     // line option, or with the PCCount JSFriend API functions, then we mark the
@@ -666,19 +673,19 @@ JSCompartment::sweepAfterMinorGC()
     globalWriteBarriered = false;
 
     if (innerViews.needsSweepAfterMinorGC())
-        innerViews.sweepAfterMinorGC(runtimeFromMainThread());
+        innerViews.sweepAfterMinorGC();
 }
 
 void
 JSCompartment::sweepInnerViews()
 {
-    innerViews.sweep(runtimeFromAnyThread());
+    innerViews.sweep();
 }
 
 void
 JSCompartment::sweepSavedStacks()
 {
-    savedStacks_.sweep(runtimeFromAnyThread());
+    savedStacks_.sweep();
 }
 
 void
@@ -760,44 +767,39 @@ JSCompartment::sweepNativeIterators()
 void
 JSCompartment::sweepCrossCompartmentWrappers()
 {
-    /* Remove dead wrappers from the table. */
-    for (WrapperMap::Enum e(crossCompartmentWrappers); !e.empty(); e.popFront()) {
-        CrossCompartmentKey key = e.front().key();
-        bool keyDying;
-        switch (key.kind) {
-          case CrossCompartmentKey::ObjectWrapper:
-          case CrossCompartmentKey::DebuggerObject:
-          case CrossCompartmentKey::DebuggerEnvironment:
-          case CrossCompartmentKey::DebuggerSource:
-              MOZ_ASSERT(IsInsideNursery(key.wrapped) ||
-                         key.wrapped->asTenured().getTraceKind() == JS::TraceKind::Object);
-              keyDying = IsAboutToBeFinalizedUnbarriered(
-                  reinterpret_cast<JSObject**>(&key.wrapped));
-              break;
-          case CrossCompartmentKey::StringWrapper:
-              MOZ_ASSERT(key.wrapped->asTenured().getTraceKind() == JS::TraceKind::String);
-              keyDying = IsAboutToBeFinalizedUnbarriered(
-                  reinterpret_cast<JSString**>(&key.wrapped));
-              break;
-          case CrossCompartmentKey::DebuggerScript:
-              MOZ_ASSERT(key.wrapped->asTenured().getTraceKind() == JS::TraceKind::Script);
-              keyDying = IsAboutToBeFinalizedUnbarriered(
-                  reinterpret_cast<JSScript**>(&key.wrapped));
-              break;
-          default:
-              MOZ_CRASH("Unknown key kind");
-        }
-        bool valDying = IsAboutToBeFinalized(&e.front().value());
-        bool dbgDying = key.debugger && IsAboutToBeFinalizedUnbarriered(&key.debugger);
-        if (keyDying || valDying || dbgDying) {
-            MOZ_ASSERT(key.kind != CrossCompartmentKey::StringWrapper);
-            e.removeFront();
-        } else if (key.wrapped != e.front().key().wrapped ||
-                   key.debugger != e.front().key().debugger)
-        {
-            e.rekeyFront(key);
-        }
+    crossCompartmentWrappers.sweep();
+}
+
+bool
+CrossCompartmentKey::needsSweep()
+{
+    bool keyDying;
+    switch (kind) {
+      case CrossCompartmentKey::ObjectWrapper:
+      case CrossCompartmentKey::DebuggerObject:
+      case CrossCompartmentKey::DebuggerEnvironment:
+      case CrossCompartmentKey::DebuggerSource:
+      case CrossCompartmentKey::DebuggerWasmScript:
+      case CrossCompartmentKey::DebuggerWasmSource:
+          MOZ_ASSERT(IsInsideNursery(wrapped) ||
+                     wrapped->asTenured().getTraceKind() == JS::TraceKind::Object);
+          keyDying = IsAboutToBeFinalizedUnbarriered(reinterpret_cast<JSObject**>(&wrapped));
+          break;
+      case CrossCompartmentKey::StringWrapper:
+          MOZ_ASSERT(wrapped->asTenured().getTraceKind() == JS::TraceKind::String);
+          keyDying = IsAboutToBeFinalizedUnbarriered(reinterpret_cast<JSString**>(&wrapped));
+          break;
+      case CrossCompartmentKey::DebuggerScript:
+          MOZ_ASSERT(wrapped->asTenured().getTraceKind() == JS::TraceKind::Script);
+          keyDying = IsAboutToBeFinalizedUnbarriered(reinterpret_cast<JSScript**>(&wrapped));
+          break;
+      default:
+          MOZ_CRASH("Unknown key kind");
     }
+
+    bool dbgDying = debugger && IsAboutToBeFinalizedUnbarriered(&debugger);
+    MOZ_ASSERT_IF(keyDying || dbgDying, kind != CrossCompartmentKey::StringWrapper);
+    return keyDying || dbgDying;
 }
 
 void
@@ -829,18 +831,8 @@ JSCompartment::fixupAfterMovingGC()
     fixupGlobal();
     fixupInitialShapeTable();
     objectGroups.fixupTablesAfterMovingGC();
-
-#ifdef DEBUG
-    // Assert that none of the JSScript pointers, which are used as key of the
-    // scriptCountsMap HashMap are moved. We do not mark these keys because we
-    // need weak references. We do not use a WeakMap because these entries would
-    // be collected before the JSScript::finalize calls which is used to
-    // summarized the content of the code coverage.
-    if (scriptCountsMap) {
-        for (ScriptCountsMap::Range r = scriptCountsMap->all(); !r.empty(); r.popFront())
-            MOZ_ASSERT(!IsForwarded(r.front().key()));
-    }
-#endif
+    dtoaCache.purge();
+    fixupScriptMapsAfterMovingGC();
 }
 
 void
@@ -850,6 +842,59 @@ JSCompartment::fixupGlobal()
     if (global)
         global_.set(MaybeForwarded(global));
 }
+
+void
+JSCompartment::fixupScriptMapsAfterMovingGC()
+{
+    // Map entries are removed by JSScript::finalize, but we need to update the
+    // script pointers here in case they are moved by the GC.
+
+    if (scriptCountsMap) {
+        for (ScriptCountsMap::Enum e(*scriptCountsMap); !e.empty(); e.popFront()) {
+            JSScript* script = e.front().key();
+            if (!IsAboutToBeFinalizedUnbarriered(&script) && script != e.front().key())
+                e.rekeyFront(script);
+        }
+    }
+
+    if (debugScriptMap) {
+        for (DebugScriptMap::Enum e(*debugScriptMap); !e.empty(); e.popFront()) {
+            JSScript* script = e.front().key();
+            if (!IsAboutToBeFinalizedUnbarriered(&script) && script != e.front().key())
+                e.rekeyFront(script);
+        }
+    }
+}
+
+#ifdef JSGC_HASH_TABLE_CHECKS
+void
+JSCompartment::checkScriptMapsAfterMovingGC()
+{
+    if (scriptCountsMap) {
+        for (auto r = scriptCountsMap->all(); !r.empty(); r.popFront()) {
+            JSScript* script = r.front().key();
+            CheckGCThingAfterMovingGC(script);
+            auto ptr = scriptCountsMap->lookup(script);
+            MOZ_RELEASE_ASSERT(ptr.found() && &*ptr == &r.front());
+        }
+    }
+
+    if (debugScriptMap) {
+        for (auto r = debugScriptMap->all(); !r.empty(); r.popFront()) {
+            JSScript* script = r.front().key();
+            CheckGCThingAfterMovingGC(script);
+            DebugScript* ds = r.front().value();
+            for (uint32_t i = 0; i < ds->numSites; i++) {
+                BreakpointSite* site = ds->breakpoints[i];
+                if (site)
+                    CheckGCThingAfterMovingGC(site->script);
+            }
+            auto ptr = debugScriptMap->lookup(script);
+            MOZ_RELEASE_ASSERT(ptr.found() && &*ptr == &r.front());
+        }
+    }
+}
+#endif
 
 void
 JSCompartment::purge()
@@ -881,13 +926,13 @@ JSCompartment::clearTables()
 }
 
 void
-JSCompartment::setObjectMetadataCallback(js::ObjectMetadataCallback callback)
+JSCompartment::setAllocationMetadataBuilder(const js::AllocationMetadataBuilder *builder)
 {
     // Clear any jitcode in the runtime, which behaves differently depending on
     // whether there is a creation callback.
     ReleaseAllJITCode(runtime_->defaultFreeOp());
 
-    objectMetadataCallback = callback;
+    allocationMetadataBuilder = builder;
 }
 
 void
@@ -898,12 +943,12 @@ JSCompartment::clearObjectMetadata()
 }
 
 void
-JSCompartment::setNewObjectMetadata(JSContext* cx, JSObject* obj)
+JSCompartment::setNewObjectMetadata(JSContext* cx, HandleObject obj)
 {
     assertSameCompartment(cx, this, obj);
 
-    if (JSObject* metadata = objectMetadataCallback(cx, obj)) {
-        AutoEnterOOMUnsafeRegion oomUnsafe;
+    AutoEnterOOMUnsafeRegion oomUnsafe;
+    if (JSObject* metadata = allocationMetadataBuilder->build(cx, obj, oomUnsafe)) {
         assertSameCompartment(cx, metadata);
         if (!objectMetadataTable) {
             objectMetadataTable = cx->new_<ObjectWeakMap>(cx);
@@ -1027,7 +1072,7 @@ JSCompartment::updateDebuggerObservesFlag(unsigned flag)
                            ? unsafeUnbarrieredMaybeGlobal()
                            : maybeGlobal();
     const GlobalObject::DebuggerVector* v = global->getDebuggers();
-    for (Debugger * const* p = v->begin(); p != v->end(); p++) {
+    for (auto p = v->begin(); p != v->end(); p++) {
         Debugger* dbg = *p;
         if (flag == DebuggerObservesAllExecution ? dbg->observesAllExecution() :
             flag == DebuggerObservesCoverage ? dbg->observesCoverage() :
@@ -1075,6 +1120,15 @@ JSCompartment::updateDebuggerObservesCoverage()
     clearScriptCounts();
 }
 
+bool
+JSCompartment::collectCoverage() const
+{
+    return !JitOptions.disablePgo ||
+           debuggerObservesCoverage() ||
+           runtimeFromAnyThread()->profilingScripts ||
+           runtimeFromAnyThread()->lcovOutput.isEnabled();
+}
+
 void
 JSCompartment::clearScriptCounts()
 {
@@ -1084,8 +1138,9 @@ JSCompartment::clearScriptCounts()
     // Clear all hasScriptCounts_ flags of JSScript, in order to release all
     // ScriptCounts entry of the current compartment.
     for (ScriptCountsMap::Range r = scriptCountsMap->all(); !r.empty(); r.popFront()) {
-        ScriptCounts* value = &r.front().value();
+        ScriptCounts* value = r.front().value();
         r.front().key()->takeOverScriptCountsMapEntry(value);
+        js_delete(value);
     }
 
     js_delete(scriptCountsMap);
@@ -1115,7 +1170,9 @@ JSCompartment::addSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf,
                                       size_t* crossCompartmentWrappersArg,
                                       size_t* regexpCompartment,
                                       size_t* savedStacksSet,
-                                      size_t* nonSyntacticLexicalScopesArg)
+                                      size_t* nonSyntacticLexicalScopesArg,
+                                      size_t* jitCompartment,
+                                      size_t* privateData)
 {
     *compartmentObject += mallocSizeOf(this);
     objectGroups.addSizeOfExcludingThis(mallocSizeOf, tiAllocationSiteTables,
@@ -1133,6 +1190,12 @@ JSCompartment::addSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf,
     *savedStacksSet += savedStacks_.sizeOfExcludingThis(mallocSizeOf);
     if (nonSyntacticLexicalScopes_)
         *nonSyntacticLexicalScopesArg += nonSyntacticLexicalScopes_->sizeOfIncludingThis(mallocSizeOf);
+    if (jitCompartment_)
+        *jitCompartment += jitCompartment_->sizeOfIncludingThis(mallocSizeOf);
+
+    auto callback = runtime_->sizeOfIncludingThisCompartmentCallback;
+    if (callback)
+        *privateData += callback(mallocSizeOf, this);
 }
 
 void
@@ -1145,7 +1208,7 @@ JSCompartment::reportTelemetry()
     // Hazard analysis can't tell that the telemetry callbacks don't GC.
     JS::AutoSuppressGCAnalysis nogc;
 
-    int id = addonId
+    int id = creationOptions_.addonIdOrNull()
              ? JS_TELEMETRY_DEPRECATED_LANGUAGE_EXTENSIONS_IN_ADDONS
              : JS_TELEMETRY_DEPRECATED_LANGUAGE_EXTENSIONS_IN_CONTENT;
 
@@ -1160,7 +1223,9 @@ void
 JSCompartment::addTelemetry(const char* filename, DeprecatedLanguageExtension e)
 {
     // Only report telemetry for web content and add-ons, not chrome JS.
-    if (isSystem_ || (!addonId && (!filename || strncmp(filename, "http", 4) != 0)))
+    if (isSystem_)
+        return;
+    if (!creationOptions_.addonIdOrNull() && (!filename || strncmp(filename, "http", 4) != 0))
         return;
 
     sawDeprecatedLanguageExtension[e] = true;
@@ -1185,13 +1250,26 @@ AutoSetNewObjectMetadata::~AutoSetNewObjectMetadata()
         return;
 
     if (!cx_->isExceptionPending() && cx_->compartment()->hasObjectPendingMetadata()) {
+        // This destructor often runs upon exit from a function that is
+        // returning an unrooted pointer to a Cell. The allocation metadata
+        // callback often allocates; if it causes a GC, then the Cell pointer
+        // being returned won't be traced or relocated.
+        //
+        // The only extant callbacks are those internal to SpiderMonkey that
+        // capture the JS stack. In fact, we're considering removing general
+        // callbacks altogther in bug 1236748. Since it's not running arbitrary
+        // code, it's adequate to simply suppress GC while we run the callback.
+        AutoSuppressGC autoSuppressGC(cx_);
+
         JSObject* obj = cx_->compartment()->objectMetadataState.as<PendingMetadata>();
+
         // Make sure to restore the previous state before setting the object's
         // metadata. SetNewObjectMetadata asserts that the state is not
         // PendingMetadata in order to ensure that metadata callbacks are called
         // in order.
         cx_->compartment()->objectMetadataState = prevState_;
-        SetNewObjectMetadata(cx_, obj);
+
+        obj = SetNewObjectMetadata(cx_, obj);
     } else {
         cx_->compartment()->objectMetadataState = prevState_;
     }

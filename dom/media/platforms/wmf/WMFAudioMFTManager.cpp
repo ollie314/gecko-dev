@@ -10,10 +10,10 @@
 #include "WMFUtils.h"
 #include "nsTArray.h"
 #include "TimeUnits.h"
-
+#include "mozilla/Telemetry.h"
 #include "mozilla/Logging.h"
 
-extern PRLogModuleInfo* GetPDMLog();
+extern mozilla::LogModule* GetPDMLog();
 #define LOG(...) MOZ_LOG(GetPDMLog(), mozilla::LogLevel::Debug, (__VA_ARGS__))
 
 namespace mozilla {
@@ -195,6 +195,11 @@ WMFAudioMFTManager::UpdateOutputType()
   hr = type->GetUINT32(MF_MT_AUDIO_NUM_CHANNELS, &mAudioChannels);
   NS_ENSURE_TRUE(SUCCEEDED(hr), hr);
 
+  AudioConfig::ChannelLayout layout(mAudioChannels);
+  if (!layout.IsValid()) {
+    return E_FAIL;
+  }
+
   return S_OK;
 }
 
@@ -225,6 +230,16 @@ WMFAudioMFTManager::Output(int64_t aStreamOffset,
   }
 
   NS_ENSURE_TRUE(SUCCEEDED(hr), hr);
+
+  if (!sample) {
+    LOG("Audio MFTDecoder returned success but null output.");
+    nsCOMPtr<nsIRunnable> task = NS_NewRunnableFunction([]() -> void {
+      LOG("Reporting telemetry AUDIO_MFT_OUTPUT_NULL_SAMPLES");
+      Telemetry::Accumulate(Telemetry::ID::AUDIO_MFT_OUTPUT_NULL_SAMPLES, 1);
+    });
+    AbstractThread::MainThread()->Dispatch(task.forget());
+    return E_FAIL;
+  }
 
   RefPtr<IMFMediaBuffer> buffer;
   hr = sample->ConvertToContiguousBuffer(getter_AddRefs(buffer));
@@ -280,7 +295,10 @@ WMFAudioMFTManager::Output(int64_t aStreamOffset,
     return S_OK;
   }
 
-  nsAutoArrayPtr<AudioDataValue> audioData(new AudioDataValue[numSamples]);
+  AlignedAudioBuffer audioData(numSamples);
+  if (!audioData) {
+    return E_OUTOFMEMORY;
+  }
 
   int16_t* pcm = (int16_t*)data;
   for (int32_t i = 0; i < numSamples; ++i) {
@@ -302,7 +320,7 @@ WMFAudioMFTManager::Output(int64_t aStreamOffset,
                            timestamp.ToMicroseconds(),
                            duration.ToMicroseconds(),
                            numFrames,
-                           audioData.forget(),
+                           Move(audioData),
                            mAudioChannels,
                            mAudioRate);
 

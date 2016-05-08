@@ -340,36 +340,36 @@ TypeSet::mightBeMIRType(jit::MIRType type) const
     if (unknown())
         return true;
 
-    if (type == jit::MIRType_Object)
+    if (type == jit::MIRType::Object)
         return unknownObject() || baseObjectCount() != 0;
 
     switch (type) {
-      case jit::MIRType_Undefined:
+      case jit::MIRType::Undefined:
         return baseFlags() & TYPE_FLAG_UNDEFINED;
-      case jit::MIRType_Null:
+      case jit::MIRType::Null:
         return baseFlags() & TYPE_FLAG_NULL;
-      case jit::MIRType_Boolean:
+      case jit::MIRType::Boolean:
         return baseFlags() & TYPE_FLAG_BOOLEAN;
-      case jit::MIRType_Int32:
+      case jit::MIRType::Int32:
         return baseFlags() & TYPE_FLAG_INT32;
-      case jit::MIRType_Float32: // Fall through, there's no JSVAL for Float32.
-      case jit::MIRType_Double:
+      case jit::MIRType::Float32: // Fall through, there's no JSVAL for Float32.
+      case jit::MIRType::Double:
         return baseFlags() & TYPE_FLAG_DOUBLE;
-      case jit::MIRType_String:
+      case jit::MIRType::String:
         return baseFlags() & TYPE_FLAG_STRING;
-      case jit::MIRType_Symbol:
+      case jit::MIRType::Symbol:
         return baseFlags() & TYPE_FLAG_SYMBOL;
-      case jit::MIRType_MagicOptimizedArguments:
+      case jit::MIRType::MagicOptimizedArguments:
         return baseFlags() & TYPE_FLAG_LAZYARGS;
-      case jit::MIRType_MagicHole:
-      case jit::MIRType_MagicIsConstructing:
+      case jit::MIRType::MagicHole:
+      case jit::MIRType::MagicIsConstructing:
         // These magic constants do not escape to script and are not observed
         // in the type sets.
         //
         // The reason we can return false here is subtle: if Ion is asking the
         // type set if it has seen such a magic constant, then the MIR in
-        // question is the most generic type, MIRType_Value. A magic constant
-        // could only be emitted by a MIR of MIRType_Value if that MIR is a
+        // question is the most generic type, MIRType::Value. A magic constant
+        // could only be emitted by a MIR of MIRType::Value if that MIR is a
         // phi, and we check that different magic constants do not flow to the
         // same join point in GuessPhiType.
         return false;
@@ -680,6 +680,7 @@ ConstraintTypeSet::addType(ExclusiveContext* cxArg, Type type)
 void
 TypeSet::print(FILE* fp)
 {
+    bool fromDebugger = !fp;
     if (!fp)
         fp = stderr;
 
@@ -730,6 +731,9 @@ TypeSet::print(FILE* fp)
                 fprintf(fp, " %s", TypeString(ObjectType(key)));
         }
     }
+
+    if (fromDebugger)
+        fprintf(fp, "\n");
 }
 
 /* static */ void
@@ -772,10 +776,10 @@ TypeSet::IsTypeAllocatedDuringIncremental(TypeSet::Type v)
     bool rv;
     if (v.isSingletonUnchecked()) {
         JSObject* obj = v.singletonNoBarrier();
-        rv = obj->isTenured() && obj->asTenured().arenaHeader()->allocatedDuringIncremental;
+        rv = obj->isTenured() && obj->asTenured().arena()->allocatedDuringIncremental;
     } else if (v.isGroupUnchecked()) {
         ObjectGroup* group = v.groupNoBarrier();
-        rv = group->arenaHeader()->allocatedDuringIncremental;
+        rv = group->arena()->allocatedDuringIncremental;
     } else {
         rv = false;
     }
@@ -1211,7 +1215,7 @@ TypeSet::ObjectKey::clasp()
 TaggedProto
 TypeSet::ObjectKey::proto()
 {
-    return isGroup() ? group()->proto() : singleton()->getTaggedProto();
+    return isGroup() ? group()->proto() : singleton()->taggedProto();
 }
 
 TypeNewScript*
@@ -1575,25 +1579,25 @@ GetMIRTypeFromTypeFlags(TypeFlags flags)
 {
     switch (flags) {
       case TYPE_FLAG_UNDEFINED:
-        return jit::MIRType_Undefined;
+        return jit::MIRType::Undefined;
       case TYPE_FLAG_NULL:
-        return jit::MIRType_Null;
+        return jit::MIRType::Null;
       case TYPE_FLAG_BOOLEAN:
-        return jit::MIRType_Boolean;
+        return jit::MIRType::Boolean;
       case TYPE_FLAG_INT32:
-        return jit::MIRType_Int32;
+        return jit::MIRType::Int32;
       case (TYPE_FLAG_INT32 | TYPE_FLAG_DOUBLE):
-        return jit::MIRType_Double;
+        return jit::MIRType::Double;
       case TYPE_FLAG_STRING:
-        return jit::MIRType_String;
+        return jit::MIRType::String;
       case TYPE_FLAG_SYMBOL:
-        return jit::MIRType_Symbol;
+        return jit::MIRType::Symbol;
       case TYPE_FLAG_LAZYARGS:
-        return jit::MIRType_MagicOptimizedArguments;
+        return jit::MIRType::MagicOptimizedArguments;
       case TYPE_FLAG_ANYOBJECT:
-        return jit::MIRType_Object;
+        return jit::MIRType::Object;
       default:
-        return jit::MIRType_Value;
+        return jit::MIRType::Value;
     }
 }
 
@@ -1604,7 +1608,7 @@ TemporaryTypeSet::getKnownMIRType()
     jit::MIRType type;
 
     if (baseObjectCount())
-        type = flags ? jit::MIRType_Value : jit::MIRType_Object;
+        type = flags ? jit::MIRType::Value : jit::MIRType::Object;
     else
         type = GetMIRTypeFromTypeFlags(flags);
 
@@ -1616,7 +1620,7 @@ TemporaryTypeSet::getKnownMIRType()
      * added to the set.
      */
     DebugOnly<bool> empty = flags == 0 && baseObjectCount() == 0;
-    MOZ_ASSERT_IF(empty, type == jit::MIRType_Value);
+    MOZ_ASSERT_IF(empty, type == jit::MIRType::Value);
 
     return type;
 }
@@ -1627,17 +1631,17 @@ HeapTypeSetKey::knownMIRType(CompilerConstraintList* constraints)
     TypeSet* types = maybeTypes();
 
     if (!types || types->unknown())
-        return jit::MIRType_Value;
+        return jit::MIRType::Value;
 
     TypeFlags flags = types->baseFlags() & ~TYPE_FLAG_ANYOBJECT;
     jit::MIRType type;
 
     if (types->unknownObject() || types->getObjectCount())
-        type = flags ? jit::MIRType_Value : jit::MIRType_Object;
+        type = flags ? jit::MIRType::Value : jit::MIRType::Object;
     else
         type = GetMIRTypeFromTypeFlags(flags);
 
-    if (type != jit::MIRType_Value)
+    if (type != jit::MIRType::Value)
         freeze(constraints);
 
     /*
@@ -1647,7 +1651,7 @@ HeapTypeSetKey::knownMIRType(CompilerConstraintList* constraints)
      * that the exact tag is unknown, as it will stay unknown as more types are
      * added to the set.
      */
-    MOZ_ASSERT_IF(types->empty(), type == jit::MIRType_Value);
+    MOZ_ASSERT_IF(types->empty(), type == jit::MIRType::Value);
 
     return type;
 }
@@ -1862,13 +1866,13 @@ class ConstraintDataFreezeObjectForTypedArrayData
 {
     NativeObject* obj;
 
-    void* viewData;
+    uintptr_t viewData;
     uint32_t length;
 
   public:
     explicit ConstraintDataFreezeObjectForTypedArrayData(TypedArrayObject& tarray)
       : obj(&tarray),
-        viewData(tarray.viewData()),
+        viewData(tarray.viewDataEither().unwrapValue()),
         length(tarray.length())
     {
         MOZ_ASSERT(tarray.isSingleton());
@@ -1881,7 +1885,7 @@ class ConstraintDataFreezeObjectForTypedArrayData
     bool invalidateOnNewObjectState(ObjectGroup* group) {
         MOZ_ASSERT(obj->group() == group);
         TypedArrayObject& tarr = obj->as<TypedArrayObject>();
-        return tarr.viewData() != viewData || tarr.length() != length;
+        return tarr.viewDataEither().unwrapValue() != viewData || tarr.length() != length;
     }
 
     bool constraintHolds(JSContext* cx,
@@ -2205,7 +2209,8 @@ TemporaryTypeSet::convertDoubleElements(CompilerConstraintList* constraints)
         // We can't convert to double elements for objects which do not have
         // double in their element types (as the conversion may render the type
         // information incorrect), nor for non-array objects (as their elements
-        // may point to emptyObjectElements, which cannot be converted).
+        // may point to emptyObjectElements or emptyObjectElementsShared, which
+        // cannot be converted).
         if (!property.maybeTypes() ||
             !property.maybeTypes()->hasType(DoubleType()) ||
             key->clasp() != &ArrayObject::class_)
@@ -2218,7 +2223,7 @@ TemporaryTypeSet::convertDoubleElements(CompilerConstraintList* constraints)
         // Only bother with converting known packed arrays whose possible
         // element types are int or double. Other arrays require type tests
         // when elements are accessed regardless of the conversion.
-        if (property.knownMIRType(constraints) == jit::MIRType_Double &&
+        if (property.knownMIRType(constraints) == jit::MIRType::Double &&
             !key->hasFlags(constraints, OBJECT_FLAG_NON_PACKED))
         {
             maybeConvert = true;
@@ -2271,6 +2276,14 @@ TemporaryTypeSet::getKnownClass(CompilerConstraintList* constraints)
     return clasp;
 }
 
+void
+TemporaryTypeSet::getTypedArraySharedness(CompilerConstraintList* constraints,
+                                          TypedArraySharedness* sharedness)
+{
+    // In the future this will inspect the object set.
+    *sharedness = UnknownSharedness;
+}
+
 TemporaryTypeSet::ForAllResult
 TemporaryTypeSet::forAllClasses(CompilerConstraintList* constraints,
                                 bool (*func)(const Class* clasp))
@@ -2294,8 +2307,7 @@ TemporaryTypeSet::forAllClasses(CompilerConstraintList* constraints,
             true_results = true;
             if (false_results)
                 return ForAllResult::MIXED;
-        }
-        else {
+        } else {
             false_results = true;
             if (true_results)
                 return ForAllResult::MIXED;
@@ -2308,22 +2320,16 @@ TemporaryTypeSet::forAllClasses(CompilerConstraintList* constraints,
 }
 
 Scalar::Type
-TemporaryTypeSet::getTypedArrayType(CompilerConstraintList* constraints)
+TemporaryTypeSet::getTypedArrayType(CompilerConstraintList* constraints,
+                                    TypedArraySharedness* sharedness)
 {
     const Class* clasp = getKnownClass(constraints);
 
-    if (clasp && IsTypedArrayClass(clasp))
+    if (clasp && IsTypedArrayClass(clasp)) {
+        if (sharedness)
+            getTypedArraySharedness(constraints, sharedness);
         return (Scalar::Type) (clasp - &TypedArrayObject::classes[0]);
-    return Scalar::MaxTypedArrayViewType;
-}
-
-Scalar::Type
-TemporaryTypeSet::getSharedTypedArrayType(CompilerConstraintList* constraints)
-{
-    const Class* clasp = getKnownClass(constraints);
-
-    if (clasp && IsSharedTypedArrayClass(clasp))
-        return (Scalar::Type) (clasp - &SharedTypedArrayObject::classes[0]);
+    }
     return Scalar::MaxTypedArrayViewType;
 }
 
@@ -2414,7 +2420,7 @@ TemporaryTypeSet::getCommonPrototype(CompilerConstraintList* constraints, JSObje
 
         TaggedProto nproto = key->proto();
         if (isFirst) {
-            if (nproto.isLazy())
+            if (nproto.isDynamic())
                 return false;
             *proto = nproto.toObjectOrNull();
             isFirst = false;
@@ -2460,10 +2466,10 @@ js::ClassCanHaveExtraProperties(const Class* clasp)
 {
     if (clasp == &UnboxedPlainObject::class_ || clasp == &UnboxedArrayObject::class_)
         return false;
-    return clasp->resolve
-        || clasp->ops.lookupProperty
-        || clasp->ops.getProperty
-        || IsAnyTypedArrayClass(clasp);
+    return clasp->getResolve()
+        || clasp->getOpsLookupProperty()
+        || clasp->getOpsGetProperty()
+        || IsTypedArrayClass(clasp);
 }
 
 void
@@ -2579,12 +2585,12 @@ UpdatePropertyType(ExclusiveContext* cx, HeapTypeSet* types, NativeObject* obj, 
          * that are not collated into the JSID_VOID property (see propertySet
          * comment).
          *
-         * Also don't add untracked values (initial uninitialized lexical
-         * magic values and optimized out values) as appearing in CallObjects
-         * and the global lexical scope.
+         * Also don't add untracked values (initial uninitialized lexical magic
+         * values and optimized out values) as appearing in CallObjects, module
+         * environments or the global lexical scope.
          */
         MOZ_ASSERT_IF(TypeSet::IsUntrackedValue(value),
-                      obj->is<CallObject>() || IsExtensibleLexicalScope(obj));
+                      obj->is<LexicalScopeBase>() || IsExtensibleLexicalScope(obj));
         if ((indexed || !value.isUndefined() || !CanHaveEmptyPropertyTypesForOwnProperty(obj)) &&
             !TypeSet::IsUntrackedValue(value))
         {
@@ -2676,7 +2682,11 @@ ObjectGroup::addDefiniteProperties(ExclusiveContext* cx, Shape* shape)
             MOZ_ASSERT_IF(shape->slot() >= shape->numFixedSlots(),
                           shape->numFixedSlots() == NativeObject::MAX_FIXED_SLOTS);
             TypeSet* types = getProperty(cx, nullptr, id);
-            if (types && types->canSetDefinite(shape->slot()))
+            if (!types) {
+                MOZ_ASSERT(unknownProperties());
+                return;
+            }
+            if (types->canSetDefinite(shape->slot()))
                 types->setDefinite(shape->slot());
         }
 
@@ -2902,12 +2912,15 @@ ObjectGroup::detachNewScript(bool writeBarrier, ObjectGroup* replacement)
 
     if (newScript->analyzed()) {
         ObjectGroupCompartment& objectGroups = newScript->function()->compartment()->objectGroups;
+        TaggedProto proto = this->proto();
+        if (proto.isObject() && IsForwarded(proto.toObject()))
+            proto = TaggedProto(Forwarded(proto.toObject()));
+        JSObject* associated = MaybeForwarded(newScript->function());
         if (replacement) {
             MOZ_ASSERT(replacement->newScript()->function() == newScript->function());
-            objectGroups.replaceDefaultNewGroup(nullptr, proto(), newScript->function(),
-                                                replacement);
+            objectGroups.replaceDefaultNewGroup(nullptr, proto, associated, replacement);
         } else {
-            objectGroups.removeDefaultNewGroup(nullptr, proto(), newScript->function());
+            objectGroups.removeDefaultNewGroup(nullptr, proto, associated);
         }
     } else {
         MOZ_ASSERT(!replacement);
@@ -2994,8 +3007,11 @@ ObjectGroup::print()
     TaggedProto tagged(proto());
     fprintf(stderr, "%s : %s",
             TypeSet::ObjectGroupString(this),
-            tagged.isObject() ? TypeSet::TypeString(TypeSet::ObjectType(tagged.toObject()))
-                              : (tagged.isLazy() ? "(lazy)" : "(null)"));
+            tagged.isObject()
+            ? TypeSet::TypeString(TypeSet::ObjectType(tagged.toObject()))
+            : tagged.isDynamic()
+            ? "(dynamic)"
+            : "(null)");
 
     if (unknownProperties()) {
         fprintf(stderr, " unknown");
@@ -3095,14 +3111,18 @@ js::AddClearDefiniteGetterSetterForPrototypeChain(JSContext* cx, ObjectGroup* gr
     RootedObject proto(cx, group->proto().toObjectOrNull());
     while (proto) {
         ObjectGroup* protoGroup = proto->getGroup(cx);
-        if (!protoGroup || protoGroup->unknownProperties())
+        if (!protoGroup) {
+            cx->recoverFromOutOfMemory();
+            return false;
+        }
+        if (protoGroup->unknownProperties())
             return false;
         HeapTypeSet* protoTypes = protoGroup->getProperty(cx, proto, id);
         if (!protoTypes || protoTypes->nonDataProperty() || protoTypes->nonWritableProperty())
             return false;
         if (!protoTypes->addConstraint(cx, cx->typeLifoAlloc().new_<TypeConstraintClearDefiniteGetterSetter>(group)))
             return false;
-        proto = proto->getProto();
+        proto = proto->staticPrototype();
     }
     return true;
 }
@@ -3212,7 +3232,7 @@ js::FillBytecodeTypeMap(JSScript* script, uint32_t* bytecodeMap)
     uint32_t added = 0;
     for (jsbytecode* pc = script->code(); pc < script->codeEnd(); pc += GetBytecodeLength(pc)) {
         JSOp op = JSOp(*pc);
-        if (js_CodeSpec[op].format & JOF_TYPESET) {
+        if (CodeSpec[op].format & JOF_TYPESET) {
             bytecodeMap[added++] = script->pcToOffset(pc);
             if (added == script->nTypeSets())
                 break;
@@ -3222,18 +3242,10 @@ js::FillBytecodeTypeMap(JSScript* script, uint32_t* bytecodeMap)
 }
 
 void
-js::TypeMonitorResult(JSContext* cx, JSScript* script, jsbytecode* pc, const js::Value& rval)
+js::TypeMonitorResult(JSContext* cx, JSScript* script, jsbytecode* pc, TypeSet::Type type)
 {
-    /* Allow the non-TYPESET scenario to simplify stubs used in compound opcodes. */
-    if (!(js_CodeSpec[*pc].format & JOF_TYPESET))
-        return;
-
-    if (!script->hasBaselineScript())
-        return;
-
     AutoEnterAnalysis enter(cx);
 
-    TypeSet::Type type = TypeSet::GetValueType(rval);
     StackTypeSet* types = TypeScript::BytecodeTypes(script, pc);
     if (types->hasType(type))
         return;
@@ -3241,6 +3253,19 @@ js::TypeMonitorResult(JSContext* cx, JSScript* script, jsbytecode* pc, const js:
     InferSpew(ISpewOps, "bytecodeType: %p %05u: %s",
               script, script->pcToOffset(pc), TypeSet::TypeString(type));
     types->addType(cx, type);
+}
+
+void
+js::TypeMonitorResult(JSContext* cx, JSScript* script, jsbytecode* pc, const js::Value& rval)
+{
+    /* Allow the non-TYPESET scenario to simplify stubs used in compound opcodes. */
+    if (!(CodeSpec[*pc].format & JOF_TYPESET))
+        return;
+
+    if (!script->hasBaselineScript())
+        return;
+
+    TypeMonitorResult(cx, script, pc, TypeSet::GetValueType(rval));
 }
 
 /////////////////////////////////////////////////////////////////////
@@ -3297,7 +3322,7 @@ JSFunction::setTypeForScriptedFunction(ExclusiveContext* cx, HandleFunction fun,
         if (!setSingleton(cx, fun))
             return false;
     } else {
-        RootedObject funProto(cx, fun->getProto());
+        RootedObject funProto(cx, fun->staticPrototype());
         Rooted<TaggedProto> taggedProto(cx, TaggedProto(funProto));
         ObjectGroup* group = ObjectGroupCompartment::makeGroup(cx, &JSFunction::class_,
                                                                taggedProto);
@@ -3387,7 +3412,7 @@ PreliminaryObjectArray::sweep()
                 obj->setGroup(objectProto->groupRaw());
                 MOZ_ASSERT(obj->is<NativeObject>());
                 MOZ_ASSERT(obj->getClass() == objectProto->getClass());
-                MOZ_ASSERT(!obj->getClass()->finalize);
+                MOZ_ASSERT(!obj->getClass()->hasFinalize());
             }
 
             *ptr = nullptr;
@@ -3398,8 +3423,7 @@ PreliminaryObjectArray::sweep()
 void
 PreliminaryObjectArrayWithTemplate::trace(JSTracer* trc)
 {
-    if (shape_)
-        TraceEdge(trc, &shape_, "PreliminaryObjectArrayWithTemplate_shape");
+    TraceNullableEdge(trc, &shape_, "PreliminaryObjectArrayWithTemplate_shape");
 }
 
 /* static */ void
@@ -3591,9 +3615,7 @@ ChangeObjectFixedSlotCount(JSContext* cx, PlainObject* obj, gc::AllocKind allocK
 {
     MOZ_ASSERT(OnlyHasDataProperties(obj->lastProperty()));
 
-    Shape* newShape = ReshapeForAllocKind(cx, obj->lastProperty(),
-                                          obj->getTaggedProto(),
-                                          allocKind);
+    Shape* newShape = ReshapeForAllocKind(cx, obj->lastProperty(), obj->taggedProto(), allocKind);
     if (!newShape)
         return false;
 
@@ -3867,12 +3889,20 @@ TypeNewScript::rollbackPartiallyInitializedObjects(JSContext* cx, ObjectGroup* g
     RootedFunction function(cx, this->function());
     Vector<uint32_t, 32> pcOffsets(cx);
     for (ScriptFrameIter iter(cx); !iter.done(); ++iter) {
-        pcOffsets.append(iter.script()->pcToOffset(iter.pc()));
+        {
+            AutoEnterOOMUnsafeRegion oomUnsafe;
+            if (!pcOffsets.append(iter.script()->pcToOffset(iter.pc())))
+                oomUnsafe.crash("rollbackPartiallyInitializedObjects");
+        }
 
         if (!iter.isConstructing() || !iter.matchCallee(cx, function))
             continue;
 
-        Value thisv = iter.thisv(cx);
+        // Derived class constructors initialize their this-binding later and
+        // we shouldn't run the definite properties analysis on them.
+        MOZ_ASSERT(!iter.script()->isDerivedClassConstructor());
+
+        Value thisv = iter.thisArgument(cx);
         if (!thisv.isObject() ||
             thisv.toObject().hasLazyGroup() ||
             thisv.toObject().group() != group)
@@ -3951,15 +3981,9 @@ void
 TypeNewScript::trace(JSTracer* trc)
 {
     TraceEdge(trc, &function_, "TypeNewScript_function");
-
-    if (templateObject_)
-        TraceEdge(trc, &templateObject_, "TypeNewScript_templateObject");
-
-    if (initializedShape_)
-        TraceEdge(trc, &initializedShape_, "TypeNewScript_initializedShape");
-
-    if (initializedGroup_)
-        TraceEdge(trc, &initializedGroup_, "TypeNewScript_initializedGroup");
+    TraceNullableEdge(trc, &templateObject_, "TypeNewScript_templateObject");
+    TraceNullableEdge(trc, &initializedShape_, "TypeNewScript_initializedShape");
+    TraceNullableEdge(trc, &initializedGroup_, "TypeNewScript_initializedGroup");
 }
 
 /* static */ void
@@ -4288,6 +4312,12 @@ JSScript::maybeSweepTypes(AutoClearTypeInferenceStateOnOOM* oom)
     for (unsigned i = 0; i < num; i++)
         typeArray[i].sweep(zone(), *oom);
 
+    if (oom->hadOOM()) {
+        // It's possible we OOM'd while copying freeze constraints, so they
+        // need to be regenerated.
+        hasFreezeConstraints_ = false;
+    }
+
     // Update the recompile indexes in any IonScripts still on the script.
     if (hasIonScript())
         ionScript()->recompileInfoRef().shouldSweep(types);
@@ -4395,7 +4425,7 @@ TypeZone::endSweep(JSRuntime* rt)
 void
 TypeZone::clearAllNewScriptsOnOOM()
 {
-    for (gc::ZoneCellIterUnderGC iter(zone(), gc::AllocKind::OBJECT_GROUP);
+    for (gc::ZoneCellIter iter(zone(), gc::AllocKind::OBJECT_GROUP);
          !iter.done(); iter.next())
     {
         ObjectGroup* group = iter.get<ObjectGroup>();
@@ -4433,7 +4463,7 @@ TypeScript::printTypes(JSContext* cx, HandleScript script) const
     fprintf(stderr, " %p %s:%" PRIuSIZE " ", script.get(), script->filename(), script->lineno());
 
     if (script->functionNonDelazifying()) {
-        if (js::PropertyName* name = script->functionNonDelazifying()->name())
+        if (JSAtom* name = script->functionNonDelazifying()->name())
             name->dumpCharsNoNewline();
     }
 
@@ -4459,7 +4489,7 @@ TypeScript::printTypes(JSContext* cx, HandleScript script) const
             fprintf(stderr, "%s", sprinter.string());
         }
 
-        if (js_CodeSpec[*pc].format & JOF_TYPESET) {
+        if (CodeSpec[*pc].format & JOF_TYPESET) {
             StackTypeSet* types = TypeScript::BytecodeTypes(script, pc);
             fprintf(stderr, "  typeset %u:", unsigned(types - typeArray()));
             types->print();

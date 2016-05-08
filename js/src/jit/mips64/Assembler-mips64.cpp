@@ -23,8 +23,8 @@ ABIArg
 ABIArgGenerator::next(MIRType type)
 {
     switch (type) {
-      case MIRType_Int32:
-      case MIRType_Pointer: {
+      case MIRType::Int32:
+      case MIRType::Pointer: {
         Register destReg;
         if (GetIntArgReg(usedArgSlots_, &destReg))
             current_ = ABIArg(destReg);
@@ -33,13 +33,13 @@ ABIArgGenerator::next(MIRType type)
         usedArgSlots_++;
         break;
       }
-      case MIRType_Float32:
-      case MIRType_Double: {
+      case MIRType::Float32:
+      case MIRType::Double: {
         FloatRegister destFReg;
         FloatRegister::ContentType contentType;
         if (!usedArgSlots_)
             firstArgFloat = true;
-        contentType = (type == MIRType_Double) ?
+        contentType = (type == MIRType::Double) ?
             FloatRegisters::Double : FloatRegisters::Single;
         if (GetFloatArgReg(usedArgSlots_, &destFReg))
             current_ = ABIArg(FloatRegister(destFReg.id(), contentType));
@@ -233,30 +233,18 @@ Assembler::trace(JSTracer* trc)
     }
 }
 
-int64_t
-Assembler::ExtractCodeLabelOffset(uint8_t* code)
-{
-    Instruction* inst = (Instruction*)code;
-    return Assembler::ExtractLoad64Value(inst);
-}
-
 void
-Assembler::Bind(uint8_t* rawCode, AbsoluteLabel* label, const void* address)
+Assembler::Bind(uint8_t* rawCode, CodeOffset* label, const void* address)
 {
-    if (label->used()) {
-        int64_t src = label->offset();
-        do {
-            Instruction* inst = (Instruction*) (rawCode + src);
-            uint64_t next = Assembler::ExtractLoad64Value(inst);
-            Assembler::UpdateLoad64Value(inst, (uint64_t)address);
-            src = next;
-        } while (src != AbsoluteLabel::INVALID_OFFSET);
+    if (label->bound()) {
+        intptr_t offset = label->offset();
+        Instruction* inst = (Instruction*) (rawCode + offset);
+        Assembler::UpdateLoad64Value(inst, (uint64_t)address);
     }
-    label->bind();
 }
 
 void
-Assembler::bind(InstImm* inst, uint64_t branch, uint64_t target)
+Assembler::bind(InstImm* inst, uintptr_t branch, uintptr_t target)
 {
     int64_t offset = target - branch;
     InstImm inst_bgezal = InstImm(op_regimm, zero, rt_bgezal, BOffImm16(0));
@@ -281,15 +269,15 @@ Assembler::bind(InstImm* inst, uint64_t branch, uint64_t target)
     }
 
     if (BOffImm16::IsInRange(offset)) {
-        bool conditional = (inst[0].encode() != inst_bgezal.encode() &&
-                            inst[0].encode() != inst_beq.encode());
+        // Don't skip trailing nops can imporve performance
+        // on Loongson3 platform.
+        bool skipNops = !isLoongson() && (inst[0].encode() != inst_bgezal.encode() &&
+                                          inst[0].encode() != inst_beq.encode());
 
         inst[0].setBOffImm16(BOffImm16(offset));
         inst[1].makeNop();
 
-        // Skip the trailing nops in conditional branches.
-        // FIXME: On Loongson3 platform, the branch degrade performance.
-        if (0 && conditional) {
+        if (skipNops) {
             inst[2] = InstImm(op_regimm, zero, rt_bgez, BOffImm16(5 * sizeof(uint32_t))).encode();
             // There are 4 nops after this
         }
@@ -317,7 +305,7 @@ void
 Assembler::bind(RepatchLabel* label)
 {
     BufferOffset dest = nextOffset();
-    if (label->used()) {
+    if (label->used() && !oom()) {
         // If the label has a use, then change this use to refer to
         // the bound label;
         BufferOffset b(label->offset());
@@ -438,6 +426,14 @@ Assembler::WriteLoad64Instructions(Instruction* inst0, Register reg, uint64_t va
 }
 
 void
+Assembler::PatchDataWithValueCheck(CodeLocationLabel label, ImmPtr newValue,
+                                   ImmPtr expectedValue)
+{
+    PatchDataWithValueCheck(label, PatchedImmPtr(newValue.value),
+                            PatchedImmPtr(expectedValue.value));
+}
+
+void
 Assembler::PatchDataWithValueCheck(CodeLocationLabel label, PatchedImmPtr newValue,
                                    PatchedImmPtr expectedValue)
 {
@@ -458,6 +454,13 @@ Assembler::PatchInstructionImmediate(uint8_t* code, PatchedImmPtr imm)
 {
     InstImm* inst = (InstImm*)code;
     Assembler::UpdateLoad64Value(inst, (uint64_t)imm.value);
+}
+
+uint64_t
+Assembler::ExtractInstructionImmediate(uint8_t* code)
+{
+    InstImm* inst = (InstImm*)code;
+    return Assembler::ExtractLoad64Value(inst);
 }
 
 void

@@ -20,6 +20,7 @@
 #include "nsAutoPtr.h"
 #include "mozilla/TimeStamp.h"
 #include "mozilla/Logging.h"
+#include "mozilla/Atomics.h"
 
 class nsPACMan;
 class nsISystemProxySettings;
@@ -50,14 +51,14 @@ public:
                                const nsCString &newPACURL) = 0;
 };
 
-class PendingPACQuery final : public nsRunnable,
+class PendingPACQuery final : public mozilla::Runnable,
                               public mozilla::LinkedListElement<PendingPACQuery>
 {
 public:
   PendingPACQuery(nsPACMan *pacMan, nsIURI *uri, uint32_t appId,
-                  bool isInBrowser, nsPACManCallback *callback,
+                  bool isInIsolatedMozBrowser, nsPACManCallback *callback,
                   bool mainThreadResponse);
- 
+
   // can be called from either thread
   void Complete(nsresult status, const nsCString &pacString);
   void UseAlternatePACFile(const nsCString &pacURL);
@@ -67,14 +68,14 @@ public:
   nsCString                  mHost;
   int32_t                    mPort;
 
-  NS_IMETHOD Run(void);     /* nsRunnable */
+  NS_IMETHOD Run(void);     /* Runnable */
 
 private:
   nsPACMan                  *mPACMan;  // weak reference
 
 public:
   uint32_t                   mAppId;
-  bool                       mIsInBrowser;
+  bool                       mIsInIsolatedMozBrowser;
   nsString                   mAppOrigin;
 
 private:
@@ -108,7 +109,7 @@ public:
    * calling thread.  If the PAC file has not yet been loaded, then this method
    * will queue up the request, and complete it once the PAC file has been
    * loaded.
-   * 
+   *
    * @param uri
    *        The URI to query.
    * @param appId
@@ -232,7 +233,7 @@ private:
 
   nsCOMPtr<nsIStreamLoader>    mLoader;
   bool                         mLoadPending;
-  bool                         mShutdown;
+  mozilla::Atomic<bool, mozilla::Relaxed> mShutdown;
   mozilla::TimeStamp           mScheduledReload;
   uint32_t                     mLoadFailureCount;
 
@@ -241,7 +242,7 @@ private:
 
 namespace mozilla {
 namespace net {
-PRLogModuleInfo* GetProxyLog();
+extern LazyLogModule gProxyLog;
 } // namespace net
 } // namespace mozilla
 

@@ -8,6 +8,7 @@
 #include "AudioNodeEngine.h"
 #include "AudioNodeStream.h"
 #include "AudioDestinationNode.h"
+#include "nsContentUtils.h"
 #include "WebAudioUtils.h"
 #include "blink/PeriodicWave.h"
 
@@ -41,6 +42,7 @@ public:
     , mPhaseIncrement(0.)
     , mRecomputeParameters(true)
     , mCustomLength(0)
+    , mCustomDisableNormalization(false)
   {
     MOZ_ASSERT(NS_IsMainThread());
     mBasicWaveFormCache = aDestination->Context()->GetBasicWaveFormCache();
@@ -55,7 +57,8 @@ public:
     FREQUENCY,
     DETUNE,
     TYPE,
-    PERIODICWAVE,
+    PERIODICWAVE_LENGTH,
+    DISABLE_NORMALIZATION,
     START,
     STOP,
   };
@@ -81,7 +84,7 @@ public:
     }
   }
 
-  virtual void SetStreamTimeParameter(uint32_t aIndex, StreamTime aParam) override
+  void SetStreamTimeParameter(uint32_t aIndex, StreamTime aParam) override
   {
     switch (aIndex) {
     case START:
@@ -94,7 +97,7 @@ public:
     }
   }
 
-  virtual void SetInt32Parameter(uint32_t aIndex, int32_t aParam) override
+  void SetInt32Parameter(uint32_t aIndex, int32_t aParam) override
   {
     switch (aIndex) {
       case TYPE:
@@ -103,6 +106,7 @@ public:
         if (mType == OscillatorType::Sine) {
           // Forget any previous custom data.
           mCustomLength = 0;
+          mCustomDisableNormalization = false;
           mCustom = nullptr;
           mPeriodicWave = nullptr;
           mRecomputeParameters = true;
@@ -123,9 +127,13 @@ public:
         }
         // End type switch.
         break;
-      case PERIODICWAVE:
+      case PERIODICWAVE_LENGTH:
         MOZ_ASSERT(aParam >= 0, "negative custom array length");
         mCustomLength = static_cast<uint32_t>(aParam);
+        break;
+      case DISABLE_NORMALIZATION:
+        MOZ_ASSERT(aParam >= 0, "negative custom array length");
+        mCustomDisableNormalization = static_cast<uint32_t>(aParam);
         break;
       default:
         NS_ERROR("Bad OscillatorNodeEngine Int32Parameter.");
@@ -133,14 +141,17 @@ public:
     // End index switch.
   }
 
-  virtual void SetBuffer(already_AddRefed<ThreadSharedFloatArrayBufferList> aBuffer) override
+  void SetBuffer(already_AddRefed<ThreadSharedFloatArrayBufferList> aBuffer) override
   {
     MOZ_ASSERT(mCustomLength, "Custom buffer sent before length");
     mCustom = aBuffer;
     MOZ_ASSERT(mCustom->GetChannels() == 2,
                "PeriodicWave should have sent two channels");
     mPeriodicWave = WebCore::PeriodicWave::create(mSource->SampleRate(),
-    mCustom->GetData(0), mCustom->GetData(1), mCustomLength);
+                                                  mCustom->GetData(0),
+                                                  mCustom->GetData(1),
+                                                  mCustomLength,
+                                                  mCustomDisableNormalization);
   }
 
   void IncrementPhase()
@@ -300,11 +311,11 @@ public:
     aOutput->SetNull(WEBAUDIO_BLOCK_SIZE);
   }
 
-  virtual void ProcessBlock(AudioNodeStream* aStream,
-                            GraphTime aFrom,
-                            const AudioBlock& aInput,
-                            AudioBlock* aOutput,
-                            bool* aFinished) override
+  void ProcessBlock(AudioNodeStream* aStream,
+                    GraphTime aFrom,
+                    const AudioBlock& aInput,
+                    AudioBlock* aOutput,
+                    bool* aFinished) override
   {
     MOZ_ASSERT(mSource == aStream, "Invalid source stream");
 
@@ -314,48 +325,45 @@ public:
       return;
     }
 
-    if (ticks >= mStop) {
+    if (ticks + WEBAUDIO_BLOCK_SIZE <= mStart || ticks >= mStop) {
+      ComputeSilence(aOutput);
+
+    } else {
+      aOutput->AllocateChannels(1);
+      float* output = aOutput->ChannelFloatsForWrite(0);
+
+      uint32_t start, end;
+      FillBounds(output, ticks, start, end);
+
+      // Synthesize the correct waveform.
+      switch(mType) {
+        case OscillatorType::Sine:
+          ComputeSine(output, ticks, start, end);
+          break;
+        case OscillatorType::Square:
+        case OscillatorType::Triangle:
+        case OscillatorType::Sawtooth:
+        case OscillatorType::Custom:
+          ComputeCustom(output, ticks, start, end);
+          break;
+        default:
+          ComputeSilence(aOutput);
+      };
+    }
+
+    if (ticks + WEBAUDIO_BLOCK_SIZE >= mStop) {
       // We've finished playing.
-      ComputeSilence(aOutput);
       *aFinished = true;
-      return;
     }
-    if (ticks + WEBAUDIO_BLOCK_SIZE <= mStart) {
-      // We're not playing yet.
-      ComputeSilence(aOutput);
-      return;
-    }
-
-    aOutput->AllocateChannels(1);
-    float* output = aOutput->ChannelFloatsForWrite(0);
-
-    uint32_t start, end;
-    FillBounds(output, ticks, start, end);
-
-    // Synthesize the correct waveform.
-    switch(mType) {
-      case OscillatorType::Sine:
-        ComputeSine(output, ticks, start, end);
-        break;
-      case OscillatorType::Square:
-      case OscillatorType::Triangle:
-      case OscillatorType::Sawtooth:
-      case OscillatorType::Custom:
-        ComputeCustom(output, ticks, start, end);
-        break;
-      default:
-        ComputeSilence(aOutput);
-    };
-
   }
 
-  virtual bool IsActive() const override
+  bool IsActive() const override
   {
     // start() has been called.
     return mStart != -1;
   }
 
-  virtual size_t SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const override
+  size_t SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const override
   {
     size_t amount = AudioNodeEngine::SizeOfExcludingThis(aMallocSizeOf);
 
@@ -376,7 +384,7 @@ public:
     return amount;
   }
 
-  virtual size_t SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const override
+  size_t SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const override
   {
     return aMallocSizeOf(this) + SizeOfExcludingThis(aMallocSizeOf);
   }
@@ -395,6 +403,7 @@ public:
   RefPtr<ThreadSharedFloatArrayBufferList> mCustom;
   RefPtr<BasicWaveFormCache> mBasicWaveFormCache;
   uint32_t mCustomLength;
+  bool mCustomDisableNormalization;
   RefPtr<WebCore::PeriodicWave> mPeriodicWave;
 };
 
@@ -474,8 +483,10 @@ void OscillatorNode::SendPeriodicWaveToStream()
                "Sending custom waveform to engine thread with non-custom type");
   MOZ_ASSERT(mStream, "Missing node stream.");
   MOZ_ASSERT(mPeriodicWave, "Send called without PeriodicWave object.");
-  SendInt32ParameterToStream(OscillatorNodeEngine::PERIODICWAVE,
+  SendInt32ParameterToStream(OscillatorNodeEngine::PERIODICWAVE_LENGTH,
                              mPeriodicWave->DataLength());
+  SendInt32ParameterToStream(OscillatorNodeEngine::DISABLE_NORMALIZATION,
+                             mPeriodicWave->DisableNormalization());
   RefPtr<ThreadSharedFloatArrayBufferList> data =
     mPeriodicWave->GetThreadSharedBuffer();
   mStream->SetBuffer(data.forget());
@@ -535,7 +546,7 @@ OscillatorNode::NotifyMainThreadStreamFinished()
 {
   MOZ_ASSERT(mStream->IsFinished());
 
-  class EndedEventDispatcher final : public nsRunnable
+  class EndedEventDispatcher final : public Runnable
   {
   public:
     explicit EndedEventDispatcher(OscillatorNode* aNode)

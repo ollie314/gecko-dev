@@ -32,7 +32,7 @@ TEST(ImageDecodeToSurface, ImageModuleAvailable)
   EXPECT_TRUE(imgTools != nullptr);
 }
 
-class DecodeToSurfaceRunnable : public nsRunnable
+class DecodeToSurfaceRunnable : public Runnable
 {
 public:
   DecodeToSurfaceRunnable(RefPtr<SourceSurface>& aSurface,
@@ -63,7 +63,7 @@ public:
     EXPECT_EQ(mTestCase.mSize, mSurface->GetSize());
 
     EXPECT_TRUE(IsSolidColor(mSurface, BGRAColor::Green(),
-                             mTestCase.mFlags & TEST_CASE_IS_FUZZY));
+                             mTestCase.mFlags & TEST_CASE_IS_FUZZY ? 1 : 0));
   }
 
 private:

@@ -32,6 +32,7 @@ NS_INTERFACE_MAP_BEGIN(nsViewSourceChannel)
     NS_INTERFACE_MAP_ENTRY_CONDITIONAL(nsICacheInfoChannel, mCacheInfoChannel)
     NS_INTERFACE_MAP_ENTRY_CONDITIONAL(nsIApplicationCacheChannel, mApplicationCacheChannel)
     NS_INTERFACE_MAP_ENTRY_CONDITIONAL(nsIUploadChannel, mUploadChannel)
+    NS_INTERFACE_MAP_ENTRY_CONDITIONAL(nsIFormPOSTActionChannel, mPostChannel)
     NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsIRequest, nsIViewSourceChannel)
     NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsIChannel, nsIViewSourceChannel)
     NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, nsIViewSourceChannel)
@@ -64,9 +65,9 @@ nsViewSourceChannel::Init(nsIURI* uri)
     // This function is called from within nsViewSourceHandler::NewChannel2
     // and sets the right loadInfo right after returning from this function.
     // Until then we follow the principal of least privilege and use
-    // nullPrincipal as the loadingPrincipal.
+    // nullPrincipal as the loadingPrincipal and the least permissive
+    // securityflag.
     nsCOMPtr<nsIPrincipal> nullPrincipal = nsNullPrincipal::Create();
-    NS_ENSURE_TRUE(nullPrincipal, NS_ERROR_FAILURE);
 
     rv = pService->NewChannel2(path,
                                nullptr, // aOriginCharset
@@ -74,7 +75,7 @@ nsViewSourceChannel::Init(nsIURI* uri)
                                nullptr, // aLoadingNode
                                nullPrincipal,
                                nullptr, // aTriggeringPrincipal
-                               nsILoadInfo::SEC_NORMAL,
+                               nsILoadInfo::SEC_REQUIRE_SAME_ORIGIN_DATA_IS_BLOCKED,
                                nsIContentPolicy::TYPE_OTHER,
                                getter_AddRefs(mChannel));
     NS_ENSURE_SUCCESS(rv, rv);
@@ -88,6 +89,7 @@ nsViewSourceChannel::Init(nsIURI* uri)
     mCacheInfoChannel = do_QueryInterface(mChannel);
     mApplicationCacheChannel = do_QueryInterface(mChannel);
     mUploadChannel = do_QueryInterface(mChannel);
+    mPostChannel = do_QueryInterface(mChannel);
     
     return NS_OK;
 }
@@ -96,11 +98,7 @@ nsresult
 nsViewSourceChannel::InitSrcdoc(nsIURI* aURI,
                                 nsIURI* aBaseURI,
                                 const nsAString &aSrcdoc,
-                                nsINode *aLoadingNode,
-                                nsIPrincipal *aLoadingPrincipal,
-                                nsIPrincipal *aTriggeringPrincipal,
-                                nsSecurityFlags aSecurityFlags,
-                                nsContentPolicyType aContentPolicyType)
+                                nsILoadInfo* aLoadInfo)
 {
     nsresult rv;
 
@@ -116,11 +114,7 @@ nsViewSourceChannel::InitSrcdoc(nsIURI* aURI,
                                           inStreamURI,
                                           aSrcdoc,
                                           NS_LITERAL_CSTRING("text/html"),
-                                          aLoadingNode,
-                                          aLoadingPrincipal,
-                                          aTriggeringPrincipal,
-                                          aSecurityFlags,
-                                          aContentPolicyType,
+                                          aLoadInfo,
                                           true);
 
     NS_ENSURE_SUCCESS(rv, rv);
@@ -146,6 +140,24 @@ nsViewSourceChannel::InitSrcdoc(nsIURI* aURI,
 
 NS_IMETHODIMP
 nsViewSourceChannel::GetName(nsACString &result)
+{
+    return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+nsViewSourceChannel::GetTransferSize(uint64_t *aTransferSize)
+{
+    return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+nsViewSourceChannel::GetDecodedBodySize(uint64_t *aDecodedBodySize)
+{
+    return NS_ERROR_NOT_IMPLEMENTED;
+}
+
+NS_IMETHODIMP
+nsViewSourceChannel::GetEncodedBodySize(uint64_t *aEncodedBodySize)
 {
     return NS_ERROR_NOT_IMPLEMENTED;
 }
@@ -637,6 +649,12 @@ nsViewSourceChannel::SetBaseURI(nsIURI* aBaseURI)
   return NS_OK;
 }
 
+NS_IMETHODIMP
+nsViewSourceChannel::GetProtocolVersion(nsACString& aProtocolVersion)
+{
+  return NS_ERROR_NOT_IMPLEMENTED;
+}
+
 // nsIRequestObserver methods
 NS_IMETHODIMP
 nsViewSourceChannel::OnStartRequest(nsIRequest *aRequest, nsISupports *aContext)
@@ -916,17 +934,17 @@ nsViewSourceChannel::RedirectTo(nsIURI *uri)
 }
 
 NS_IMETHODIMP
-nsViewSourceChannel::GetSchedulingContextID(nsID *_retval)
+nsViewSourceChannel::GetRequestContextID(nsID *_retval)
 {
     return !mHttpChannel ? NS_ERROR_NULL_POINTER :
-        mHttpChannel->GetSchedulingContextID(_retval);
+        mHttpChannel->GetRequestContextID(_retval);
 }
 
 NS_IMETHODIMP
-nsViewSourceChannel::SetSchedulingContextID(const nsID scid)
+nsViewSourceChannel::SetRequestContextID(const nsID rcid)
 {
     return !mHttpChannel ? NS_ERROR_NULL_POINTER :
-        mHttpChannel->SetSchedulingContextID(scid);
+        mHttpChannel->SetRequestContextID(rcid);
 }
 
 NS_IMETHODIMP
@@ -941,4 +959,11 @@ nsViewSourceChannel::SetIsMainDocumentChannel(bool aValue)
 {
     return !mHttpChannel ? NS_ERROR_NULL_POINTER :
         mHttpChannel->SetIsMainDocumentChannel(aValue);
+}
+
+// Have to manually forward SetCorsPreflightParameters since it's [notxpcom]
+void
+nsViewSourceChannel::SetCorsPreflightParameters(const nsTArray<nsCString>& aUnsafeHeaders)
+{
+  mHttpChannelInternal->SetCorsPreflightParameters(aUnsafeHeaders);
 }

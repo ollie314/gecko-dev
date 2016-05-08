@@ -5,6 +5,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "BiquadFilterNode.h"
+#include "AlignmentUtils.h"
 #include "AudioNodeEngine.h"
 #include "AudioNodeStream.h"
 #include "AudioDestinationNode.h"
@@ -12,6 +13,7 @@
 #include "WebAudioUtils.h"
 #include "blink/Biquad.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/UniquePtr.h"
 #include "AudioParamTimeline.h"
 
 namespace mozilla {
@@ -130,13 +132,15 @@ public:
     }
   }
 
-  virtual void ProcessBlock(AudioNodeStream* aStream,
-                            GraphTime aFrom,
-                            const AudioBlock& aInput,
-                            AudioBlock* aOutput,
-                            bool* aFinished) override
+  void ProcessBlock(AudioNodeStream* aStream,
+                    GraphTime aFrom,
+                    const AudioBlock& aInput,
+                    AudioBlock* aOutput,
+                    bool* aFinished) override
   {
-    float inputBuffer[WEBAUDIO_BLOCK_SIZE];
+    float inputBuffer[WEBAUDIO_BLOCK_SIZE + 4];
+    float* alignedInputBuffer = ALIGNED16(inputBuffer);
+    ASSERT_ALIGNED16(alignedInputBuffer);
 
     if (aInput.IsNull()) {
       bool hasTail = false;
@@ -149,7 +153,7 @@ public:
       if (!hasTail) {
         if (!mBiquads.IsEmpty()) {
           mBiquads.Clear();
-          aStream->CheckForInactive();
+          aStream->ScheduleCheckForInactive();
 
           RefPtr<PlayingRefChangeHandler> refchanged =
             new PlayingRefChangeHandler(aStream, PlayingRefChangeHandler::RELEASE);
@@ -190,12 +194,12 @@ public:
     for (uint32_t i = 0; i < numberOfChannels; ++i) {
       const float* input;
       if (aInput.IsNull()) {
-        input = inputBuffer;
+        input = alignedInputBuffer;
       } else {
         input = static_cast<const float*>(aInput.mChannelData[i]);
         if (aInput.mVolume != 1.0) {
-          AudioBlockCopyChannelWithScale(input, aInput.mVolume, inputBuffer);
-          input = inputBuffer;
+          AudioBlockCopyChannelWithScale(input, aInput.mVolume, alignedInputBuffer);
+          input = alignedInputBuffer;
         }
       }
       SetParamsOnBiquad(mBiquads[i], aStream->SampleRate(), mType, freq, q, gain, detune);
@@ -206,12 +210,12 @@ public:
     }
   }
 
-  virtual bool IsActive() const override
+  bool IsActive() const override
   {
     return !mBiquads.IsEmpty();
   }
 
-  virtual size_t SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const override
+  size_t SizeOfExcludingThis(MallocSizeOf aMallocSizeOf) const override
   {
     // Not owned:
     // - mDestination - probably not owned
@@ -221,7 +225,7 @@ public:
     return amount;
   }
 
-  virtual size_t SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const override
+  size_t SizeOfIncludingThis(MallocSizeOf aMallocSizeOf) const override
   {
     return aMallocSizeOf(this) + SizeOfExcludingThis(aMallocSizeOf);
   }
@@ -316,7 +320,7 @@ BiquadFilterNode::GetFrequencyResponse(const Float32Array& aFrequencyHz,
     return;
   }
 
-  nsAutoArrayPtr<float> frequencies(new float[length]);
+  auto frequencies = MakeUnique<float[]>(length);
   float* frequencyHz = aFrequencyHz.Data();
   const double nyquist = Context()->SampleRate() * 0.5;
 
@@ -338,7 +342,7 @@ BiquadFilterNode::GetFrequencyResponse(const Float32Array& aFrequencyHz,
 
   WebCore::Biquad biquad;
   SetParamsOnBiquad(biquad, Context()->SampleRate(), mType, freq, q, gain, detune);
-  biquad.getFrequencyResponse(int(length), frequencies, aMagResponse.Data(), aPhaseResponse.Data());
+  biquad.getFrequencyResponse(int(length), frequencies.get(), aMagResponse.Data(), aPhaseResponse.Data());
 }
 
 } // namespace dom

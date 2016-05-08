@@ -5,6 +5,7 @@
 "use strict";
 
 this.EXPORTED_SYMBOLS = [ "LoginManagerContent",
+                          "FormLikeFactory",
                           "UserAutoCompleteResult" ];
 
 const { classes: Cc, interfaces: Ci, results: Cr, utils: Cu } = Components;
@@ -21,6 +22,16 @@ XPCOMUtils.defineLazyModuleGetter(this, "LoginRecipesContent",
 
 XPCOMUtils.defineLazyModuleGetter(this, "LoginHelper",
                                   "resource://gre/modules/LoginHelper.jsm");
+
+XPCOMUtils.defineLazyServiceGetter(this, "gContentSecurityManager",
+                                   "@mozilla.org/contentsecuritymanager;1",
+                                   "nsIContentSecurityManager");
+XPCOMUtils.defineLazyServiceGetter(this, "gScriptSecurityManager",
+                                   "@mozilla.org/scriptsecuritymanager;1",
+                                   "nsIScriptSecurityManager");
+XPCOMUtils.defineLazyServiceGetter(this, "gNetUtil",
+                                   "@mozilla.org/network/util;1",
+                                   "nsINetUtil");
 
 XPCOMUtils.defineLazyGetter(this, "log", () => {
   let logger = LoginHelper.createLogger("LoginManagerContent");
@@ -168,25 +179,11 @@ var LoginManagerContent = {
   },
 
   receiveMessage: function (msg, window) {
-    // Convert an array of logins in simple JS-object form to an array of
-    // nsILoginInfo objects.
-    function jsLoginsToXPCOM(logins) {
-      return logins.map(login => {
-        var formLogin = Cc["@mozilla.org/login-manager/loginInfo;1"].
-                      createInstance(Ci.nsILoginInfo);
-        formLogin.init(login.hostname, login.formSubmitURL,
-                       login.httpRealm, login.username,
-                       login.password, login.usernameField,
-                       login.passwordField);
-        return formLogin;
-      });
-    }
-
     if (msg.name == "RemoteLogins:fillForm") {
       this.fillForm({
         topDocument: window.document,
         loginFormOrigin: msg.data.loginFormOrigin,
-        loginsFound: jsLoginsToXPCOM(msg.data.logins),
+        loginsFound: LoginHelper.vanillaObjectsToLogins(msg.data.logins),
         recipes: msg.data.recipes,
         inputElement: msg.objects.inputElement,
       });
@@ -196,7 +193,7 @@ var LoginManagerContent = {
     let request = this._takeRequest(msg);
     switch (msg.name) {
       case "RemoteLogins:loginsFound": {
-        let loginsFound = jsLoginsToXPCOM(msg.data.logins);
+        let loginsFound = LoginHelper.vanillaObjectsToLogins(msg.data.logins);
         request.promise.resolve({
           form: request.form,
           loginsFound: loginsFound,
@@ -206,8 +203,15 @@ var LoginManagerContent = {
       }
 
       case "RemoteLogins:loginsAutoCompleted": {
-        let loginsFound = jsLoginsToXPCOM(msg.data.logins);
-        request.promise.resolve(loginsFound);
+        let loginsFound =
+          LoginHelper.vanillaObjectsToLogins(msg.data.logins);
+        // If we're in the parent process, don't pass a message manager so our
+        // autocomplete result objects know they can remove the login from the
+        // login manager directly.
+        let messageManager =
+          (Services.appinfo.processType === Services.appinfo.PROCESS_TYPE_CONTENT) ?
+            msg.target : undefined;
+        request.promise.resolve({ logins: loginsFound, messageManager });
         break;
       }
     }
@@ -243,13 +247,8 @@ var LoginManagerContent = {
   _autoCompleteSearchAsync: function(aSearchString, aPreviousResult,
                                      aElement, aRect) {
     let doc = aElement.ownerDocument;
-    let form = aElement.form;
+    let form = FormLikeFactory.createFromField(aElement);
     let win = doc.defaultView;
-
-    if (!form) {
-      return Promise.reject("Bug 1173583: _autoCompleteSearchAsync needs to be " +
-                            "updated to work outside of <form>");
-    }
 
     let formOrigin = LoginUtils._getPasswordOrigin(doc.documentURI);
     let actionOrigin = LoginUtils._getActionOrigin(form);
@@ -259,11 +258,16 @@ var LoginManagerContent = {
     let remote = (Services.appinfo.processType ===
                   Services.appinfo.PROCESS_TYPE_CONTENT);
 
+    let previousResult = aPreviousResult ?
+                           { searchString: aPreviousResult.searchString,
+                             logins: LoginHelper.loginsToVanillaObjects(aPreviousResult.logins) } :
+                           null;
+
     let requestData = {};
     let messageData = { formOrigin: formOrigin,
                         actionOrigin: actionOrigin,
                         searchString: aSearchString,
-                        previousResult: aPreviousResult,
+                        previousResult: previousResult,
                         rect: aRect,
                         remote: remote };
 
@@ -417,9 +421,7 @@ var LoginManagerContent = {
     // Returns true if this window or any subframes have insecure login forms.
     let hasInsecureLoginForms = (thisWindow, parentIsInsecure) => {
       let doc = thisWindow.document;
-      let isInsecure =
-          parentIsInsecure ||
-          !this.checkIfURIisSecure(doc.documentURIObject);
+      let isInsecure = parentIsInsecure || !this.isDocumentSecure(doc);
       let hasLoginForm = !!this.stateForDocument(doc).loginForm;
       return (hasLoginForm && isInsecure) ||
              Array.some(thisWindow.frames,
@@ -524,7 +526,7 @@ var LoginManagerContent = {
     if (!LoginHelper.isUsernameFieldType(acInputField))
       return;
 
-    var acForm = acInputField.form; // XXX: Bug 1173583 - This doesn't work outside of <form>.
+    var acForm = FormLikeFactory.createFromField(acInputField);
     if (!acForm)
       return;
 
@@ -663,10 +665,17 @@ var LoginManagerContent = {
       // already logged in to the site.
       for (var i = pwFields[0].index - 1; i >= 0; i--) {
         var element = form.elements[i];
-        if (LoginHelper.isUsernameFieldType(element)) {
-          usernameField = element;
-          break;
+        if (!LoginHelper.isUsernameFieldType(element)) {
+          continue;
         }
+
+        if (fieldOverrideRecipe && fieldOverrideRecipe.notUsernameSelector &&
+            element.matches(fieldOverrideRecipe.notUsernameSelector)) {
+          continue;
+        }
+
+        usernameField = element;
+        break;
       }
     }
 
@@ -1102,87 +1111,67 @@ var LoginManagerContent = {
     };
   },
 
-  /*
-   * Checks whether the passed uri is secure
-   * Check Protocol Flags to determine if scheme is secure:
-   * URI_DOES_NOT_RETURN_DATA - e.g.
-   *   "mailto"
-   * URI_IS_LOCAL_RESOURCE - e.g.
-   *   "data",
-   *   "resource",
-   *   "moz-icon"
-   * URI_INHERITS_SECURITY_CONTEXT - e.g.
-   *   "javascript"
-   * URI_SAFE_TO_LOAD_IN_SECURE_CONTEXT - e.g.
-   *   "https",
-   *   "moz-safe-about"
+  /**
+   * Returns true if the provided document principal and URI are such that the
+   * page using them can safely host password fields.
    *
-   *   The use of this logic comes directly from nsMixedContentBlocker.cpp
-   *   At the time it was decided to include these protocols since a secure
-   *   uri for mixed content blocker means that the resource can't be
-   *   easily tampered with because 1) it is sent over an encrypted channel or
-   *   2) it is a local resource that never hits the network
-   *   or 3) it is a request sent without any response that could alter
-   *   the behavior of the page. It was decided to include the same logic
-   *   here both to be consistent with MCB and to make sure we cover all
-   *   "safe" protocols. Eventually, the code here and the code in MCB
-   *   will be moved to a common location that will be referenced from
-   *   both places. Look at
-   *   https://bugzilla.mozilla.org/show_bug.cgi?id=899099 for more info.
+   * This means the page can't be easily tampered with because it is sent over
+   * an encrypted channel or is a local resource that never hits the network.
+   *
+   * The system principal, codebase principals with secure schemes like "https",
+   * and local schemes like "resource" and "file" are all considered secure. If
+   * the page is sandboxed, then the document URI is checked instead.
+   *
+   * @param document
+   *        The document whose principal and URI are to be considered.
    */
-  checkIfURIisSecure : function(uri) {
-    let isSafe = false;
-    let netutil = Cc["@mozilla.org/network/util;1"].getService(Ci.nsINetUtil);
-    let ph = Ci.nsIProtocolHandler;
-
-    if (netutil.URIChainHasFlags(uri, ph.URI_IS_LOCAL_RESOURCE) ||
-        netutil.URIChainHasFlags(uri, ph.URI_DOES_NOT_RETURN_DATA) ||
-        netutil.URIChainHasFlags(uri, ph.URI_INHERITS_SECURITY_CONTEXT) ||
-        netutil.URIChainHasFlags(uri, ph.URI_SAFE_TO_LOAD_IN_SECURE_CONTEXT)) {
-
-      isSafe = true;
+  isDocumentSecure(document) {
+    let principal = document.nodePrincipal;
+    if (principal.isSystemPrincipal) {
+      return true;
     }
 
-    return isSafe;
+    // Fall back to the document URI for sandboxed documents that do not have
+    // the allow-same-origin flag, as they have a null principal instead of a
+    // codebase principal. Here there are still some cases that are considered
+    // insecure while they are secure, for example sandboxed documents created
+    // using a "javascript:" or "data:" URI from an HTTPS page. See bug 1162772
+    // for defining "window.isSecureContext", that may help in these cases.
+    if (!principal.isCodebasePrincipal) {
+      principal =
+        gScriptSecurityManager.getCodebasePrincipal(document.documentURIObject);
+    }
+
+    // These checks include "file", "resource", HTTPS, and HTTP to "localhost".
+    return gContentSecurityManager.isOriginPotentiallyTrustworthy(principal);
   },
 };
 
 var LoginUtils = {
-  /*
-   * _getPasswordOrigin
-   *
+  /**
    * Get the parts of the URL we want for identification.
+   * Strip out things like the userPass portion
    */
-  _getPasswordOrigin : function (uriString, allowJS) {
+  _getPasswordOrigin(uriString, allowJS) {
     var realm = "";
     try {
       var uri = Services.io.newURI(uriString, null, null);
 
       if (allowJS && uri.scheme == "javascript")
-        return "javascript:"
+        return "javascript:";
 
-      realm = uri.scheme + "://" + uri.host;
-
-      // If the URI explicitly specified a port, only include it when
-      // it's not the default. (We never want "http://foo.com:80")
-      var port = uri.port;
-      if (port != -1) {
-        var handler = Services.io.getProtocolHandler(uri.scheme);
-        if (port != handler.defaultPort)
-          realm += ":" + port;
-      }
-
+      realm = uri.scheme + "://" + uri.hostPort;
     } catch (e) {
       // bug 159484 - disallow url types that don't support a hostPort.
       // (although we handle "javascript:..." as a special case above.)
-      log("Couldn't parse origin for", uriString);
+      log("Couldn't parse origin for", uriString, e);
       realm = null;
     }
 
     return realm;
   },
 
-  _getActionOrigin : function (form) {
+  _getActionOrigin(form) {
     var uriString = form.action;
 
     // A blank or missing action submits to where it came from.
@@ -1194,7 +1183,7 @@ var LoginUtils = {
 };
 
 // nsIAutoCompleteResult implementation
-function UserAutoCompleteResult (aSearchString, matchingLogins) {
+function UserAutoCompleteResult (aSearchString, matchingLogins, messageManager) {
   function loginSort(a,b) {
     var userA = a.username.toLowerCase();
     var userB = b.username.toLowerCase();
@@ -1206,11 +1195,12 @@ function UserAutoCompleteResult (aSearchString, matchingLogins) {
       return  1;
 
     return 0;
-  };
+  }
 
   this.searchString = aSearchString;
   this.logins = matchingLogins.sort(loginSort);
   this.matchCount = matchingLogins.length;
+  this._messageManager = messageManager;
 
   if (this.matchCount > 0) {
     this.searchResult = Ci.nsIAutoCompleteResult.RESULT_SUCCESS;
@@ -1276,9 +1266,13 @@ UserAutoCompleteResult.prototype = {
       this.defaultIndex--;
 
     if (removeFromDB) {
-      var pwmgr = Cc["@mozilla.org/login-manager;1"].
-                  getService(Ci.nsILoginManager);
-      pwmgr.removeLogin(removedLogin);
+      if (this._messageManager) {
+        let vanilla = LoginHelper.loginToVanillaObject(removedLogin);
+        this._messageManager.sendAsyncMessage("RemoteLogins:removeLogin",
+                                              { login: vanilla });
+      } else {
+        Services.logins.removeLogin(removedLogin);
+      }
     }
   }
 };
@@ -1328,6 +1322,9 @@ var FormLikeFactory = {
    * shouldn't be relied upon as the heuristics may change to detect multiple
    * "forms" (e.g. registration and login) on one page with a <form>.
    *
+   * Note that two FormLikes created from the same field won't return the same FormLike object.
+   * Use the `rootElement` property on the FormLike as a key instead.
+   *
    * @param {HTMLInputElement} aField - a password or username field in a document
    * @return {FormLike}
    * @throws Error if aField isn't a password or username field in a document
@@ -1345,12 +1342,18 @@ var FormLikeFactory = {
 
     let doc = aField.ownerDocument;
     log("Created non-form FormLike for rootElement:", doc.documentElement);
+    let elements = [];
+    for (let el of doc.documentElement.querySelectorAll("input")) {
+      if (!el.form) {
+        elements.push(el);
+      }
+    }
     let formLike = {
       action: LoginUtils._getPasswordOrigin(doc.baseURI),
       autocomplete: "on",
       // Exclude elements inside the rootElement that are already in a <form> as
       // they will be handled by their own FormLike.
-      elements: [for (el of doc.documentElement.querySelectorAll("input")) if (!el.form) el],
+      elements,
       ownerDocument: doc,
       rootElement: doc.documentElement,
     };
@@ -1366,7 +1369,10 @@ var FormLikeFactory = {
   _addToJSONProperty(aFormLike) {
     function prettyElementOutput(aElement) {
       let idText = aElement.id ? "#" + aElement.id : "";
-      let classText = [for (className of aElement.classList) "." + className].join("");
+      let classText = "";
+      for (let className of aElement.classList) {
+        classText += "." + className;
+      }
       return `<${aElement.nodeName + idText + classText}>`;
     }
 
@@ -1379,7 +1385,10 @@ var FormLikeFactory = {
 
           switch (key) {
             case "elements": {
-              cleansedValue = [for (element of value) prettyElementOutput(element)];
+              cleansedValue = [];
+              for (let element of value) {
+                cleansedValue.push(prettyElementOutput(element));
+              }
               break;
             }
 

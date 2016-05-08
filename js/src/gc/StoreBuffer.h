@@ -8,8 +8,9 @@
 #define gc_StoreBuffer_h
 
 #include "mozilla/Attributes.h"
-#include "mozilla/DebugOnly.h"
 #include "mozilla/ReentrancyGuard.h"
+
+#include <algorithm>
 
 #include "jsalloc.h"
 
@@ -36,7 +37,7 @@ class BufferableRef
 typedef HashSet<void*, PointerHasher<void*, 3>, SystemAllocPolicy> EdgeSet;
 
 /* The size of a single block of store buffer storage space. */
-static const size_t LifoAllocBlockSize = 1 << 16; /* 64KiB */
+static const size_t LifoAllocBlockSize = 1 << 13; /* 8KiB */
 
 /*
  * The StoreBuffer observes all writes that occur in the system and performs
@@ -47,7 +48,7 @@ class StoreBuffer
     friend class mozilla::ReentrancyGuard;
 
     /* The size at which a block is about to overflow. */
-    static const size_t LowAvailableThreshold = (size_t)(LifoAllocBlockSize * 1.0 / 16.0);
+    static const size_t LowAvailableThreshold = size_t(LifoAllocBlockSize / 2.0);
 
     /*
      * This buffer holds only a single type of edge. Using this buffer is more
@@ -155,7 +156,8 @@ class StoreBuffer
         }
 
         bool isAboutToOverflow() const {
-            return !storage_->isEmpty() && storage_->availableInCurrentChunk() < LowAvailableThreshold;
+            return !storage_->isEmpty() &&
+                   storage_->availableInCurrentChunk() < LowAvailableThreshold;
         }
 
         /* Trace all generic edges. */
@@ -288,6 +290,35 @@ class StoreBuffer
             return !(*this == other);
         }
 
+        // True if this SlotsEdge range overlaps with the other SlotsEdge range,
+        // false if they do not overlap.
+        bool overlaps(const SlotsEdge& other) const {
+            if (objectAndKind_ != other.objectAndKind_)
+                return false;
+
+            // Widen our range by one on each side so that we consider
+            // adjacent-but-not-actually-overlapping ranges as overlapping. This
+            // is particularly useful for coalescing a series of increasing or
+            // decreasing single index writes 0, 1, 2, ..., N into a SlotsEdge
+            // range of elements [0, N].
+            auto end = start_ + count_ + 1;
+            auto start = start_ - 1;
+
+            auto otherEnd = other.start_ + other.count_;
+            return (start <= other.start_ && other.start_ <= end) ||
+                   (start <= otherEnd && otherEnd <= end);
+        }
+
+        // Destructively make this SlotsEdge range the union of the other
+        // SlotsEdge range and this one. A precondition is that the ranges must
+        // overlap.
+        void merge(const SlotsEdge& other) {
+            MOZ_ASSERT(overlaps(other));
+            auto end = Max(start_ + count_, other.start_ + other.count_);
+            start_ = Min(start_, other.start_);
+            count_ = end - start_;
+        }
+
         bool maybeInRememberedSet(const Nursery& n) const {
             return !IsInsideNursery(reinterpret_cast<Cell*>(object()));
         }
@@ -327,23 +358,6 @@ class StoreBuffer
         typedef PointerEdgeHasher<WholeCellEdges> Hasher;
     };
 
-    template <typename Key>
-    struct CallbackRef : public BufferableRef
-    {
-        typedef void (*TraceCallback)(JSTracer* trc, Key* key, void* data);
-
-        CallbackRef(TraceCallback cb, Key* k, void* d) : callback(cb), key(k), data(d) {}
-
-        virtual void trace(JSTracer* trc) {
-            callback(trc, key, data);
-        }
-
-      private:
-        TraceCallback callback;
-        Key* key;
-        void* data;
-    };
-
     template <typename Buffer, typename Edge>
     void unput(Buffer& buffer, const Edge& edge) {
         MOZ_ASSERT(!JS::shadow::Runtime::asShadowRuntime(runtime_)->isHeapBusy());
@@ -377,13 +391,18 @@ class StoreBuffer
 
     bool aboutToOverflow_;
     bool enabled_;
-    mozilla::DebugOnly<bool> mEntered; /* For ReentrancyGuard. */
+#ifdef DEBUG
+    bool mEntered; /* For ReentrancyGuard. */
+#endif
 
   public:
     explicit StoreBuffer(JSRuntime* rt, const Nursery& nursery)
       : bufferVal(), bufferCell(), bufferSlot(), bufferWholeCell(), bufferGeneric(),
         cancelIonCompilations_(false), runtime_(rt), nursery_(nursery), aboutToOverflow_(false),
-        enabled_(false), mEntered(false)
+        enabled_(false)
+#ifdef DEBUG
+        , mEntered(false)
+#endif
     {
     }
 
@@ -404,27 +423,17 @@ class StoreBuffer
     void putCell(Cell** cellp) { put(bufferCell, CellPtrEdge(cellp)); }
     void unputCell(Cell** cellp) { unput(bufferCell, CellPtrEdge(cellp)); }
     void putSlot(NativeObject* obj, int kind, int32_t start, int32_t count) {
-        put(bufferSlot, SlotsEdge(obj, kind, start, count));
+        SlotsEdge edge(obj, kind, start, count);
+        if (bufferSlot.last_.overlaps(edge))
+            bufferSlot.last_.merge(edge);
+        else
+            put(bufferSlot, edge);
     }
-    void putWholeCell(Cell* cell) {
-        MOZ_ASSERT(cell->isTenured());
-        put(bufferWholeCell, WholeCellEdges(cell));
-    }
+    inline void putWholeCell(Cell* cell);
 
     /* Insert an entry into the generic buffer. */
     template <typename T>
     void putGeneric(const T& t) { put(bufferGeneric, t);}
-
-    /* Insert or update a callback entry. */
-    template <typename Key>
-    void putCallback(void (*callback)(JSTracer* trc, Key* key, void* data), Key* key, void* data) {
-        put(bufferGeneric, CallbackRef<Key>(callback, key, data));
-    }
-
-    void assertHasValueEdge(JS::Value* vp) {
-        MOZ_ASSERT(bufferVal.has(this, ValueEdge(vp)) ||
-                   !ValueEdge(vp).maybeInRememberedSet(nursery_));
-    }
 
     void setShouldCancelIonCompilations() {
         cancelIonCompilations_ = true;
@@ -439,10 +448,6 @@ class StoreBuffer
 
     /* For use by our owned buffers and for testing. */
     void setAboutToOverflow();
-
-    bool hasPostBarrierCallbacks() {
-        return !bufferGeneric.isEmpty();
-    }
 
     void addSizeOfExcludingThis(mozilla::MallocSizeOf mallocSizeOf, JS::GCSizes* sizes);
 };

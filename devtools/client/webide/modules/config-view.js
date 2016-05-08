@@ -5,8 +5,8 @@
 const {Cu} = require("chrome");
 
 const EventEmitter = require("devtools/shared/event-emitter");
-const {Services} = Cu.import("resource://gre/modules/Services.jsm");
-const Strings = Services.strings.createBundle("chrome://browser/locale/devtools/webide.properties");
+const Services = require("Services");
+const Strings = Services.strings.createBundle("chrome://devtools/locale/webide.properties");
 
 var ConfigView;
 

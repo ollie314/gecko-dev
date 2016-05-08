@@ -128,7 +128,7 @@ public:
   template<class Function>
   void RunTestAndWait(Function&& aFunction)
   {
-    RefPtr<nsRunnable> r = NS_NewRunnableFunction(Forward<Function>(aFunction));
+    RefPtr<Runnable> r = NS_NewRunnableFunction(Forward<Function>(aFunction));
     mTaskQueue->Dispatch(r.forget());
     mTaskQueue->AwaitShutdownAndIdle();
   }
@@ -153,7 +153,7 @@ void SetPref(const char* a, T value);
 template <>
 void SetPref<bool>(const char* aPrefKey, bool aValue)
 {
-  unused << Preferences::SetBool(aPrefKey, aValue);
+  Unused << Preferences::SetBool(aPrefKey, aValue);
 }
 
 template <typename T>

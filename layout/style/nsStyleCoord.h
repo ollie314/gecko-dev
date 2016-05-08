@@ -90,6 +90,15 @@ public:
     bool operator!=(const CalcValue& aOther) const {
       return !(*this == aOther);
     }
+
+    nscoord ToLength() const {
+      MOZ_ASSERT(!mHasPercent);
+      return mLength;
+    }
+
+    // If this returns true the value is definitely zero. It it returns false
+    // it might be zero. So it's best used for conservative optimization.
+    bool IsDefinitelyZero() const { return mLength == 0 && mPercent == 0; }
   };
 
   // Reference counted calc() value.  This is the type that is used to store
@@ -168,6 +177,15 @@ public:
   bool ConvertsToLength() const {
     return mUnit == eStyleUnit_Coord ||
            (IsCalcUnit() && !CalcHasPercent());
+  }
+
+  nscoord ToLength() const {
+    MOZ_ASSERT(ConvertsToLength());
+    if (GetUnit() == eStyleUnit_Coord) {
+      return GetCoordValue();
+    }
+    MOZ_ASSERT(IsCalcUnit() && !CalcHasPercent());
+    return GetCalcValue()->ToLength();
   }
 
   nscoord     GetCoordValue() const;
@@ -271,6 +289,15 @@ public:
   inline void SetTop(const nsStyleCoord& aCoord);
   inline void SetRight(const nsStyleCoord& aCoord);
   inline void SetBottom(const nsStyleCoord& aCoord);
+
+  bool ConvertsToLength() const {
+    NS_FOR_CSS_SIDES(side) {
+      if (!Get(side).ConvertsToLength()) {
+        return false;
+      }
+    }
+    return true;
+  }
 
 protected:
   nsStyleUnit   mUnits[4];

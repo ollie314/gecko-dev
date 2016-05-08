@@ -46,7 +46,9 @@
 #include "nsNPAPIPluginInstance.h"
 #include "nsPerformance.h"
 #include "mozilla/dom/WindowBinding.h"
-#include "RestyleManager.h"
+#include "mozilla/RestyleManager.h"
+#include "mozilla/RestyleManagerHandle.h"
+#include "mozilla/RestyleManagerHandleInlines.h"
 #include "Layers.h"
 #include "imgIContainer.h"
 #include "mozilla/dom/ScriptSettings.h"
@@ -65,6 +67,7 @@
 #include "mozilla/unused.h"
 #include "mozilla/TimelineConsumers.h"
 #include "nsAnimationManager.h"
+#include "nsIDOMEvent.h"
 
 #ifdef MOZ_NUWA_PROCESS
 #include "ipc/Nuwa.h"
@@ -75,13 +78,33 @@ using namespace mozilla::widget;
 using namespace mozilla::ipc;
 using namespace mozilla::layout;
 
-static PRLogModuleInfo *gLog = nullptr;
-#define LOG(...) MOZ_LOG(gLog, mozilla::LogLevel::Debug, (__VA_ARGS__))
+static mozilla::LazyLogModule sRefreshDriverLog("nsRefreshDriver");
+#define LOG(...) MOZ_LOG(sRefreshDriverLog, mozilla::LogLevel::Debug, (__VA_ARGS__))
 
 #define DEFAULT_THROTTLED_FRAME_RATE 1
 #define DEFAULT_RECOMPUTE_VISIBILITY_INTERVAL_MS 1000
 // after 10 minutes, stop firing off inactive timers
 #define DEFAULT_INACTIVE_TIMER_DISABLE_SECONDS 600
+
+namespace {
+  // `true` if we are currently in jank-critical mode.
+  //
+  // In jank-critical mode, any iteration of the event loop that takes
+  // more than 16ms to compute will cause an ongoing animation to miss
+  // frames.
+  //
+  // For simplicity, the current implementation assumes that we are in
+  // jank-critical mode if and only if at least one vsync driver has
+  // at least one observer.
+  static uint64_t sActiveVsyncTimers = 0;
+
+  // The latest value of process-wide jank levels.
+  //
+  // For each i, sJankLevels[i] counts the number of times delivery of
+  // vsync to the main thread has been delayed by at least 2^i ms. Use
+  // GetJankLevels to grab a copy of this array.
+  uint64_t sJankLevels[12];
+}
 
 namespace mozilla {
 
@@ -104,17 +127,24 @@ public:
 
   virtual ~RefreshDriverTimer()
   {
-    NS_ASSERTION(mRefreshDrivers.Length() == 0, "Should have removed all refresh drivers from here by now!");
+    MOZ_ASSERT(mContentRefreshDrivers.Length() == 0, "Should have removed all content refresh drivers from here by now!");
+    MOZ_ASSERT(mRootRefreshDrivers.Length() == 0, "Should have removed all root refresh drivers from here by now!");
   }
 
   virtual void AddRefreshDriver(nsRefreshDriver* aDriver)
   {
     LOG("[%p] AddRefreshDriver %p", this, aDriver);
 
-    NS_ASSERTION(!mRefreshDrivers.Contains(aDriver), "AddRefreshDriver for a refresh driver that's already in the list!");
-    mRefreshDrivers.AppendElement(aDriver);
+    bool startTimer = mContentRefreshDrivers.IsEmpty() && mRootRefreshDrivers.IsEmpty();
+    if (IsRootRefreshDriver(aDriver)) {
+      NS_ASSERTION(!mRootRefreshDrivers.Contains(aDriver), "Adding a duplicate root refresh driver!");
+      mRootRefreshDrivers.AppendElement(aDriver);
+    } else {
+      NS_ASSERTION(!mContentRefreshDrivers.Contains(aDriver), "Adding a duplicate content refresh driver!");
+      mContentRefreshDrivers.AppendElement(aDriver);
+    }
 
-    if (mRefreshDrivers.Length() == 1) {
+    if (startTimer) {
       StartTimer();
     }
   }
@@ -123,10 +153,30 @@ public:
   {
     LOG("[%p] RemoveRefreshDriver %p", this, aDriver);
 
-    NS_ASSERTION(mRefreshDrivers.Contains(aDriver), "RemoveRefreshDriver for a refresh driver that's not in the list!");
-    mRefreshDrivers.RemoveElement(aDriver);
+    if (IsRootRefreshDriver(aDriver)) {
+      NS_ASSERTION(mRootRefreshDrivers.Contains(aDriver), "RemoveRefreshDriver for a refresh driver that's not in the root refresh list!");
+      mRootRefreshDrivers.RemoveElement(aDriver);
+    } else {
+      nsPresContext* rootContext = aDriver->PresContext()->GetRootPresContext();
+      // During PresContext shutdown, we can't accurately detect
+      // if a root refresh driver exists or not. Therefore, we have to
+      // search and find out which list this driver exists in.
+      if (!rootContext) {
+        if (mRootRefreshDrivers.Contains(aDriver)) {
+          mRootRefreshDrivers.RemoveElement(aDriver);
+        } else {
+          NS_ASSERTION(mContentRefreshDrivers.Contains(aDriver),
+                       "RemoveRefreshDriver without a display root for a driver that is not in the content refresh list");
+          mContentRefreshDrivers.RemoveElement(aDriver);
+        }
+      } else {
+        NS_ASSERTION(mContentRefreshDrivers.Contains(aDriver), "RemoveRefreshDriver for a driver that is not in the content refresh list");
+        mContentRefreshDrivers.RemoveElement(aDriver);
+      }
+    }
 
-    if (mRefreshDrivers.Length() == 0) {
+    bool stopTimer = mContentRefreshDrivers.IsEmpty() && mRootRefreshDrivers.IsEmpty();
+    if (stopTimer) {
       StopTimer();
     }
   }
@@ -138,11 +188,17 @@ public:
   {
     MOZ_ASSERT(NS_IsMainThread());
 
-    for (nsRefreshDriver* driver : mRefreshDrivers) {
+    for (nsRefreshDriver* driver : mContentRefreshDrivers) {
       aNewTimer->AddRefreshDriver(driver);
       driver->mActiveTimer = aNewTimer;
     }
-    mRefreshDrivers.Clear();
+    mContentRefreshDrivers.Clear();
+
+    for (nsRefreshDriver* driver : mRootRefreshDrivers) {
+      aNewTimer->AddRefreshDriver(driver);
+      driver->mActiveTimer = aNewTimer;
+    }
+    mRootRefreshDrivers.Clear();
 
     aNewTimer->mLastFireEpoch = mLastFireEpoch;
     aNewTimer->mLastFireTime = mLastFireTime;
@@ -153,6 +209,16 @@ protected:
   virtual void StopTimer() = 0;
   virtual void ScheduleNextTick(TimeStamp aNowTime) = 0;
 
+  bool IsRootRefreshDriver(nsRefreshDriver* aDriver)
+  {
+    nsPresContext* rootContext = aDriver->PresContext()->GetRootPresContext();
+    if (!rootContext) {
+      return false;
+    }
+
+    return aDriver == rootContext->RefreshDriver();
+  }
+
   /*
    * Actually runs a tick, poking all the attached RefreshDrivers.
    * Grabs the "now" time via JS_Now and TimeStamp::Now().
@@ -162,6 +228,23 @@ protected:
     int64_t jsnow = JS_Now();
     TimeStamp now = TimeStamp::Now();
     Tick(jsnow, now);
+  }
+
+  void TickRefreshDrivers(int64_t aJsNow, TimeStamp aNow, nsTArray<RefPtr<nsRefreshDriver>>& aDrivers)
+  {
+    if (aDrivers.IsEmpty()) {
+      return;
+    }
+
+    nsTArray<RefPtr<nsRefreshDriver> > drivers(aDrivers);
+    for (nsRefreshDriver* driver : drivers) {
+      // don't poke this driver if it's in test mode
+      if (driver->IsTestControllingRefreshesEnabled()) {
+        continue;
+      }
+
+      TickDriver(driver, aJsNow, aNow);
+    }
   }
 
   /*
@@ -175,17 +258,12 @@ protected:
     mLastFireTime = now;
 
     LOG("[%p] ticking drivers...", this);
-    nsTArray<RefPtr<nsRefreshDriver> > drivers(mRefreshDrivers);
     // RD is short for RefreshDriver
     profiler_tracing("Paint", "RD", TRACING_INTERVAL_START);
-    for (nsRefreshDriver* driver : drivers) {
-      // don't poke this driver if it's in test mode
-      if (driver->IsTestControllingRefreshesEnabled()) {
-        continue;
-      }
 
-      TickDriver(driver, jsnow, now);
-    }
+    TickRefreshDrivers(jsnow, now, mContentRefreshDrivers);
+    TickRefreshDrivers(jsnow, now, mRootRefreshDrivers);
+
     profiler_tracing("Paint", "RD", TRACING_INTERVAL_END);
     LOG("[%p] done.", this);
   }
@@ -200,7 +278,8 @@ protected:
   TimeStamp mLastFireTime;
   TimeStamp mTargetTime;
 
-  nsTArray<RefPtr<nsRefreshDriver> > mRefreshDrivers;
+  nsTArray<RefPtr<nsRefreshDriver> > mContentRefreshDrivers;
+  nsTArray<RefPtr<nsRefreshDriver> > mRootRefreshDrivers;
 
   // useful callback for nsITimer-based derived classes, here
   // bacause of c++ protected shenanigans
@@ -313,6 +392,9 @@ private:
     explicit RefreshDriverVsyncObserver(VsyncRefreshDriverTimer* aVsyncRefreshDriverTimer)
       : mVsyncRefreshDriverTimer(aVsyncRefreshDriverTimer)
       , mRefreshTickLock("RefreshTickLock")
+      , mRecentVsync(TimeStamp::Now())
+      , mLastChildTick(TimeStamp::Now())
+      , mVsyncRate(TimeDuration::Forever())
       , mProcessedVsync(true)
     {
       MOZ_ASSERT(NS_IsMainThread());
@@ -335,9 +417,9 @@ private:
         }
 
         nsCOMPtr<nsIRunnable> vsyncEvent =
-             NS_NewRunnableMethodWithArg<TimeStamp>(this,
-                                                    &RefreshDriverVsyncObserver::TickRefreshDriver,
-                                                    aVsyncTimestamp);
+             NewRunnableMethod<TimeStamp>(this,
+                                          &RefreshDriverVsyncObserver::TickRefreshDriver,
+                                          aVsyncTimestamp);
         NS_DispatchToMainThread(vsyncEvent);
       } else {
         TickRefreshDriver(aVsyncTimestamp);
@@ -352,17 +434,70 @@ private:
       mVsyncRefreshDriverTimer = nullptr;
     }
 
+    void OnTimerStart()
+    {
+      if (!XRE_IsParentProcess()) {
+        mLastChildTick = TimeStamp::Now();
+      }
+    }
+
   private:
     virtual ~RefreshDriverVsyncObserver() {}
+
+    void RecordTelemetryProbes(TimeStamp aVsyncTimestamp)
+    {
+      MOZ_ASSERT(NS_IsMainThread());
+    #ifndef ANDROID  /* bug 1142079 */
+      if (XRE_IsParentProcess()) {
+        TimeDuration vsyncLatency = TimeStamp::Now() - aVsyncTimestamp;
+        uint32_t sample = (uint32_t)vsyncLatency.ToMilliseconds();
+        Telemetry::Accumulate(Telemetry::FX_REFRESH_DRIVER_CHROME_FRAME_DELAY_MS,
+                              sample);
+        Telemetry::Accumulate(Telemetry::FX_REFRESH_DRIVER_SYNC_SCROLL_FRAME_DELAY_MS,
+                              sample);
+        RecordJank(sample);
+      } else if (mVsyncRate != TimeDuration::Forever()) {
+        TimeDuration contentDelay = (TimeStamp::Now() - mLastChildTick) - mVsyncRate;
+        if (contentDelay.ToMilliseconds() < 0 ){
+          // Vsyncs are noisy and some can come at a rate quicker than
+          // the reported hardware rate. In those cases, consider that we have 0 delay.
+          contentDelay = TimeDuration::FromMilliseconds(0);
+        }
+        uint32_t sample = (uint32_t)contentDelay.ToMilliseconds();
+        Telemetry::Accumulate(Telemetry::FX_REFRESH_DRIVER_CONTENT_FRAME_DELAY_MS,
+                              sample);
+        Telemetry::Accumulate(Telemetry::FX_REFRESH_DRIVER_SYNC_SCROLL_FRAME_DELAY_MS,
+                              sample);
+        RecordJank(sample);
+      } else {
+        // Request the vsync rate from the parent process. Might be a few vsyncs
+        // until the parent responds.
+        mVsyncRate = mVsyncRefreshDriverTimer->mVsyncChild->GetVsyncRate();
+      }
+    #endif
+    }
+
+    void RecordJank(uint32_t aJankMS)
+    {
+      uint32_t duration = 1 /* ms */;
+      for (size_t i = 0;
+           i < mozilla::ArrayLength(sJankLevels) && duration < aJankMS;
+           ++i, duration *= 2) {
+        sJankLevels[i]++;
+      }
+    }
 
     void TickRefreshDriver(TimeStamp aVsyncTimestamp)
     {
       MOZ_ASSERT(NS_IsMainThread());
 
+      RecordTelemetryProbes(aVsyncTimestamp);
       if (XRE_IsParentProcess()) {
         MonitorAutoLock lock(mRefreshTickLock);
         aVsyncTimestamp = mRecentVsync;
         mProcessedVsync = true;
+      } else {
+        mLastChildTick = TimeStamp::Now();
       }
       MOZ_ASSERT(aVsyncTimestamp <= TimeStamp::Now());
 
@@ -380,6 +515,8 @@ private:
     VsyncRefreshDriverTimer* mVsyncRefreshDriverTimer;
     Monitor mRefreshTickLock;
     TimeStamp mRecentVsync;
+    TimeStamp mLastChildTick;
+    TimeDuration mVsyncRate;
     bool mProcessedVsync;
   }; // RefreshDriverVsyncObserver
 
@@ -393,7 +530,7 @@ private:
       // send the unobserveVsync message to disable vsync event. We don't need
       // to handle the cleanup stuff of this actor. PVsyncChild::ActorDestroy()
       // will be called and clean up this actor.
-      unused << mVsyncChild->SendUnobserve();
+      Unused << mVsyncChild->SendUnobserve();
       mVsyncChild->SetVsyncObserver(nullptr);
       mVsyncChild = nullptr;
     }
@@ -406,23 +543,35 @@ private:
 
   virtual void StartTimer() override
   {
+    // Protect updates to `sActiveVsyncTimers`.
+    MOZ_ASSERT(NS_IsMainThread());
+
     mLastFireEpoch = JS_Now();
     mLastFireTime = TimeStamp::Now();
 
     if (XRE_IsParentProcess()) {
       mVsyncDispatcher->SetParentRefreshTimer(mVsyncObserver);
     } else {
-      unused << mVsyncChild->SendObserve();
+      Unused << mVsyncChild->SendObserve();
+      mVsyncObserver->OnTimerStart();
     }
+
+    ++sActiveVsyncTimers;
   }
 
   virtual void StopTimer() override
   {
+    // Protect updates to `sActiveVsyncTimers`.
+    MOZ_ASSERT(NS_IsMainThread());
+
     if (XRE_IsParentProcess()) {
       mVsyncDispatcher->SetParentRefreshTimer(nullptr);
     } else {
-      unused << mVsyncChild->SendUnobserve();
+      Unused << mVsyncChild->SendUnobserve();
     }
+
+    MOZ_ASSERT(sActiveVsyncTimers > 0);
+    --sActiveVsyncTimers;
   }
 
   virtual void ScheduleNextTick(TimeStamp aNowTime) override
@@ -522,13 +671,18 @@ public:
 
     // we don't really have to start with the newly added one, but we may as well
     // not tick the old ones at the fastest rate any more than we need to.
-    mNextDriverIndex = mRefreshDrivers.Length() - 1;
+    mNextDriverIndex = GetRefreshDriverCount() - 1;
 
     StopTimer();
     StartTimer();
   }
 
 protected:
+  uint32_t GetRefreshDriverCount()
+  {
+    return mContentRefreshDrivers.Length() + mRootRefreshDrivers.Length();
+  }
+
   virtual void StartTimer()
   {
     mLastFireEpoch = JS_Now();
@@ -557,7 +711,7 @@ protected:
     }
 
     // double the next tick time if we've already gone through all of them once
-    if (mNextDriverIndex >= mRefreshDrivers.Length()) {
+    if (mNextDriverIndex >= GetRefreshDriverCount()) {
       mNextTickDuration *= 2.0;
       mNextDriverIndex = 0;
     }
@@ -567,7 +721,7 @@ protected:
     mTimer->InitWithFuncCallback(TimerTickOne, this, delay, nsITimer::TYPE_ONE_SHOT);
 
     LOG("[%p] inactive timer next tick in %f ms [index %d/%d]", this, mNextTickDuration,
-        mNextDriverIndex, mRefreshDrivers.Length());
+        mNextDriverIndex, GetRefreshDriverCount());
   }
 
   /* Runs just one driver's tick. */
@@ -581,7 +735,9 @@ protected:
     mLastFireEpoch = jsnow;
     mLastFireTime = now;
 
-    nsTArray<RefPtr<nsRefreshDriver> > drivers(mRefreshDrivers);
+    nsTArray<RefPtr<nsRefreshDriver> > drivers(mContentRefreshDrivers);
+    drivers.AppendElements(mRootRefreshDrivers);
+
     if (mNextDriverIndex < drivers.Length() &&
         !drivers[mNextDriverIndex]->IsTestControllingRefreshesEnabled())
     {
@@ -686,6 +842,7 @@ CreateVsyncRefreshTimer()
 {
   MOZ_ASSERT(NS_IsMainThread());
 
+  PodArrayZero(sJankLevels);
   // Sometimes, gfxPrefs is not initialized here. Make sure the gfxPrefs is
   // ready.
   gfxPrefs::GetSingleton();
@@ -735,9 +892,6 @@ GetFirstFrameDelay(imgIRequest* req)
 /* static */ void
 nsRefreshDriver::InitializeStatics()
 {
-  if (!gLog) {
-    gLog = PR_NewLogModule("nsRefreshDriver");
-  }
 }
 
 /* static */ void
@@ -867,7 +1021,8 @@ nsRefreshDriver::nsRefreshDriver(nsPresContext* aPresContext)
     mRequestedHighPrecision(false),
     mInRefresh(false),
     mWaitingForTransaction(false),
-    mSkippedPaints(false)
+    mSkippedPaints(false),
+    mResizeSuppressed(false)
 {
   mMostRecentRefreshEpochTime = JS_Now();
   mMostRecentRefresh = TimeStamp::Now();
@@ -1020,7 +1175,7 @@ nsRefreshDriver::EnsureTimerStarted(EnsureTimerStartedFlags aFlags)
     return;
 
   // will it already fire, and no other changes needed?
-  if (mActiveTimer && !(aFlags & eAdjustingTimer))
+  if (mActiveTimer && !(aFlags & eForceAdjustTimer))
     return;
 
   if (IsFrozen() || !mPresContext) {
@@ -1050,6 +1205,15 @@ nsRefreshDriver::EnsureTimerStarted(EnsureTimerStartedFlags aFlags)
       mActiveTimer->RemoveRefreshDriver(this);
     mActiveTimer = newTimer;
     mActiveTimer->AddRefreshDriver(this);
+  }
+
+  // When switching from an inactive timer to an active timer, the root
+  // refresh driver is skipped due to being set to the content refresh
+  // driver's timestamp. In case of EnsureTimerStarted is called from
+  // ScheduleViewManagerFlush, we should avoid this behavior to flush
+  // a paint in the same tick on the root refresh driver.
+  if (aFlags & eNeverAdjustTimer) {
+    return;
   }
 
   // Since the different timers are sampled at different rates, when switching
@@ -1295,7 +1459,7 @@ static void GetProfileTimelineSubDocShells(nsDocShell* aRootDocShell,
     }
 
     aShells.AppendElement(shell);
-  };
+  }
 }
 
 static void
@@ -1318,35 +1482,10 @@ nsRefreshDriver::DispatchPendingEvents()
 }
 
 static bool
-DispatchAnimationEventsOnSubDocuments(nsIDocument* aDocument,
-                                      void* aRefreshDriver)
+CollectDocuments(nsIDocument* aDocument, void* aDocArray)
 {
-  nsIPresShell* shell = aDocument->GetShell();
-  if (!shell) {
-    return true;
-  }
-
-  RefPtr<nsPresContext> context = shell->GetPresContext();
-  if (!context || context->RefreshDriver() != aRefreshDriver) {
-    return true;
-  }
-
-  nsCOMPtr<nsIDocument> kungFuDeathGrip(aDocument);
-
-  context->TransitionManager()->SortEvents();
-  context->AnimationManager()->SortEvents();
-
-  // Dispatch transition events first since transitions conceptually sit
-  // below animations in terms of compositing order.
-  context->TransitionManager()->DispatchEvents();
-  // Check that the presshell has not been destroyed
-  if (context->GetPresShell()) {
-    context->AnimationManager()->DispatchEvents();
-  }
-
-  aDocument->EnumerateSubDocuments(DispatchAnimationEventsOnSubDocuments,
-                                   aRefreshDriver);
-
+  static_cast<nsCOMArray<nsIDocument>*>(aDocArray)->AppendObject(aDocument);
+  aDocument->EnumerateSubDocuments(CollectDocuments, aDocArray);
   return true;
 }
 
@@ -1357,7 +1496,32 @@ nsRefreshDriver::DispatchAnimationEvents()
     return;
   }
 
-  DispatchAnimationEventsOnSubDocuments(mPresContext->Document(), this);
+  nsCOMArray<nsIDocument> documents;
+  CollectDocuments(mPresContext->Document(), &documents);
+
+  for (int32_t i = 0; i < documents.Count(); ++i) {
+    nsIDocument* doc = documents[i];
+    nsIPresShell* shell = doc->GetShell();
+    if (!shell) {
+      continue;
+    }
+
+    RefPtr<nsPresContext> context = shell->GetPresContext();
+    if (!context || context->RefreshDriver() != this) {
+      continue;
+    }
+
+    context->TransitionManager()->SortEvents();
+    context->AnimationManager()->SortEvents();
+
+    // Dispatch transition events first since transitions conceptually sit
+    // below animations in terms of compositing order.
+    context->TransitionManager()->DispatchEvents();
+    // Check that the presshell has not been destroyed
+    if (context->GetPresShell()) {
+      context->AnimationManager()->DispatchEvents();
+    }
+  }
 }
 
 void
@@ -1426,7 +1590,8 @@ nsRefreshDriver::RunFrameRequestCallbacks(TimeStamp aNowTime)
     for (const DocumentFrameCallbacks& docCallbacks : frameRequestCallbacks) {
       // XXXbz Bug 863140: GetInnerWindow can return the outer
       // window in some cases.
-      nsPIDOMWindow* innerWindow = docCallbacks.mDocument->GetInnerWindow();
+      nsPIDOMWindowInner* innerWindow =
+        docCallbacks.mDocument->GetInnerWindow();
       DOMHighResTimeStamp timeStamp = 0;
       if (innerWindow && innerWindow->IsInnerWindow()) {
         nsPerformance* perf = innerWindow->GetPerformance();
@@ -1436,9 +1601,7 @@ nsRefreshDriver::RunFrameRequestCallbacks(TimeStamp aNowTime)
         // else window is partially torn down already
       }
       for (auto& callback : docCallbacks.mCallbacks) {
-        ErrorResult ignored;
-        callback->Call(timeStamp, ignored);
-        ignored.SuppressException();
+        callback->Call(timeStamp);
       }
     }
     profiler_tracing("Paint", "Scripts", TRACING_INTERVAL_END);
@@ -1508,11 +1671,22 @@ nsRefreshDriver::Tick(int64_t aNowEpoch, TimeStamp aNowTime)
     return;
   }
 
+  mResizeSuppressed = false;
+
   AutoRestore<bool> restoreInRefresh(mInRefresh);
   mInRefresh = true;
 
   AutoRestore<TimeStamp> restoreTickStart(mTickStart);
   mTickStart = TimeStamp::Now();
+
+  gfxPlatform::GetPlatform()->SchedulePaintIfDeviceReset();
+
+  // We want to process any pending APZ metrics ahead of their positions
+  // in the queue. This will prevent us from spending precious time
+  // painting a stale displayport.
+  if (gfxPrefs::APZPeekMessages()) {
+    nsLayoutUtils::UpdateDisplayPortMarginsFromPendingMessages();
+  }
 
   /*
    * The timer holds a reference to |this| while calling |Notify|.
@@ -1541,7 +1715,7 @@ nsRefreshDriver::Tick(int64_t aNowEpoch, TimeStamp aNowTime)
 
       if (mPresContext && mPresContext->GetPresShell()) {
         bool tracingStyleFlush = false;
-        nsAutoTArray<nsIPresShell*, 16> observers;
+        AutoTArray<nsIPresShell*, 16> observers;
         observers.AppendElements(mStyleFlushObservers);
         for (uint32_t j = observers.Length();
              j && mPresContext && mPresContext->GetPresShell(); --j) {
@@ -1559,7 +1733,12 @@ nsRefreshDriver::Tick(int64_t aNowEpoch, TimeStamp aNowTime)
 
           NS_ADDREF(shell);
           mStyleFlushObservers.RemoveElement(shell);
-          shell->GetPresContext()->RestyleManager()->mObservingRefreshDriver = false;
+          RestyleManagerHandle restyleManager =
+            shell->GetPresContext()->RestyleManager();
+          // XXX stylo: ServoRestyleManager does not observer the refresh driver yet.
+          if (restyleManager->IsGecko()) {
+            restyleManager->AsGecko()->mObservingRefreshDriver = false;
+          }
           shell->FlushPendingNotifications(ChangesToFlush(Flush_Style, false));
           // Inform the FontFaceSet that we ticked, so that it can resolve its
           // ready promise if it needs to (though it might still be waiting on
@@ -1577,15 +1756,11 @@ nsRefreshDriver::Tick(int64_t aNowEpoch, TimeStamp aNowTime)
         if (tracingStyleFlush) {
           profiler_tracing("Paint", "Styles", TRACING_INTERVAL_END);
         }
-
-        if (!nsLayoutUtils::AreAsyncAnimationsEnabled()) {
-          mPresContext->TickLastStyleUpdateForAllAnimations();
-        }
       }
     } else if  (i == 1) {
       // This is the Flush_Layout case.
       bool tracingLayoutFlush = false;
-      nsAutoTArray<nsIPresShell*, 16> observers;
+      AutoTArray<nsIPresShell*, 16> observers;
       observers.AppendElements(mLayoutFlushObservers);
       for (uint32_t j = observers.Length();
            j && mPresContext && mPresContext->GetPresShell(); --j) {
@@ -1632,15 +1807,15 @@ nsRefreshDriver::Tick(int64_t aNowEpoch, TimeStamp aNowTime)
     }
   }
 
-  // Recompute image visibility if it's necessary and enough time has passed
-  // since the last time we did it.
+  // Recompute approximate frame visibility if it's necessary and enough time
+  // has passed since the last time we did it.
   if (mNeedToRecomputeVisibility && !mThrottled &&
       aNowTime >= mNextRecomputeVisibilityTick &&
       !presShell->IsPaintingSuppressed()) {
     mNextRecomputeVisibilityTick = aNowTime + mMinRecomputeVisibilityInterval;
     mNeedToRecomputeVisibility = false;
 
-    presShell->ScheduleImageVisibilityUpdate();
+    presShell->ScheduleApproximateFrameVisibilityUpdateNow();
   }
 
   /*
@@ -1800,7 +1975,7 @@ nsRefreshDriver::Thaw()
       // updates our mMostRecentRefresh, but the DoRefresh call won't run
       // and notify our observers until we get back to the event loop.
       // Thus MostRecentRefresh() will lie between now and the DoRefresh.
-      NS_DispatchToCurrentThread(NS_NewRunnableMethod(this, &nsRefreshDriver::DoRefresh));
+      NS_DispatchToCurrentThread(NewRunnableMethod(this, &nsRefreshDriver::DoRefresh));
       EnsureTimerStarted();
     }
   }
@@ -1832,6 +2007,12 @@ nsRefreshDriver::GetTransactionId()
     mSkippedPaints = false;
   }
 
+  return mPendingTransaction;
+}
+
+uint64_t
+nsRefreshDriver::LastTransactionId() const
+{
   return mPendingTransaction;
 }
 
@@ -1901,9 +2082,9 @@ nsRefreshDriver::IsWaitingForPaint(mozilla::TimeStamp aTime)
 
   // Try find the 'root' refresh driver for the current window and check
   // if that is waiting for a paint.
-  nsPresContext *displayRoot = PresContext()->GetDisplayRootPresContext();
-  if (displayRoot) {
-    nsRefreshDriver *rootRefresh = displayRoot->GetRootPresContext()->RefreshDriver();
+  nsPresContext *rootContext = PresContext()->GetRootPresContext();
+  if (rootContext) {
+    nsRefreshDriver *rootRefresh = rootContext->RefreshDriver();
     if (rootRefresh && rootRefresh != this) {
       if (rootRefresh->IsWaitingForPaint(aTime)) {
         if (mRootRefresh != rootRefresh) {
@@ -1929,7 +2110,7 @@ nsRefreshDriver::SetThrottled(bool aThrottled)
     if (mActiveTimer) {
       // We want to switch our timer type here, so just stop and
       // restart the timer.
-      EnsureTimerStarted(eAdjustingTimer);
+      EnsureTimerStarted(eForceAdjustTimer);
     }
   }
 }
@@ -1976,7 +2157,7 @@ nsRefreshDriver::ScheduleViewManagerFlush()
   NS_ASSERTION(mPresContext->IsRoot(),
                "Should only schedule view manager flush on root prescontexts");
   mViewManagerFlushIsPending = true;
-  EnsureTimerStarted();
+  EnsureTimerStarted(eNeverAdjustTimer);
 }
 
 void
@@ -2024,6 +2205,19 @@ nsRefreshDriver::CancelPendingEvents(nsIDocument* aDocument)
       mPendingEvents.RemoveElementAt(i);
     }
   }
+}
+
+/* static */ bool
+nsRefreshDriver::IsJankCritical()
+{
+  MOZ_ASSERT(NS_IsMainThread());
+  return sActiveVsyncTimers > 0;
+}
+
+/* static */ bool
+nsRefreshDriver::GetJankLevels(Vector<uint64_t>& aJank) {
+  aJank.clear();
+  return aJank.append(sJankLevels, ArrayLength(sJankLevels));
 }
 
 #undef LOG

@@ -39,12 +39,14 @@
 #include "jswin.h"
 #include "jswrapper.h"
 
-#include "asmjs/AsmJSSignalHandlers.h"
+#include "asmjs/WasmSignalHandlers.h"
 #include "jit/arm/Simulator-arm.h"
 #include "jit/arm64/vixl/Simulator-vixl.h"
 #include "jit/JitCompartment.h"
 #include "jit/mips32/Simulator-mips32.h"
+#include "jit/mips64/Simulator-mips64.h"
 #include "jit/PcScriptCache.h"
+#include "js/Date.h"
 #include "js/MemoryMetrics.h"
 #include "js/SliceBudget.h"
 #include "vm/Debugger.h"
@@ -61,11 +63,10 @@ using mozilla::NegativeInfinity;
 using mozilla::PodZero;
 using mozilla::PodArrayZero;
 using mozilla::PositiveInfinity;
-using mozilla::ThreadLocal;
 using JS::GenericNaN;
 using JS::DoubleNaNValue;
 
-/* static */ ThreadLocal<PerThreadData*> js::TlsPerThreadData;
+/* static */ MOZ_THREAD_LOCAL(PerThreadData*) js::TlsPerThreadData;
 /* static */ Atomic<size_t> JSRuntime::liveRuntimesCount;
 
 namespace js {
@@ -135,19 +136,27 @@ JSRuntime::JSRuntime(JSRuntime* parentRuntime)
     profilingActivation_(nullptr),
     profilerSampleBufferGen_(0),
     profilerSampleBufferLapCount_(1),
-    asmJSActivationStack_(nullptr),
+    wasmActivationStack_(nullptr),
     asyncStackForNewActivations(this),
-    asyncCauseForNewActivations(this),
+    asyncCauseForNewActivations(nullptr),
     asyncCallIsExplicit(false),
     entryMonitor(nullptr),
+    noExecuteDebuggerTop(nullptr),
     parentRuntime(parentRuntime),
+#ifdef DEBUG
+    updateChildRuntimeCount(parentRuntime),
+#endif
     interrupt_(false),
     telemetryCallback(nullptr),
-    handlingSignal(false),
+    handlingSegFault(false),
+    handlingJitInterrupt_(false),
     interruptCallback(nullptr),
-    exclusiveAccessLock(nullptr),
+    enqueuePromiseJobCallback(nullptr),
+    enqueuePromiseJobCallbackData(nullptr),
+#ifdef DEBUG
     exclusiveAccessOwner(nullptr),
     mainThreadHasExclusiveAccess(false),
+#endif
     numExclusiveThreads(0),
     numCompartments(0),
     localeCallbacks(nullptr),
@@ -161,6 +170,7 @@ JSRuntime::JSRuntime(JSRuntime* parentRuntime)
     nativeStackBase(GetNativeStackBase()),
     cxCallback(nullptr),
     destroyCompartmentCallback(nullptr),
+    sizeOfIncludingThisCompartmentCallback(nullptr),
     destroyZoneCallback(nullptr),
     sweepZoneCallback(nullptr),
     compartmentNameCallback(nullptr),
@@ -186,7 +196,9 @@ JSRuntime::JSRuntime(JSRuntime* parentRuntime)
     profilingScripts(false),
     suppressProfilerSampling(false),
     hadOutOfMemory(false),
+#ifdef DEBUG
     handlingInitFailure(false),
+#endif
     haveCreatedContext(false),
     allowRelazificationForTesting(false),
     data(nullptr),
@@ -194,12 +206,12 @@ JSRuntime::JSRuntime(JSRuntime* parentRuntime)
     canUseSignalHandlers_(false),
     defaultFreeOp_(thisFromCtor()),
     debuggerMutations(0),
-    securityCallbacks(const_cast<JSSecurityCallbacks*>(&NullSecurityCallbacks)),
+    securityCallbacks(&NullSecurityCallbacks),
     DOMcallbacks(nullptr),
     destroyPrincipals(nullptr),
     readPrincipals(nullptr),
     errorReporter(nullptr),
-    linkedAsmJSModules(nullptr),
+    buildIdOp(nullptr),
     propertyRemovals(0),
 #if !EXPOSE_INTL_API
     thousandsSeparator(0),
@@ -224,6 +236,7 @@ JSRuntime::JSRuntime(JSRuntime* parentRuntime)
     ionPcScriptCache(nullptr),
     scriptEnvironmentPreparer(nullptr),
     ctypesActivityCallback(nullptr),
+    windowProxyClass_(nullptr),
     offthreadIonCompilationEnabled_(true),
     parallelParsingEnabled_(true),
     autoWritableJitCodeActive_(false),
@@ -276,10 +289,6 @@ JSRuntime::init(uint32_t maxbytes, uint32_t maxNurseryBytes)
     ownerThreadNative_ = (size_t)pthread_self();
 #endif
 
-    exclusiveAccessLock = PR_NewLock();
-    if (!exclusiveAccessLock)
-        return false;
-
     if (!mainThread.init())
         return false;
 
@@ -294,10 +303,6 @@ JSRuntime::init(uint32_t maxbytes, uint32_t maxNurseryBytes)
     if (!gc.init(maxbytes, maxNurseryBytes))
         return false;
 
-    const char* size = getenv("JSGC_MARK_STACK_LIMIT");
-    if (size)
-        gc.setMarkStackLimit(atoi(size));
-
     ScopedJSDeletePtr<Zone> atomsZone(new_<Zone>(this));
     if (!atomsZone || !atomsZone->init(true))
         return false;
@@ -307,8 +312,10 @@ JSRuntime::init(uint32_t maxbytes, uint32_t maxNurseryBytes)
     if (!atomsCompartment || !atomsCompartment->init(nullptr))
         return false;
 
-    gc.zones.append(atomsZone.get());
-    atomsZone->compartments.append(atomsCompartment.get());
+    if (!gc.zones.append(atomsZone.get()))
+        return false;
+    if (!atomsZone->compartments.append(atomsCompartment.get()))
+        return false;
 
     atomsCompartment->setIsSystem(true);
 
@@ -333,7 +340,7 @@ JSRuntime::init(uint32_t maxbytes, uint32_t maxNurseryBytes)
     if (!InitRuntimeNumberState(this))
         return false;
 
-    dateTimeInfo.updateTimeZoneAdjustment();
+    JS::ResetTimeZone();
 
 #ifdef JS_SIMULATOR
     simulator_ = js::jit::Simulator::Create();
@@ -344,7 +351,7 @@ JSRuntime::init(uint32_t maxbytes, uint32_t maxNurseryBytes)
     jitSupportsFloatingPoint = js::jit::JitSupportsFloatingPoint();
     jitSupportsSimd = js::jit::JitSupportsSimd();
 
-    signalHandlersInstalled_ = EnsureSignalHandlersInstalled(this);
+    signalHandlersInstalled_ = wasm::EnsureSignalHandlersInstalled(this);
     canUseSignalHandlers_ = signalHandlersInstalled_ && !SignalBasedTriggersDisabled();
 
     if (!spsProfiler.init())
@@ -359,6 +366,7 @@ JSRuntime::init(uint32_t maxbytes, uint32_t maxNurseryBytes)
 JSRuntime::~JSRuntime()
 {
     MOZ_ASSERT(!isHeapBusy());
+    MOZ_ASSERT(childRuntimeCount == 0);
 
     fx.destroyInstance();
 
@@ -418,12 +426,12 @@ JSRuntime::~JSRuntime()
     finishSelfHosting();
 
     MOZ_ASSERT(!exclusiveAccessOwner);
-    if (exclusiveAccessLock)
-        PR_DestroyLock(exclusiveAccessLock);
 
     // Avoid bogus asserts during teardown.
     MOZ_ASSERT(!numExclusiveThreads);
+#ifdef DEBUG
     mainThreadHasExclusiveAccess = true;
+#endif
 
     /*
      * Even though all objects in the compartment are dead, we may have keep
@@ -525,8 +533,6 @@ JSRuntime::addSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf, JS::Runtim
     for (ContextIter acx(this); !acx.done(); acx.next())
         rtSizes->contexts += acx->sizeOfIncludingThis(mallocSizeOf);
 
-    rtSizes->dtoa += mallocSizeOf(mainThread.dtoaState);
-
     rtSizes->temporary += tempLifoAlloc.sizeOfExcludingThis(mallocSizeOf);
 
     rtSizes->interpreterStack += interpreterStack_.sizeOfExcludingThis(mallocSizeOf);
@@ -541,8 +547,10 @@ JSRuntime::addSizeOfIncludingThis(mozilla::MallocSizeOf mallocSizeOf, JS::Runtim
     for (ScriptDataTable::Range r = scriptDataTable().all(); !r.empty(); r.popFront())
         rtSizes->scriptData += mallocSizeOf(r.front());
 
-    if (jitRuntime_)
+    if (jitRuntime_) {
         jitRuntime_->execAlloc().addSizeOfCode(&rtSizes->code);
+        jitRuntime_->backedgeExecAlloc().addSizeOfCode(&rtSizes->code);
+    }
 
     rtSizes->gc.marker += gc.marker.sizeOfExcludingThis(mallocSizeOf);
     rtSizes->gc.nurseryCommitted += gc.nursery.sizeOfHeapCommitted();
@@ -574,7 +582,7 @@ InvokeInterruptCallback(JSContext* cx)
         // invoke the onStep handler.
         if (cx->compartment()->isDebuggee()) {
             ScriptFrameIter iter(cx);
-            if (iter.script()->stepModeEnabled()) {
+            if (!iter.done() && iter.script()->stepModeEnabled()) {
                 RootedValue rval(cx);
                 switch (Debugger::onSingleStep(cx, &rval)) {
                   case JSTRAP_ERROR:
@@ -618,7 +626,7 @@ JSRuntime::resetJitStackLimit()
 {
     // Note that, for now, we use the untrusted limit for ion. This is fine,
     // because it's the most conservative limit, and if we hit it, we'll bail
-    // out of ion into the interpeter, which will do a proper recursion check.
+    // out of ion into the interpreter, which will do a proper recursion check.
 #ifdef JS_SIMULATOR
     jitStackLimit_ = jit::Simulator::StackLimit();
 #else
@@ -644,7 +652,7 @@ JSRuntime::requestInterrupt(InterruptMode mode)
         // collection among others), take additional steps to
         // interrupt corner cases where the above fields are not
         // regularly polled.  Wake both ilooping JIT code and
-        // futexWait.
+        // Atomics.wait().
         fx.lock();
         if (fx.isWaiting())
             fx.wake(FutexRuntime::WakeForJSInterrupt);
@@ -704,9 +712,7 @@ JSRuntime::getDefaultLocale()
     if (defaultLocale)
         return defaultLocale;
 
-    char* locale;
-    char* lang;
-    char* p;
+    const char* locale;
 #ifdef HAVE_SETLOCALE
     locale = setlocale(LC_ALL, nullptr);
 #else
@@ -714,10 +720,13 @@ JSRuntime::getDefaultLocale()
 #endif
     // convert to a well-formed BCP 47 language tag
     if (!locale || !strcmp(locale, "C"))
-        locale = const_cast<char*>("und");
-    lang = JS_strdup(this, locale);
+        locale = "und";
+
+    char* lang = JS_strdup(this, locale);
     if (!lang)
         return nullptr;
+
+    char* p;
     if ((p = strchr(lang, '.')))
         *p = '\0';
     while ((p = strchr(lang, '_')))
@@ -743,6 +752,25 @@ JSRuntime::triggerActivityCallback(bool active)
     AutoSuppressGC suppress(this);
 
     activityCallback(activityCallbackArg, active);
+}
+
+FreeOp::~FreeOp()
+{
+    for (size_t i = 0; i < freeLaterList.length(); i++)
+        free_(freeLaterList[i]);
+
+    if (!jitPoisonRanges.empty())
+        jit::ExecutableAllocator::poisonCode(runtime(), jitPoisonRanges);
+}
+
+bool
+JSRuntime::enqueuePromiseJob(JSContext* cx, HandleFunction job)
+{
+    MOZ_ASSERT(cx->runtime()->enqueuePromiseJobCallback,
+               "Must set a callback using JS_SetEnqeueuPromiseJobCallback before using Promises");
+
+    void* data = cx->runtime()->enqueuePromiseJobCallbackData;
+    return cx->runtime()->enqueuePromiseJobCallback(cx, job, data);
 }
 
 void
@@ -858,8 +886,10 @@ JSRuntime::assertCanLock(RuntimeLock which)
     switch (which) {
       case ExclusiveAccessLock:
         MOZ_ASSERT(exclusiveAccessOwner != PR_GetCurrentThread());
+        MOZ_FALLTHROUGH;
       case HelperThreadStateLock:
         MOZ_ASSERT(!HelperThreadState().isLocked());
+        MOZ_FALLTHROUGH;
       case GCLock:
         gc.assertCanLock();
         break;

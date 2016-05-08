@@ -22,7 +22,7 @@ namespace js {
  *
  * All values except ropes are hashable as-is.
  */
-class HashableValue : public JS::Traceable
+class HashableValue
 {
     PreBarrieredValue value;
 
@@ -43,8 +43,8 @@ class HashableValue : public JS::Traceable
     HashableValue mark(JSTracer* trc) const;
     Value get() const { return value.get(); }
 
-    static void trace(HashableValue* value, JSTracer* trc) {
-        TraceEdge(trc, &value->value, "HashableValue");
+    void trace(JSTracer* trc) {
+        TraceEdge(trc, &value, "HashableValue");
     }
 };
 
@@ -89,10 +89,10 @@ class MapObject : public NativeObject {
     static const Class class_;
 
     static bool getKeysAndValuesInterleaved(JSContext* cx, HandleObject obj,
-                                            JS::AutoValueVector* entries);
+                                            JS::MutableHandle<GCVector<JS::Value>> entries);
     static bool entries(JSContext* cx, unsigned argc, Value* vp);
     static bool has(JSContext* cx, unsigned argc, Value* vp);
-    static MapObject* create(JSContext* cx);
+    static MapObject* create(JSContext* cx, HandleObject proto = nullptr);
 
     // Publicly exposed Map calls for JSAPI access (webidl maplike/setlike
     // interfaces, etc.)
@@ -109,6 +109,8 @@ class MapObject : public NativeObject {
     static bool iterator(JSContext *cx, IteratorKind kind, HandleObject obj, MutableHandleValue iter);
 
   private:
+    static const ClassOps classOps_;
+
     static const JSPropertySpec properties[];
     static const JSFunctionSpec methods[];
     static const JSPropertySpec staticProperties[];
@@ -164,6 +166,8 @@ class MapIteratorObject : public NativeObject
     static bool next(JSContext* cx, Handle<MapIteratorObject*> mapIterator,
                      HandleArrayObject resultPairObj);
 
+    static JSObject* createResultPair(JSContext* cx);
+
   private:
     inline MapObject::IteratorKind kind() const;
 };
@@ -174,14 +178,14 @@ class SetObject : public NativeObject {
     static JSObject* initClass(JSContext* cx, JSObject* obj);
     static const Class class_;
 
-    static bool keys(JSContext *cx, HandleObject obj, JS::AutoValueVector *keys);
+    static bool keys(JSContext *cx, HandleObject obj, JS::MutableHandle<GCVector<JS::Value>> keys);
     static bool values(JSContext *cx, unsigned argc, Value *vp);
     static bool add(JSContext *cx, HandleObject obj, HandleValue key);
     static bool has(JSContext *cx, unsigned argc, Value *vp);
 
     // Publicly exposed Set calls for JSAPI access (webidl maplike/setlike
     // interfaces, etc.)
-    static SetObject* create(JSContext *cx);
+    static SetObject* create(JSContext *cx, HandleObject proto = nullptr);
     static uint32_t size(JSContext *cx, HandleObject obj);
     static bool has(JSContext *cx, HandleObject obj, HandleValue key, bool* rval);
     static bool clear(JSContext *cx, HandleObject obj);
@@ -189,9 +193,12 @@ class SetObject : public NativeObject {
     static bool delete_(JSContext *cx, HandleObject obj, HandleValue key, bool *rval);
 
   private:
+    static const ClassOps classOps_;
+
     static const JSPropertySpec properties[];
     static const JSFunctionSpec methods[];
     static const JSPropertySpec staticProperties[];
+
     ValueSet* getData() { return static_cast<ValueSet*>(getPrivate()); }
     static ValueSet & extract(HandleObject o);
     static ValueSet & extract(CallReceiver call);
@@ -216,6 +223,25 @@ class SetObject : public NativeObject {
     static bool entries(JSContext* cx, unsigned argc, Value* vp);
     static bool clear_impl(JSContext* cx, const CallArgs& args);
     static bool clear(JSContext* cx, unsigned argc, Value* vp);
+};
+
+class SetIteratorObject : public NativeObject
+{
+  public:
+    static const Class class_;
+
+    enum { TargetSlot, KindSlot, RangeSlot, SlotCount };
+    static const JSFunctionSpec methods[];
+    static SetIteratorObject* create(JSContext* cx, HandleObject setobj, ValueSet* data,
+                                     SetObject::IteratorKind kind);
+    static bool next(JSContext* cx, unsigned argc, Value* vp);
+    static void finalize(FreeOp* fop, JSObject* obj);
+
+  private:
+    static inline bool is(HandleValue v);
+    inline ValueSet::Range* range();
+    inline SetObject::IteratorKind kind() const;
+    static bool next_impl(JSContext* cx, const CallArgs& args);
 };
 
 extern bool

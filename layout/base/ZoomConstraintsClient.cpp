@@ -7,8 +7,11 @@
 
 #include <inttypes.h>
 #include "FrameMetrics.h"
+#include "gfxPrefs.h"
 #include "LayersLogging.h"
 #include "mozilla/layers/APZCCallbackHelper.h"
+#include "mozilla/Preferences.h"
+#include "mozilla/dom/Event.h"
 #include "nsDocument.h"
 #include "nsIFrame.h"
 #include "nsLayoutUtils.h"
@@ -45,6 +48,9 @@ ZoomConstraintsClient::~ZoomConstraintsClient()
 static nsIWidget*
 GetWidget(nsIPresShell* aShell)
 {
+  if (!aShell) {
+    return nullptr;
+  }
   if (nsIFrame* rootFrame = aShell->GetRootFrame()) {
 #if defined(MOZ_WIDGET_ANDROID) || defined(MOZ_WIDGET_UIKIT)
     return rootFrame->GetNearestWidget();
@@ -102,7 +108,7 @@ ZoomConstraintsClient::Init(nsIPresShell* aPresShell, nsIDocument* aDocument)
   mPresShell = aPresShell;
   mDocument = aDocument;
 
-  if (nsCOMPtr<nsPIDOMWindow> window = mDocument->GetWindow()) {
+  if (nsCOMPtr<nsPIDOMWindowOuter> window = mDocument->GetWindow()) {
     mEventTarget = window->GetChromeEventHandler();
   }
   if (mEventTarget) {
@@ -146,7 +152,7 @@ ZoomConstraintsClient::Observe(nsISupports* aSubject, const char* aTopic, const 
     // We need to run this later because all the pref change listeners need
     // to execute before we can be guaranteed that gfxPrefs::ForceUserScalable()
     // returns the updated value.
-    NS_DispatchToMainThread(NS_NewRunnableMethod(
+    NS_DispatchToMainThread(NewRunnableMethod(
       this, &ZoomConstraintsClient::RefreshZoomConstraints));
   }
   return NS_OK;

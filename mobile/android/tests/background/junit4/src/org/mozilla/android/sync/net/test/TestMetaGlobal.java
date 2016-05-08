@@ -3,38 +3,36 @@
 
 package org.mozilla.android.sync.net.test;
 
+import org.junit.Before;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.mozilla.android.sync.test.helpers.HTTPServerTestHelper;
+import org.mozilla.android.sync.test.helpers.MockServer;
+import org.mozilla.gecko.background.testhelpers.TestRunner;
+import org.mozilla.gecko.background.testhelpers.WaitHelper;
+import org.mozilla.gecko.sync.CryptoRecord;
+import org.mozilla.gecko.sync.ExtendedJSONObject;
+import org.mozilla.gecko.sync.MetaGlobal;
+import org.mozilla.gecko.sync.NonObjectJSONException;
+import org.mozilla.gecko.sync.delegates.MetaGlobalDelegate;
+import org.mozilla.gecko.sync.net.BaseResource;
+import org.mozilla.gecko.sync.net.BasicAuthHeaderProvider;
+import org.mozilla.gecko.sync.net.SyncStorageResponse;
+import org.simpleframework.http.Request;
+import org.simpleframework.http.Response;
+
+import java.util.HashSet;
+import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
-import java.util.HashSet;
-import java.util.Set;
-import java.util.concurrent.atomic.AtomicBoolean;
-
-import org.json.simple.parser.ParseException;
-import org.junit.Before;
-import org.junit.Test;
-import org.junit.runner.RunWith;
-import org.mozilla.android.sync.test.helpers.HTTPServerTestHelper;
-import org.mozilla.android.sync.test.helpers.MockServer;
-import org.mozilla.gecko.background.testhelpers.WaitHelper;
-import org.mozilla.gecko.sync.CryptoRecord;
-import org.mozilla.gecko.sync.ExtendedJSONObject;
-import org.mozilla.gecko.sync.MetaGlobal;
-import org.mozilla.gecko.sync.delegates.MetaGlobalDelegate;
-import org.mozilla.gecko.sync.net.BaseResource;
-import org.mozilla.gecko.sync.net.BasicAuthHeaderProvider;
-import org.mozilla.gecko.sync.net.SyncStorageResponse;
-import org.robolectric.RobolectricGradleTestRunner;
-import org.simpleframework.http.Request;
-import org.simpleframework.http.Response;
-
-@RunWith(RobolectricGradleTestRunner.class)
+@RunWith(TestRunner.class)
 public class TestMetaGlobal {
-  public static Object monitor = new Object();
-
   private static final int    TEST_PORT    = HTTPServerTestHelper.getTestPort();
   private static final String TEST_SERVER  = "http://localhost:" + TEST_PORT;
   private static final String TEST_SYNC_ID = "foobar";
@@ -223,7 +221,7 @@ public class TestMetaGlobal {
 
     assertTrue(delegate.errorCalled);
     assertNotNull(delegate.errorException);
-    assertEquals(ParseException.class, delegate.errorException.getClass());
+    assertEquals(NonObjectJSONException.class, delegate.errorException.getClass());
   }
 
   @SuppressWarnings("static-method")
@@ -319,7 +317,7 @@ public class TestMetaGlobal {
       public void handle(Request request, Response response) {
         if (request.getMethod().equals("PUT")) {
           try {
-            ExtendedJSONObject body = ExtendedJSONObject.parseJSONObject(request.getContent());
+            ExtendedJSONObject body = new ExtendedJSONObject(request.getContent());
             System.out.println(body.toJSONString());
             assertTrue(body.containsKey("payload"));
             assertFalse(body.containsKey("default"));

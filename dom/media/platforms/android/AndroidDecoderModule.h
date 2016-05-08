@@ -6,17 +6,17 @@
 #define AndroidDecoderModule_h_
 
 #include "PlatformDecoderModule.h"
-#include "AndroidSurfaceTexture.h"
 
 #include "MediaCodec.h"
+#include "SurfaceTexture.h"
 #include "TimeUnits.h"
 #include "mozilla/Monitor.h"
 
-#include <queue>
+#include <deque>
 
 namespace mozilla {
 
-typedef std::queue<RefPtr<MediaRawData>> SampleQueue;
+typedef std::deque<RefPtr<MediaRawData>> SampleQueue;
 
 class AndroidDecoderModule : public PlatformDecoderModule {
 public:
@@ -25,18 +25,21 @@ public:
                      layers::LayersBackend aLayersBackend,
                      layers::ImageContainer* aImageContainer,
                      FlushableTaskQueue* aVideoTaskQueue,
-                     MediaDataDecoderCallback* aCallback) override;
+                     MediaDataDecoderCallback* aCallback,
+                     DecoderDoctorDiagnostics* aDiagnostics) override;
 
   already_AddRefed<MediaDataDecoder>
   CreateAudioDecoder(const AudioInfo& aConfig,
                      FlushableTaskQueue* aAudioTaskQueue,
-                     MediaDataDecoderCallback* aCallback) override;
+                     MediaDataDecoderCallback* aCallback,
+                     DecoderDoctorDiagnostics* aDiagnostics) override;
 
 
   AndroidDecoderModule() {}
   virtual ~AndroidDecoderModule() {}
 
-  bool SupportsMimeType(const nsACString& aMimeType) override;
+  bool SupportsMimeType(const nsACString& aMimeType,
+                        DecoderDoctorDiagnostics* aDiagnostics) const override;
 
   ConversionRequired
   DecoderNeedsConversion(const TrackInfo& aConfig) const override;
@@ -57,9 +60,61 @@ public:
   nsresult Drain() override;
   nsresult Shutdown() override;
   nsresult Input(MediaRawData* aSample) override;
+  const char* GetDescriptionName() const override
+  {
+    return "android decoder";
+  }
 
 protected:
+  enum ModuleState {
+    kDecoding = 0,
+    kFlushing,
+    kDrainQueue,
+    kDrainDecoder,
+    kDrainWaitEOS,
+    kStopping,
+    kShutdown
+  };
+
   friend class AndroidDecoderModule;
+
+  static const char* ModuleStateStr(ModuleState aState);
+
+  virtual nsresult InitDecoder(widget::sdk::Surface::Param aSurface);
+
+  virtual nsresult Output(widget::sdk::BufferInfo::Param aInfo, void* aBuffer,
+      widget::sdk::MediaFormat::Param aFormat, const media::TimeUnit& aDuration)
+  {
+    return NS_OK;
+  }
+
+  virtual nsresult PostOutput(widget::sdk::BufferInfo::Param aInfo,
+      widget::sdk::MediaFormat::Param aFormat, const media::TimeUnit& aDuration)
+  {
+    return NS_OK;
+  }
+
+  virtual void Cleanup() {};
+
+  nsresult ResetInputBuffers();
+  nsresult ResetOutputBuffers();
+
+  nsresult GetInputBuffer(JNIEnv* env, int index, jni::Object::LocalRef* buffer);
+  bool WaitForInput();
+  already_AddRefed<MediaRawData> PeekNextSample();
+  nsresult QueueSample(const MediaRawData* aSample);
+  nsresult QueueEOS();
+  void HandleEOS(int32_t aOutputStatus);
+  media::TimeUnit GetOutputDuration();
+  nsresult ProcessOutput(widget::sdk::BufferInfo::Param aInfo,
+                         widget::sdk::MediaFormat::Param aFormat,
+                         int32_t aStatus);
+  ModuleState State() const;
+  // Sets decoder state and returns whether the new state has become effective.
+  bool State(ModuleState aState);
+  void DecoderLoop();
+
+  virtual void ClearQueue();
 
   MediaData::Type mType;
 
@@ -77,28 +132,14 @@ protected:
 
   // Only these members are protected by mMonitor.
   Monitor mMonitor;
-  bool mFlushing;
-  bool mDraining;
-  bool mStopping;
+
+  ModuleState mState;
 
   SampleQueue mQueue;
   // Durations are stored in microseconds.
-  std::queue<media::TimeUnit> mDurations;
-
-  virtual nsresult InitDecoder(widget::sdk::Surface::Param aSurface);
-
-  virtual nsresult Output(widget::sdk::BufferInfo::Param aInfo, void* aBuffer, widget::sdk::MediaFormat::Param aFormat, const media::TimeUnit& aDuration) { return NS_OK; }
-  virtual nsresult PostOutput(widget::sdk::BufferInfo::Param aInfo, widget::sdk::MediaFormat::Param aFormat, const media::TimeUnit& aDuration) { return NS_OK; }
-  virtual void Cleanup() {};
-
-  nsresult ResetInputBuffers();
-  nsresult ResetOutputBuffers();
-
-  void DecoderLoop();
-  nsresult GetInputBuffer(JNIEnv* env, int index, jni::Object::LocalRef* buffer);
-  virtual void ClearQueue();
+  std::deque<media::TimeUnit> mDurations;
 };
 
-} // namwspace mozilla
+} // namespace mozilla
 
 #endif

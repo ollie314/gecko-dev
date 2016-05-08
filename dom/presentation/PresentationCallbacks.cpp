@@ -50,6 +50,7 @@ PresentationRequesterCallback::NotifySuccess()
   // channel is ready. So we simply set the connection state as connected.
   RefPtr<PresentationConnection> connection =
     PresentationConnection::Create(mRequest->GetOwner(), mSessionId,
+                                   nsIPresentationService::ROLE_CONTROLLER,
                                    PresentationConnectionState::Connected);
   if (NS_WARN_IF(!connection)) {
     mPromise->MaybeReject(NS_ERROR_DOM_OPERATION_ERR);
@@ -119,7 +120,7 @@ PresentationResponderLoadingCallback::Init(nsIDocShell* aDocShell)
 nsresult
 PresentationResponderLoadingCallback::NotifyReceiverReady()
 {
-  nsCOMPtr<nsPIDOMWindow> window = do_GetInterface(mProgress);
+  nsCOMPtr<nsPIDOMWindowOuter> window = do_GetInterface(mProgress);
   if (NS_WARN_IF(!window || !window->GetCurrentInnerWindow())) {
     return NS_ERROR_NOT_AVAILABLE;
   }

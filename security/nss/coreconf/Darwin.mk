@@ -4,6 +4,7 @@
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
 include $(CORE_DEPTH)/coreconf/UNIX.mk
+include $(CORE_DEPTH)/coreconf/Werror.mk
 
 DEFAULT_COMPILER = gcc
 
@@ -20,10 +21,12 @@ endif
 ifeq (,$(filter-out i%86,$(CPU_ARCH)))
 ifdef USE_64
 CC              += -arch x86_64
+CCC             += -arch x86_64
 override CPU_ARCH	= x86_64
 else
 OS_REL_CFLAGS	= -Di386
 CC              += -arch i386
+CCC             += -arch i386
 override CPU_ARCH	= x86
 endif
 else
@@ -32,6 +35,7 @@ ifeq (arm,$(CPU_ARCH))
 else
 OS_REL_CFLAGS	= -Dppc
 CC              += -arch ppc
+CCC             += -arch ppc
 endif
 endif
 
@@ -81,44 +85,7 @@ endif
 # definitions so that the linker can catch multiply-defined symbols.
 # Also, common symbols are not allowed with Darwin dynamic libraries.
 
-OS_CFLAGS	= $(DSO_CFLAGS) $(OS_REL_CFLAGS) -Wall -fno-common -pipe -DDARWIN -DHAVE_STRERROR -DHAVE_BSD_FLOCK $(DARWIN_SDK_CFLAGS)
-
-# This tests to see if enabling the warning is possible before
-# setting an option to disable it.
-disable_warning=$(shell $(CC) -x c -E -Werror -W$(1) /dev/null >/dev/null 2>&1 && echo -Wno-$(1)) 
-
-COMPILER_NAME = $(shell $(CC) -? 2>&1 >/dev/null | sed -e 's/:.*//;1q')
-ifeq ($(COMPILER_NAME),clang)
-  # -Qunused-arguments : clang objects to arguments that it doesn't understand
-  #    and fixing this would require rearchitecture
-  OS_CFLAGS += -Qunused-arguments
-  # -Wno-parentheses-equality : because clang warns about macro expansions
-  OS_CFLAGS += $(call disable_warning,parentheses-equality)
-endif
-
-ifndef NSS_ENABLE_WERROR
-  ifeq ($(COMPILER_NAME),clang)
-    NSS_ENABLE_WERROR = 1
-  else
-    NSS_ENABLE_WERROR := $(shell \
-    [ `$(CC) -dumpversion | cut -f 1 -d . -` -eq 4 -a \
-      `$(CC) -dumpversion | cut -f 2 -d . -` -ge 8 -o \
-      `$(CC) -dumpversion | cut -f 1 -d . -` -ge 5 ] && \
-      echo 1 || echo 0)
-    ifneq ($(NSS_ENABLE_WERROR),1)
-      $(warning Unable to find gcc >= 4.8 disabling -Werror)
-    endif
-  endif
-  export NSS_ENABLE_WERROR
-endif
-
-ifeq ($(NSS_ENABLE_WERROR),1)
-  OS_CFLAGS += -Werror
-else
-  # Old versions of gcc (< 4.8) don't support #pragma diagnostic in functions.
-  # Use this to disable use of that #pragma and the warnings it suppresses.
-  OS_CFLAGS += -DNSS_NO_GCC48
-endif
+OS_CFLAGS	= $(DSO_CFLAGS) $(OS_REL_CFLAGS) -fno-common -pipe -DDARWIN -DHAVE_STRERROR -DHAVE_BSD_FLOCK $(DARWIN_SDK_CFLAGS)
 
 ifdef BUILD_OPT
 ifeq (11,$(ALLOW_OPT_CODE_SIZE)$(OPT_CODE_SIZE))
@@ -172,3 +139,6 @@ ifeq (3,$(SYS_SQLITE3_VERSION_MAJOR))
         NSS_USE_SYSTEM_SQLITE = 1
     endif
 endif
+
+include $(CORE_DEPTH)/coreconf/sanitizers.mk
+DARWIN_SDK_SHLIBFLAGS += $(SANITIZER_LDFLAGS)

@@ -15,24 +15,20 @@
 
 #include "mozilla/Telemetry.h"
 #include "mozilla/Preferences.h"
+#include "mozilla/Snprintf.h"
 #include "nsHttp.h"
 #include "nsHttpHandler.h"
 #include "nsHttpConnection.h"
-#include "nsISchedulingContext.h"
+#include "nsIRequestContext.h"
 #include "nsISupportsPriority.h"
-#include "prprf.h"
 #include "prnetdb.h"
 #include "SpdyPush31.h"
 #include "SpdySession31.h"
 #include "SpdyStream31.h"
 #include "SpdyZlibReporter.h"
+#include "nsSocketTransportService2.h"
 
 #include <algorithm>
-
-#ifdef DEBUG
-// defined by the socket transport service while active
-extern PRThread *gSocketThread;
-#endif
 
 namespace mozilla {
 namespace net {
@@ -83,8 +79,8 @@ SpdySession31::SpdySession31(nsISocketTransport *aSocketTransport)
 
   LOG3(("SpdySession31::SpdySession31 %p serial=0x%X\n", this, mSerial));
 
-  mInputFrameBuffer = new char[mInputFrameBufferSize];
-  mOutputQueueBuffer = new char[mOutputQueueSize];
+  mInputFrameBuffer = MakeUnique<char[]>(mInputFrameBufferSize);
+  mOutputQueueBuffer = MakeUnique<char[]>(mOutputQueueSize);
   zlibInit();
 
   mPushAllowance = gHttpHandler->SpdyPushAllowance();
@@ -97,45 +93,25 @@ SpdySession31::SpdySession31(nsISocketTransport *aSocketTransport)
   mPingThreshold = gHttpHandler->SpdyPingThreshold();
 }
 
-PLDHashOperator
-SpdySession31::ShutdownEnumerator(nsAHttpTransaction *key,
-                                  nsAutoPtr<SpdyStream31> &stream,
-                                  void *closure)
+void
+SpdySession31::Shutdown()
 {
-  SpdySession31 *self = static_cast<SpdySession31 *>(closure);
+  for (auto iter = mStreamTransactionHash.Iter(); !iter.Done(); iter.Next()) {
+    nsAutoPtr<SpdyStream31>& stream = iter.Data();
 
-  // On a clean server hangup the server sets the GoAwayID to be the ID of
-  // the last transaction it processed. If the ID of stream in the
-  // local stream is greater than that it can safely be restarted because the
-  // server guarantees it was not partially processed. Streams that have not
-  // registered an ID haven't actually been sent yet so they can always be
-  // restarted.
-  if (self->mCleanShutdown &&
-      (stream->StreamID() > self->mGoAwayID || !stream->HasRegisteredID()))
-    self->CloseStream(stream, NS_ERROR_NET_RESET); // can be restarted
-  else
-    self->CloseStream(stream, NS_ERROR_ABORT);
-
-  return PL_DHASH_NEXT;
-}
-
-PLDHashOperator
-SpdySession31::GoAwayEnumerator(nsAHttpTransaction *key,
-                                nsAutoPtr<SpdyStream31> &stream,
-                                void *closure)
-{
-  SpdySession31 *self = static_cast<SpdySession31 *>(closure);
-
-  // these streams were not processed by the server and can be restarted.
-  // Do that after the enumerator completes to avoid the risk of
-  // a restart event re-entrantly modifying this hash. Be sure not to restart
-  // a pushed (even numbered) stream
-  if ((stream->StreamID() > self->mGoAwayID && (stream->StreamID() & 1)) ||
-      !stream->HasRegisteredID()) {
-    self->mGoAwayStreamsToRestart.Push(stream);
+    // On a clean server hangup the server sets the GoAwayID to be the ID of
+    // the last transaction it processed. If the ID of stream in the
+    // local stream is greater than that it can safely be restarted because the
+    // server guarantees it was not partially processed. Streams that have not
+    // registered an ID haven't actually been sent yet so they can always be
+    // restarted.
+    if (mCleanShutdown &&
+        (stream->StreamID() > mGoAwayID || !stream->HasRegisteredID())) {
+      CloseStream(stream, NS_ERROR_NET_RESET); // can be restarted
+    } else {
+      CloseStream(stream, NS_ERROR_ABORT);
+    }
   }
-
-  return PL_DHASH_NEXT;
 }
 
 SpdySession31::~SpdySession31()
@@ -146,7 +122,8 @@ SpdySession31::~SpdySession31()
   inflateEnd(&mDownstreamZlib);
   deflateEnd(&mUpstreamZlib);
 
-  mStreamTransactionHash.Enumerate(ShutdownEnumerator, this);
+  Shutdown();
+
   Telemetry::Accumulate(Telemetry::SPDY_PARALLEL_STREAMS, mConcurrentHighWater);
   Telemetry::Accumulate(Telemetry::SPDY_REQUEST_PER_CONN, (mNextStreamID - 1) / 2);
   Telemetry::Accumulate(Telemetry::SPDY_SERVER_INITIATED_STREAMS,
@@ -177,11 +154,10 @@ SpdySession31::LogIO(SpdySession31 *self, SpdyStream31 *stream, const char *labe
         LOG5(("%s", linebuf));
       }
       line = linebuf;
-      PR_snprintf(line, 128, "%08X: ", index);
+      snprintf(line, 128, "%08X: ", index);
       line += 10;
     }
-    PR_snprintf(line, 128 - (line - linebuf), "%02X ",
-                ((unsigned char *)data)[index]);
+    snprintf(line, 128 - (line - linebuf), "%02X ", ((unsigned char *)data)[index]);
     line += 3;
   }
   if (index) {
@@ -410,8 +386,8 @@ SpdySession31::QueueStream(SpdyStream31 *stream)
   LOG3(("SpdySession31::QueueStream %p stream %p queued.", this, stream));
 
 #ifdef DEBUG
-  int32_t qsize = mQueuedStreams.GetSize();
-  for (int32_t i = 0; i < qsize; i++) {
+  size_t qsize = mQueuedStreams.GetSize();
+  for (size_t i = 0; i < qsize; i++) {
     SpdyStream31 *qStream = static_cast<SpdyStream31 *>(mQueuedStreams.ObjectAt(i));
     MOZ_ASSERT(qStream != stream);
     MOZ_ASSERT(qStream->Queued());
@@ -554,6 +530,7 @@ SpdySession31::ResetDownstreamState()
       DecrementConcurrent(mInputFrameDataStream);
     }
   }
+  mInputFrameDataLast = false;
   mInputFrameBufferUsed = 0;
   mInputFrameDataStream = nullptr;
 }
@@ -649,7 +626,7 @@ nsresult
 SpdySession31::UncompressAndDiscard(uint32_t offset,
                                     uint32_t blockLen)
 {
-  char *blockStart = mInputFrameBuffer + offset;
+  char *blockStart = &mInputFrameBuffer[offset];
   unsigned char trash[2048];
   mDownstreamZlib.avail_in = blockLen;
   mDownstreamZlib.next_in = reinterpret_cast<unsigned char *>(blockStart);
@@ -959,8 +936,8 @@ SpdySession31::CleanupStream(SpdyStream31 *aStream, nsresult aResult,
 
 static void RemoveStreamFromQueue(SpdyStream31 *aStream, nsDeque &queue)
 {
-  uint32_t size = queue.GetSize();
-  for (uint32_t count = 0; count < size; ++count) {
+  size_t size = queue.GetSize();
+  for (size_t count = 0; count < size; ++count) {
     SpdyStream31 *stream = static_cast<SpdyStream31 *>(queue.PopFront());
     if (stream != aStream)
       queue.Push(stream);
@@ -1067,12 +1044,12 @@ SpdySession31::HandleSynStream(SpdySession31 *self)
     self->GenerateRstStream(RST_INVALID_STREAM, streamID);
 
   } else {
-    nsISchedulingContext *schedulingContext = associatedStream->SchedulingContext();
-    if (schedulingContext) {
-      schedulingContext->GetSpdyPushCache(&cache);
+    nsIRequestContext *requestContext = associatedStream->RequestContext();
+    if (requestContext) {
+      requestContext->GetSpdyPushCache(&cache);
       if (!cache) {
         cache = new SpdyPushCache();
-        if (!cache || NS_FAILED(schedulingContext->SetSpdyPushCache(cache))) {
+        if (!cache || NS_FAILED(requestContext->SetSpdyPushCache(cache))) {
           delete cache;
           cache = nullptr;
         }
@@ -1127,7 +1104,7 @@ SpdySession31::HandleSynStream(SpdySession31 *self)
   // Uncompress the response headers into a stream specific buffer, leaving them
   // in spdy format for the time being.
   rv = pushedStream->Uncompress(&self->mDownstreamZlib,
-                                self->mInputFrameBuffer + 18,
+                                &self->mInputFrameBuffer[18],
                                 self->mInputFrameDataSize - 10);
   if (NS_FAILED(rv)) {
     LOG(("SpdySession31::HandleSynStream uncompress failed\n"));
@@ -1231,7 +1208,7 @@ SpdySession31::HandleSynReply(SpdySession31 *self)
   // the session becuase the session compression context will become
   // inconsistent if all of the compressed data is not processed.
   rv = self->mInputFrameDataStream->Uncompress(&self->mDownstreamZlib,
-                                               self->mInputFrameBuffer + 12,
+                                               &self->mInputFrameBuffer[12],
                                                self->mInputFrameDataSize - 4);
 
   if (NS_FAILED(rv)) {
@@ -1383,16 +1360,6 @@ SpdySession31::HandleRstStream(SpdySession31 *self)
   return NS_OK;
 }
 
-PLDHashOperator
-SpdySession31::UpdateServerRwinEnumerator(nsAHttpTransaction *key,
-                                            nsAutoPtr<SpdyStream31> &stream,
-                                            void *closure)
-{
-  int32_t delta = *(static_cast<int32_t *>(closure));
-  stream->UpdateRemoteWindow(delta);
-  return PL_DHASH_NEXT;
-}
-
 nsresult
 SpdySession31::HandleSettings(SpdySession31 *self)
 {
@@ -1444,8 +1411,11 @@ SpdySession31::HandleSettings(SpdySession31 *self)
         // do not use SETTINGS to adjust the session window.
 
         // we need to add the delta to all open streams (delta can be negative)
-        self->mStreamTransactionHash.Enumerate(UpdateServerRwinEnumerator,
-                                               &delta);
+        for (auto iter = self->mStreamTransactionHash.Iter();
+             !iter.Done();
+             iter.Next()) {
+          iter.Data()->UpdateRemoteWindow(delta);
+        }
       }
       break;
 
@@ -1519,13 +1489,26 @@ SpdySession31::HandleGoAway(SpdySession31 *self)
   self->mCleanShutdown = true;
 
   // Find streams greater than the last-good ID and mark them for deletion
-  // in the mGoAwayStreamsToRestart queue with the GoAwayEnumerator. The
-  // underlying transaction can be restarted.
-  self->mStreamTransactionHash.Enumerate(GoAwayEnumerator, self);
+  // in the mGoAwayStreamsToRestart queue. The underlying transaction can be
+  // restarted.
+  for (auto iter = self->mStreamTransactionHash.Iter();
+       !iter.Done();
+       iter.Next()) {
+
+    // These streams were not processed by the server and can be restarted. Do
+    // that after the enumerator completes to avoid the risk of a restart event
+    // re-entrantly modifying this hash. Be sure not to restart a pushed (even
+    // numbered) stream.
+    nsAutoPtr<SpdyStream31>& stream = iter.Data();
+    if ((stream->StreamID() > self->mGoAwayID && (stream->StreamID() & 1)) ||
+        !stream->HasRegisteredID()) {
+      self->mGoAwayStreamsToRestart.Push(stream);
+    }
+  }
 
   // Process the streams marked for deletion and restart.
-  uint32_t size = self->mGoAwayStreamsToRestart.GetSize();
-  for (uint32_t count = 0; count < size; ++count) {
+  size_t size = self->mGoAwayStreamsToRestart.GetSize();
+  for (size_t count = 0; count < size; ++count) {
     SpdyStream31 *stream =
       static_cast<SpdyStream31 *>(self->mGoAwayStreamsToRestart.PopFront());
 
@@ -1539,7 +1522,7 @@ SpdySession31::HandleGoAway(SpdySession31 *self)
   // in another one. (they were never sent on the network so they implicitly
   // are not covered by the last-good id.
   size = self->mQueuedStreams.GetSize();
-  for (uint32_t count = 0; count < size; ++count) {
+  for (size_t count = 0; count < size; ++count) {
     SpdyStream31 *stream =
       static_cast<SpdyStream31 *>(self->mQueuedStreams.PopFront());
     MOZ_ASSERT(stream->Queued());
@@ -1598,7 +1581,7 @@ SpdySession31::HandleHeaders(SpdySession31 *self)
   // the session becuase the session compression context will become
   // inconsistent if all of the compressed data is not processed.
   rv = self->mInputFrameDataStream->Uncompress(&self->mDownstreamZlib,
-                                               self->mInputFrameBuffer + 12,
+                                               &self->mInputFrameBuffer[12],
                                                self->mInputFrameDataSize - 4);
   if (NS_FAILED(rv)) {
     LOG(("SpdySession31::HandleHeaders uncompress failed\n"));
@@ -1633,22 +1616,6 @@ SpdySession31::HandleHeaders(SpdySession31 *self)
     rv = NS_OK;
   }
   return rv;
-}
-
-PLDHashOperator
-SpdySession31::RestartBlockedOnRwinEnumerator(nsAHttpTransaction *key,
-                                              nsAutoPtr<SpdyStream31> &stream,
-                                              void *closure)
-{
-  SpdySession31 *self = static_cast<SpdySession31 *>(closure);
-  MOZ_ASSERT(self->mRemoteSessionWindow > 0);
-
-  if (!stream->BlockedOnRwin() || stream->RemoteWindow() <= 0)
-    return PL_DHASH_NEXT;
-
-  self->mReadyForWrite.Push(stream);
-  self->SetWriteCallbacks();
-  return PL_DHASH_NEXT;
 }
 
 nsresult
@@ -1694,7 +1661,19 @@ SpdySession31::HandleWindowUpdate(SpdySession31 *self)
     if ((oldRemoteWindow <= 0) && (self->mRemoteSessionWindow > 0)) {
       LOG3(("SpdySession31::HandleWindowUpdate %p restart session window\n",
             self));
-      self->mStreamTransactionHash.Enumerate(RestartBlockedOnRwinEnumerator, self);
+      for (auto iter = self->mStreamTransactionHash.Iter();
+           !iter.Done();
+           iter.Next()) {
+        MOZ_ASSERT(self->mRemoteSessionWindow > 0);
+
+        nsAutoPtr<SpdyStream31>& stream = iter.Data();
+        if (!stream->BlockedOnRwin() || stream->RemoteWindow() <= 0) {
+          continue;
+        }
+
+        self->mReadyForWrite.Push(stream);
+        self->SetWriteCallbacks();
+      }
     }
   }
 
@@ -1777,9 +1756,10 @@ SpdySession31::OnTransportStatus(nsITransport* aTransport,
 // generated instead.
 
 nsresult
-SpdySession31::ReadSegments(nsAHttpSegmentReader *reader,
-                            uint32_t count,
-                            uint32_t *countRead)
+SpdySession31::ReadSegmentsAgain(nsAHttpSegmentReader *reader,
+                                 uint32_t count,
+                                 uint32_t *countRead,
+                                 bool *again)
 {
   MOZ_ASSERT(PR_GetCurrentThread() == gSocketThread);
 
@@ -1847,6 +1827,8 @@ SpdySession31::ReadSegments(nsAHttpSegmentReader *reader,
     CleanupStream(stream, rv, RST_CANCEL);
     if (SoftStreamError(rv)) {
       LOG3(("SpdySession31::ReadSegments %p soft error override\n", this));
+      *again = false;
+      SetWriteCallbacks();
       rv = NS_OK;
     }
     return rv;
@@ -1876,6 +1858,14 @@ SpdySession31::ReadSegments(nsAHttpSegmentReader *reader,
   return rv;
 }
 
+nsresult
+SpdySession31::ReadSegments(nsAHttpSegmentReader *reader,
+                            uint32_t count, uint32_t *countRead)
+{
+  bool again = false;
+  return ReadSegmentsAgain(reader, count, countRead, &again);
+}
+
 // WriteSegments() is used to read data off the socket. Generally this is
 // just the SPDY frame header and from there the appropriate SPDYStream
 // is identified from the Stream-ID. The http transaction associated with
@@ -1890,9 +1880,10 @@ SpdySession31::ReadSegments(nsAHttpSegmentReader *reader,
 // data. It always gets full frames if they are part of the stream
 
 nsresult
-SpdySession31::WriteSegments(nsAHttpSegmentWriter *writer,
-                             uint32_t count,
-                             uint32_t *countWritten)
+SpdySession31::WriteSegmentsAgain(nsAHttpSegmentWriter *writer,
+                                  uint32_t count,
+                                  uint32_t *countWritten,
+                                  bool *again)
 {
   typedef nsresult  (*Control_FX) (SpdySession31 *self);
   static const Control_FX sControlFunctions[] =
@@ -1968,7 +1959,7 @@ SpdySession31::WriteSegments(nsAHttpSegmentWriter *writer,
     MOZ_ASSERT(mInputFrameBufferUsed < 8,
                "Frame Buffer Used Too Large for State");
 
-    rv = NetworkRead(writer, mInputFrameBuffer + mInputFrameBufferUsed,
+    rv = NetworkRead(writer, &mInputFrameBuffer[mInputFrameBufferUsed],
                      8 - mInputFrameBufferUsed, countWritten);
 
     if (NS_FAILED(rv)) {
@@ -1981,7 +1972,7 @@ SpdySession31::WriteSegments(nsAHttpSegmentWriter *writer,
     }
 
     LogIO(this, nullptr, "Reading Frame Header",
-          mInputFrameBuffer + mInputFrameBufferUsed, *countWritten);
+          &mInputFrameBuffer[mInputFrameBufferUsed], *countWritten);
 
     mInputFrameBufferUsed += *countWritten;
 
@@ -2061,7 +2052,7 @@ SpdySession31::WriteSegments(nsAHttpSegmentWriter *writer,
         mInputFrameDataStream->SetRecvdData(true);
         rv = ResponseHeadersComplete();
         if (rv == NS_ERROR_ILLEGAL_VALUE) {
-          LOG3(("SpdySession31 %p PROTOCOL_ERROR detected 0x%X\n",
+          LOG3(("SpdySession31 %p ResponseHeadersComplete PROTOCOL_ERROR detected 0x%X\n",
                 this, streamID));
           CleanupStream(mInputFrameDataStream, rv, RST_PROTOCOL_ERROR);
           ChangeDownstreamState(DISCARDING_DATA_FRAME);
@@ -2120,9 +2111,18 @@ SpdySession31::WriteSegments(nsAHttpSegmentWriter *writer,
     MOZ_ASSERT(!mNeedsCleanup, "cleanup stream set unexpectedly");
     mNeedsCleanup = nullptr;                     /* just in case */
 
+    // The writesegments() stack can clear mInputFrameDataStream so
+    // only reference this local copy of it afterwards
     SpdyStream31 *stream = mInputFrameDataStream;
     mSegmentWriter = writer;
     rv = mInputFrameDataStream->WriteSegments(this, count, countWritten);
+    bool channelPipeFull = false;
+    if (rv == NS_BASE_STREAM_WOULD_BLOCK) {
+      LOG3(("SpdySession31::WriteSegments session=%p stream=%p 0x%X "
+            "stream channel pipe full\n",
+            this, stream, stream ? stream->StreamID() : 0));
+      channelPipeFull = stream->ChannelPipeFull();
+    }
     mSegmentWriter = nullptr;
 
     mLastDataReadEpoch = mLastReadEpoch;
@@ -2146,6 +2146,8 @@ SpdySession31::WriteSegments(nsAHttpSegmentWriter *writer,
       CleanupStream(stream, NS_OK, RST_CANCEL);
       MOZ_ASSERT(!mNeedsCleanup || mNeedsCleanup == stream);
       mNeedsCleanup = nullptr;
+      *again = false;
+      ResumeRecv();
       return NS_OK;
     }
 
@@ -2158,10 +2160,13 @@ SpdySession31::WriteSegments(nsAHttpSegmentWriter *writer,
     }
 
     if (NS_FAILED(rv)) {
-      LOG3(("SpdySession31 %p data frame read failure %x\n", this, rv));
+      LOG3(("SpdySession31::WriteSegments session=%p stream=%p 0x%X "
+            "data frame read failure %x pipefull=%d\n",
+            this, stream, stream ? stream->StreamID() : 0, rv, channelPipeFull));
       // maybe just blocked reading from network
-      if (rv == NS_BASE_STREAM_WOULD_BLOCK)
+      if ((rv == NS_BASE_STREAM_WOULD_BLOCK) && !channelPipeFull) {
         rv = NS_OK;
+      }
     }
 
     return rv;
@@ -2205,7 +2210,7 @@ SpdySession31::WriteSegments(nsAHttpSegmentWriter *writer,
   MOZ_ASSERT(mInputFrameBufferUsed == 8,
              "Frame Buffer Header Not Present");
 
-  rv = NetworkRead(writer, mInputFrameBuffer + 8 + mInputFrameDataRead,
+  rv = NetworkRead(writer, &mInputFrameBuffer[8 + mInputFrameDataRead],
                    mInputFrameDataSize - mInputFrameDataRead, countWritten);
 
   if (NS_FAILED(rv)) {
@@ -2218,7 +2223,7 @@ SpdySession31::WriteSegments(nsAHttpSegmentWriter *writer,
   }
 
   LogIO(this, nullptr, "Reading Control Frame",
-        mInputFrameBuffer + 8 + mInputFrameDataRead, *countWritten);
+        &mInputFrameBuffer[8 + mInputFrameDataRead], *countWritten);
 
   mInputFrameDataRead += *countWritten;
 
@@ -2243,6 +2248,14 @@ SpdySession31::WriteSegments(nsAHttpSegmentWriter *writer,
   if (mShouldGoAway && !mStreamTransactionHash.Count())
     Close(NS_OK);
   return rv;
+}
+
+nsresult
+SpdySession31::WriteSegments(nsAHttpSegmentWriter *writer,
+                             uint32_t count, uint32_t *countWritten)
+{
+  bool again = false;
+  return WriteSegmentsAgain(writer, count, countWritten, &again);
 }
 
 void
@@ -2381,7 +2394,8 @@ SpdySession31::Close(nsresult aReason)
 
   mClosed = true;
 
-  mStreamTransactionHash.Enumerate(ShutdownEnumerator, this);
+  Shutdown();
+
   mStreamIDHash.Clear();
   mStreamTransactionHash.Clear();
 
@@ -2822,7 +2836,7 @@ SpdySession31::TakeTransport(nsISocketTransport **,
   return NS_ERROR_UNEXPECTED;
 }
 
-nsHttpConnection *
+already_AddRefed<nsHttpConnection>
 SpdySession31::TakeHttpConnection()
 {
   MOZ_ASSERT(false, "TakeHttpConnection of SpdySession31");
@@ -2918,22 +2932,6 @@ SpdySession31::Http1xTransactionCount()
   return 0;
 }
 
-// used as an enumerator by TakeSubTransactions()
-static PLDHashOperator
-  TakeStream(nsAHttpTransaction *key,
-             nsAutoPtr<SpdyStream31> &stream,
-             void *closure)
-{
-  nsTArray<RefPtr<nsAHttpTransaction> > *list =
-    static_cast<nsTArray<RefPtr<nsAHttpTransaction> > *>(closure);
-
-  list->AppendElement(key);
-
-  // removing the stream from the hash will delete the stream
-  // and drop the transaction reference the hash held
-  return PL_DHASH_REMOVE;
-}
-
 nsresult
 SpdySession31::TakeSubTransactions(
   nsTArray<RefPtr<nsAHttpTransaction> > &outTransactions)
@@ -2948,7 +2946,13 @@ SpdySession31::TakeSubTransactions(
 
   LOG3(("   taking %d\n", mStreamTransactionHash.Count()));
 
-  mStreamTransactionHash.Enumerate(TakeStream, &outTransactions);
+  for (auto iter = mStreamTransactionHash.Iter(); !iter.Done(); iter.Next()) {
+    outTransactions.AppendElement(iter.Key());
+
+    // Removing the stream from the hash will delete the stream and drop the
+    // transaction reference the hash held.
+    iter.Remove();
+  }
   return NS_OK;
 }
 

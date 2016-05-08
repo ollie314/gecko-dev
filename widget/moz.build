@@ -49,7 +49,7 @@ TEST_DIRS += ['tests']
 # multiple implementations of widget can be built on the same
 # source tree.
 #
-if CONFIG['MOZ_ENABLE_GTK']:
+if 'gtk' in CONFIG['MOZ_WIDGET_TOOLKIT']:
     DIRS += ['gtk']
 
     if CONFIG['MOZ_X11']:
@@ -74,7 +74,6 @@ XPIDL_SOURCES += [
     'nsIGfxInfoDebug.idl',
     'nsIIdleService.idl',
     'nsIIdleServiceInternal.idl',
-    'nsIIMEPicker.idl',
     'nsIPrintOptions.idl',
     'nsIPrintSession.idl',
     'nsIPrintSettings.idl',
@@ -88,6 +87,7 @@ XPIDL_SOURCES += [
 XPIDL_MODULE = 'widget'
 
 EXPORTS += [
+    'CompositorWidgetProxy.h',
     'ContentHelper.h',
     'GfxDriverInfo.h',
     'GfxInfoBase.h',
@@ -95,7 +95,9 @@ EXPORTS += [
     'InputData.h',
     'nsBaseScreen.h',
     'nsBaseWidget.h',
+    'nsDeviceContextSpecProxy.h',
     'nsIDeviceContextSpec.h',
+    'nsIKeyEventInPluginCallback.h',
     'nsIPluginWidget.h',
     'nsIRollupListener.h',
     'nsIWidget.h',
@@ -134,6 +136,7 @@ EXPORTS.mozilla.widget += [
 ]
 
 UNIFIED_SOURCES += [
+    'CompositorWidgetProxy.cpp',
     'ContentCache.cpp',
     'ContentHelper.cpp',
     'GfxDriverInfo.cpp',
@@ -148,6 +151,7 @@ UNIFIED_SOURCES += [
     'nsClipboardProxy.cpp',
     'nsColorPickerProxy.cpp',
     'nsContentProcessWidgetFactory.cpp',
+    'nsDeviceContextSpecProxy.cpp',
     'nsDragServiceProxy.cpp',
     'nsFilePickerProxy.cpp',
     'nsHTMLFormatConverter.cpp',
@@ -157,7 +161,6 @@ UNIFIED_SOURCES += [
     'nsPrintSession.cpp',
     'nsPrintSettingsImpl.cpp',
     'nsScreenManagerProxy.cpp',
-    'nsShmImage.cpp',
     'nsTransferable.cpp',
     'nsXPLookAndFeel.cpp',
     'PluginWidgetProxy.cpp',
@@ -195,6 +198,9 @@ if CONFIG['MOZ_X11']:
     DIRS += ['x11']
     UNIFIED_SOURCES += [
         'GfxInfoX11.cpp'
+    ]
+    SOURCES += [
+        'nsShmImage.cpp'
     ]
 
 if toolkit in ('cocoa', 'windows'):

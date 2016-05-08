@@ -42,12 +42,11 @@
 #include <algorithm>
 #include "nsDebug.h"
 
-extern PRLogModuleInfo* gRtspLog;
-#undef LOG
-#define LOG(args) MOZ_LOG(gRtspLog, mozilla::LogLevel::Debug, args)
-
 namespace mozilla {
 namespace net {
+extern LazyLogModule gRtspLog;
+#undef LOG
+#define LOG(args) MOZ_LOG(mozilla::net::gRtspLog, mozilla::LogLevel::Debug, args)
 
 //-----------------------------------------------------------------------------
 // RtspController
@@ -196,7 +195,7 @@ RtspController::AsyncOpen(nsIStreamingProtocolListener *aListener)
 //-----------------------------------------------------------------------------
 // nsIStreamingProtocolListener
 //-----------------------------------------------------------------------------
-class SendMediaDataTask : public nsRunnable
+class SendMediaDataTask : public Runnable
 {
 public:
   SendMediaDataTask(nsIStreamingProtocolListener *listener,
@@ -246,7 +245,7 @@ RtspController::OnMediaDataAvailable(uint8_t index,
   return NS_ERROR_NOT_AVAILABLE;
 }
 
-class SendOnConnectedTask : public nsRunnable
+class SendOnConnectedTask : public Runnable
 {
 public:
   SendOnConnectedTask(nsIStreamingProtocolListener *listener,
@@ -285,7 +284,7 @@ RtspController::OnConnected(uint8_t index,
   return NS_ERROR_NOT_AVAILABLE;
 }
 
-class SendOnDisconnectedTask : public nsRunnable
+class SendOnDisconnectedTask : public Runnable
 {
 public:
   SendOnDisconnectedTask(nsIStreamingProtocolListener *listener,

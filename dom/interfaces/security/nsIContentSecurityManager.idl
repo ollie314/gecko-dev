@@ -5,15 +5,16 @@
 #include "nsISupports.idl"
 
 interface nsIChannel;
+interface nsIPrincipal;
 interface nsIStreamListener;
+interface nsIURI;
 
 /**
  * nsIContentSecurityManager
- * Describes an XPCOM component used to perform security checks
- * right before opnening a channel.
+ * Describes an XPCOM component used to perform security checks.
  */
 
-[scriptable, uuid(70eaa956-1077-41f6-bef8-d722cea31245)]
+[scriptable, uuid(3a9a1818-2ae8-4ec5-a340-8b29d31fca3b)]
 interface nsIContentSecurityManager : nsISupports
 {
   /**
@@ -40,4 +41,16 @@ interface nsIContentSecurityManager : nsISupports
    */
    nsIStreamListener performSecurityCheck(in nsIChannel aChannel,
                                           in nsIStreamListener aStreamListener);
+
+  /**
+   * Implementation of
+   * https://w3c.github.io/webappsec-secure-contexts/#is-origin-trustworthy
+   *
+   * The value returned by this method feeds into the the Secure Context
+   * algorithm that determins the value of Window.isSecureContext and
+   * WorkerGlobalScope.isSecureContext.
+   *
+   * This method returns false instead of throwing upon errors.
+   */
+  boolean isOriginPotentiallyTrustworthy(in nsIPrincipal aPrincipal);
 };

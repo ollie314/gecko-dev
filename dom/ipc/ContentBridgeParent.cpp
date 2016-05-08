@@ -26,7 +26,8 @@ ContentBridgeParent::ContentBridgeParent(Transport* aTransport)
 
 ContentBridgeParent::~ContentBridgeParent()
 {
-  XRE_GetIOMessageLoop()->PostTask(FROM_HERE, new DeleteTask<Transport>(mTransport));
+  RefPtr<DeleteTask<Transport>> task = new DeleteTask<Transport>(mTransport);
+  XRE_GetIOMessageLoop()->PostTask(task.forget());
 }
 
 void
@@ -36,9 +37,7 @@ ContentBridgeParent::ActorDestroy(ActorDestroyReason aWhy)
   if (os) {
     os->RemoveObserver(this, "content-child-shutdown");
   }
-  MessageLoop::current()->PostTask(
-    FROM_HERE,
-    NewRunnableMethod(this, &ContentBridgeParent::DeferredDestroy));
+  MessageLoop::current()->PostTask(NewRunnableMethod(this, &ContentBridgeParent::DeferredDestroy));
 }
 
 /*static*/ ContentBridgeParent*
@@ -84,12 +83,12 @@ ContentBridgeParent::RecvSyncMessage(const nsString& aMsg,
 
 bool
 ContentBridgeParent::RecvAsyncMessage(const nsString& aMsg,
-                                      const ClonedMessageData& aData,
                                       InfallibleTArray<jsipc::CpowEntry>&& aCpows,
-                                      const IPC::Principal& aPrincipal)
+                                      const IPC::Principal& aPrincipal,
+                                      const ClonedMessageData& aData)
 {
-  return nsIContentParent::RecvAsyncMessage(aMsg, aData, Move(aCpows),
-                                            aPrincipal);
+  return nsIContentParent::RecvAsyncMessage(aMsg, Move(aCpows),
+                                            aPrincipal, aData);
 }
 
 PBlobParent*
@@ -168,9 +167,7 @@ ContentBridgeParent::NotifyTabDestroyed()
 {
   int32_t numLiveTabs = ManagedPBrowserParent().Count();
   if (numLiveTabs == 1) {
-    MessageLoop::current()->PostTask(
-      FROM_HERE,
-      NewRunnableMethod(this, &ContentBridgeParent::Close));
+    MessageLoop::current()->PostTask(NewRunnableMethod(this, &ContentBridgeParent::Close));
   }
 }
 
@@ -180,7 +177,7 @@ ContentBridgeParent::NotifyTabDestroyed()
 jsipc::CPOWManager*
 ContentBridgeParent::GetCPOWManager()
 {
-  if (PJavaScriptParent* p = LoneManagedOrNull(ManagedPJavaScriptParent())) {
+  if (PJavaScriptParent* p = LoneManagedOrNullAsserts(ManagedPJavaScriptParent())) {
     return CPOWManagerFor(p);
   }
   return nullptr;

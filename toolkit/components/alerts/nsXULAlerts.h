@@ -9,32 +9,30 @@
 #include "nsHashKeys.h"
 #include "nsInterfaceHashtable.h"
 
-#include "nsIDOMWindow.h"
+#include "mozIDOMWindow.h"
 #include "nsIObserver.h"
 
-class nsXULAlerts {
+class nsXULAlerts : public nsIAlertsService,
+                    public nsIAlertsDoNotDisturb,
+                    public nsIAlertsIconURI
+{
   friend class nsXULAlertObserver;
 public:
+  NS_DECL_NSIALERTSICONURI
+  NS_DECL_NSIALERTSDONOTDISTURB
+  NS_DECL_NSIALERTSSERVICE
+  NS_DECL_ISUPPORTS
+
   nsXULAlerts()
   {
   }
 
-  virtual ~nsXULAlerts() {}
-
-  nsresult ShowAlertNotification(const nsAString& aImageUrl, const nsAString& aAlertTitle,
-                                 const nsAString& aAlertText, bool aAlertTextClickable,
-                                 const nsAString& aAlertCookie, nsIObserver* aAlertListener,
-                                 const nsAString& aAlertName, const nsAString& aBidi,
-                                 const nsAString& aLang, nsIPrincipal* aPrincipal,
-                                 bool aInPrivateBrowsing);
-
-  nsresult CloseAlert(const nsAString& aAlertName);
-
-  nsresult GetManualDoNotDisturb(bool* aRetVal);
-  nsresult SetManualDoNotDisturb(bool aDoNotDisturb);
+  static already_AddRefed<nsXULAlerts> GetInstance();
 
 protected:
-  nsInterfaceHashtable<nsStringHashKey, nsIDOMWindow> mNamedWindows;
+  virtual ~nsXULAlerts() {}
+
+  nsInterfaceHashtable<nsStringHashKey, mozIDOMWindowProxy> mNamedWindows;
   bool mDoNotDisturb = false;
 };
 
@@ -45,22 +43,23 @@ protected:
  */
 class nsXULAlertObserver : public nsIObserver {
 public:
-  NS_DECL_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
   NS_DECL_NSIOBSERVER
+  NS_DECL_CYCLE_COLLECTION_CLASS(nsXULAlertObserver)
 
   nsXULAlertObserver(nsXULAlerts* aXULAlerts, const nsAString& aAlertName,
                      nsIObserver* aObserver)
     : mXULAlerts(aXULAlerts), mAlertName(aAlertName),
       mObserver(aObserver) {}
 
-  void SetAlertWindow(nsIDOMWindow* aWindow) { mAlertWindow = aWindow; }
+  void SetAlertWindow(mozIDOMWindowProxy* aWindow) { mAlertWindow = aWindow; }
 
 protected:
   virtual ~nsXULAlertObserver() {}
 
-  nsXULAlerts* mXULAlerts;
+  RefPtr<nsXULAlerts> mXULAlerts;
   nsString mAlertName;
-  nsCOMPtr<nsIDOMWindow> mAlertWindow;
+  nsCOMPtr<mozIDOMWindowProxy> mAlertWindow;
   nsCOMPtr<nsIObserver> mObserver;
 };
 

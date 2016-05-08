@@ -21,7 +21,6 @@
     _(Internal)                                       \
     _(Interpreter)                                    \
     _(InlinedScripts)                                 \
-    _(Invalidation)                                   \
     _(IonCompilation)                                 \
     _(IonCompilationPaused)                           \
     _(IonLinking)                                     \
@@ -37,6 +36,7 @@
     _(VM)                                             \
                                                       \
     /* Specific passes during ion compilation */      \
+    _(PruneUnusedBranches)                            \
     _(FoldTests)                                      \
     _(SplitCriticalEdges)                             \
     _(RenumberBlocks)                                 \
@@ -52,6 +52,8 @@
     _(Sincos)                                         \
     _(RangeAnalysis)                                  \
     _(LoopUnrolling)                                  \
+    _(Sink)                                           \
+    _(RemoveUnnecessaryBitops)                        \
     _(EffectiveAddressAnalysis)                       \
     _(AlignmentMaskAnalysis)                          \
     _(EliminateDeadCode)                              \
@@ -65,6 +67,7 @@
 
 #define TRACELOGGER_LOG_ITEMS(_)                      \
     _(Bailout)                                        \
+    _(Invalidation)                                   \
     _(Disable)                                        \
     _(Enable)                                         \
     _(Stop)
@@ -135,6 +138,9 @@ class ContinuousSpace {
     uint32_t size_;
     uint32_t capacity_;
 
+    // The maximum amount of ram memory a continuous space structure can take (in bytes).
+    static const uint32_t LIMIT = 200 * 1024 * 1024;
+
   public:
     ContinuousSpace ()
      : data_(nullptr)
@@ -154,6 +160,10 @@ class ContinuousSpace {
     {
         js_free(data_);
         data_ = nullptr;
+    }
+
+    static uint32_t maxSize() {
+        return LIMIT / sizeof(T);
     }
 
     T* data() {
@@ -192,11 +202,14 @@ class ContinuousSpace {
         if (hasSpaceForAdd(count))
             return true;
 
-        uint32_t nCapacity = capacity_ * 2;
-        if (size_ + count > nCapacity)
-            nCapacity = size_ + count;
-        T* entries = (T*) js_realloc(data_, nCapacity * sizeof(T));
+        // Limit the size of a continuous buffer.
+        if (size_ + count > maxSize())
+            return false;
 
+        uint32_t nCapacity = capacity_ * 2;
+        nCapacity = (nCapacity < maxSize()) ? nCapacity : maxSize();
+
+        T* entries = (T*) js_realloc(data_, nCapacity * sizeof(T));
         if (!entries)
             return false;
 

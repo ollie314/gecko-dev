@@ -1,67 +1,26 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
+/* eslint no-unused-vars: [2, {"vars": "local", "args": "none"}] */
+/* import-globals-from ../../framework/test/shared-head.js */
 
-var {require} = Cu.import("resource://devtools/shared/Loader.jsm", {});
-var {TargetFactory} = require("devtools/client/framework/target");
-var {console} = Cu.import("resource://gre/modules/Console.jsm", {});
-var {gDevTools} = Cu.import("resource://devtools/client/framework/gDevTools.jsm", {});
+"use strict";
+
+// shared-head.js handles imports, constants, and utility functions
+Services.scriptloader.loadSubScript("chrome://mochitests/content/browser/devtools/client/framework/test/shared-head.js", this);
+
 const {DOMHelpers} = Cu.import("resource://devtools/client/shared/DOMHelpers.jsm", {});
 const {Hosts} = require("devtools/client/framework/toolbox-hosts");
 const {defer} = require("promise");
-const DevToolsUtils = require("devtools/shared/DevToolsUtils");
-
-DevToolsUtils.testing = true;
-SimpleTest.registerCleanupFunction(() => {
-  DevToolsUtils.testing = false;
-});
 
 const TEST_URI_ROOT = "http://example.com/browser/devtools/client/shared/test/";
 const OPTIONS_VIEW_URL = TEST_URI_ROOT + "doc_options-view.xul";
-
-/**
- * Open a new tab at a URL and call a callback on load
- */
-function addTab(aURL, aCallback)
-{
-  waitForExplicitFinish();
-
-  gBrowser.selectedTab = gBrowser.addTab();
-  content.location = aURL;
-
-  let tab = gBrowser.selectedTab;
-  let browser = gBrowser.getBrowserForTab(tab);
-
-  function onTabLoad() {
-    browser.removeEventListener("load", onTabLoad, true);
-    aCallback(browser, tab, browser.contentDocument);
-  }
-
-  browser.addEventListener("load", onTabLoad, true);
-}
-
-function promiseTab(aURL) {
-  return new Promise(resolve =>
-    addTab(aURL, resolve));
-}
-
-registerCleanupFunction(function* tearDown() {
-  let target = TargetFactory.forTab(gBrowser.selectedTab);
-  yield gDevTools.closeToolbox(target);
-
-  while (gBrowser.tabs.length > 1) {
-    gBrowser.removeCurrentTab();
-  }
-
-  console = undefined;
-});
 
 function catchFail(func) {
   return function() {
     try {
       return func.apply(null, arguments);
-    }
-    catch (ex) {
+    } catch (ex) {
       ok(false, ex);
       console.error(ex);
       finish();
@@ -73,7 +32,7 @@ function catchFail(func) {
 /**
  * Polls a given function waiting for the given value.
  *
- * @param object aOptions
+ * @param object options
  *        Options object with the following properties:
  *        - validator
  *        A validator function that should return the expected value. This is
@@ -97,54 +56,57 @@ function catchFail(func) {
  *        The expected value. If this option is omitted then the |validator|
  *        function must return a trueish value.
  *        Each of the provided callback functions will receive two arguments:
- *        the |aOptions| object and the last value returned by |validator|.
+ *        the |options| object and the last value returned by |validator|.
  */
-function waitForValue(aOptions)
-{
+function waitForValue(options) {
   let start = Date.now();
-  let timeout = aOptions.timeout || 5000;
+  let timeout = options.timeout || 5000;
   let lastValue;
 
-  function wait(validatorFn, successFn, failureFn)
-  {
+  function wait(validatorFn, successFn, failureFn) {
     if ((Date.now() - start) > timeout) {
       // Log the failure.
-      ok(false, "Timed out while waiting for: " + aOptions.name);
-      let expected = "value" in aOptions ?
-                     "'" + aOptions.value + "'" :
+      ok(false, "Timed out while waiting for: " + options.name);
+      let expected = "value" in options ?
+                     "'" + options.value + "'" :
                      "a trueish value";
       info("timeout info :: got '" + lastValue + "', expected " + expected);
-      failureFn(aOptions, lastValue);
+      failureFn(options, lastValue);
       return;
     }
 
-    lastValue = validatorFn(aOptions, lastValue);
-    let successful = "value" in aOptions ?
-                      lastValue == aOptions.value :
+    lastValue = validatorFn(options, lastValue);
+    let successful = "value" in options ?
+                      lastValue == options.value :
                       lastValue;
     if (successful) {
-      ok(true, aOptions.name);
-      successFn(aOptions, lastValue);
-    }
-    else {
+      ok(true, options.name);
+      successFn(options, lastValue);
+    } else {
       setTimeout(() => {
         wait(validatorFn, successFn, failureFn);
       }, 100);
     }
   }
 
-  wait(aOptions.validator, aOptions.success, aOptions.failure);
+  wait(options.validator, options.success, options.failure);
 }
 
 function oneTimeObserve(name, callback) {
-  var func = function() {
-    Services.obs.removeObserver(func, name);
-    callback();
-  };
-  Services.obs.addObserver(func, name, false);
+  return new Promise((resolve) => {
+    let func = function() {
+      Services.obs.removeObserver(func, name);
+      if (callback) {
+        callback();
+      }
+      resolve();
+    };
+    Services.obs.addObserver(func, name, false);
+  });
 }
 
-var createHost = Task.async(function*(type = "bottom", src = "data:text/html;charset=utf-8,") {
+let createHost =
+Task.async(function*(type = "bottom", src = "data:text/html;charset=utf-8,") {
   let host = new Hosts[type](gBrowser.selectedTab);
   let iframe = yield host.create();
 
@@ -202,11 +164,13 @@ function stopRecordingTelemetryLogs(Telemetry) {
 function checkTelemetryResults(Telemetry) {
   let result = Telemetry.prototype.telemetryInfo;
 
-  for (let [histId, value] of Iterator(result)) {
+  for (let histId in result) {
+    let value = result[histId];
+
     if (histId.endsWith("OPENED_PER_USER_FLAG")) {
       ok(value.length === 1 && value[0] === true,
          "Per user value " + histId + " has a single value of true");
-    } else if (histId.endsWith("OPENED_BOOLEAN")) {
+    } else if (histId.endsWith("OPENED_COUNT")) {
       ok(value.length > 1, histId + " has more than one entry");
 
       let okay = value.every(function(element) {
@@ -234,10 +198,10 @@ function checkTelemetryResults(Telemetry) {
  * @param {String} toolId
  */
 function* openAndCloseToolbox(nbOfTimes, usageTime, toolId) {
-  for (let i = 0; i < nbOfTimes; i ++) {
+  for (let i = 0; i < nbOfTimes; i++) {
     info("Opening toolbox " + (i + 1));
     let target = TargetFactory.forTab(gBrowser.selectedTab);
-    yield gDevTools.showToolbox(target, toolId)
+    yield gDevTools.showToolbox(target, toolId);
 
     // We use a timeout to check the toolbox's active time
     yield new Promise(resolve => setTimeout(resolve, usageTime));
@@ -302,7 +266,8 @@ function showFilterPopupPresets(widget) {
  * @param  {string} value
  * @return {Promise}
  */
-var showFilterPopupPresetsAndCreatePreset = Task.async(function*(widget, name, value) {
+let showFilterPopupPresetsAndCreatePreset =
+Task.async(function*(widget, name, value) {
   yield showFilterPopupPresets(widget);
 
   let onRender = widget.once("render");
@@ -363,7 +328,8 @@ function checkCssSyntaxHighlighterOutput(expectedNodes, parent) {
    * Check the type and content of a single node.
    */
   function checkNode(expected, actual) {
-    ok(actual.textContent == expected.text, "Check that node has the expected textContent");
+    ok(actual.textContent == expected.text,
+       "Check that node has the expected textContent");
     info("Expected text content: [" + expected.text + "]");
     info("Actual text content: [" + actual.textContent + "]");
 
@@ -403,10 +369,10 @@ function checkCssSyntaxHighlighterOutput(expectedNodes, parent) {
   }
 
   info("Logging the actual nodes we have:");
-  for (var j = 0; j < parent.childNodes.length; j++) {
-    var n = parent.childNodes[j];
+  for (let j = 0; j < parent.childNodes.length; j++) {
+    let n = parent.childNodes[j];
     info(j + " / " +
-         "nodeType: "+ n.nodeType + " / " +
+         "nodeType: " + n.nodeType + " / " +
          "textContent: " + n.textContent);
   }
 

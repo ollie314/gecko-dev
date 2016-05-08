@@ -12,6 +12,7 @@
 
 #include "mozilla/ArrayUtils.h"
 
+#include "nsDocShell.h"
 #include "nsNullPrincipal.h"
 #include "nsNullPrincipalURI.h"
 #include "nsMemory.h"
@@ -40,21 +41,34 @@ nsNullPrincipal::CreateWithInheritedAttributes(nsIPrincipal* aInheritFrom)
 {
   RefPtr<nsNullPrincipal> nullPrin = new nsNullPrincipal();
   nsresult rv = nullPrin->Init(Cast(aInheritFrom)->OriginAttributesRef());
-  return NS_SUCCEEDED(rv) ? nullPrin.forget() : nullptr;
+  MOZ_RELEASE_ASSERT(NS_SUCCEEDED(rv));
+  return nullPrin.forget();
 }
 
 /* static */ already_AddRefed<nsNullPrincipal>
-nsNullPrincipal::Create(const OriginAttributes& aOriginAttributes)
+nsNullPrincipal::CreateWithInheritedAttributes(nsIDocShell* aDocShell)
+{
+  PrincipalOriginAttributes attrs;
+  attrs.InheritFromDocShellToDoc(nsDocShell::Cast(aDocShell)->GetOriginAttributes(), nullptr);
+
+  RefPtr<nsNullPrincipal> nullPrin = new nsNullPrincipal();
+  nsresult rv = nullPrin->Init(attrs);
+  MOZ_RELEASE_ASSERT(NS_SUCCEEDED(rv));
+  return nullPrin.forget();
+}
+
+/* static */ already_AddRefed<nsNullPrincipal>
+nsNullPrincipal::Create(const PrincipalOriginAttributes& aOriginAttributes)
 {
   RefPtr<nsNullPrincipal> nullPrin = new nsNullPrincipal();
   nsresult rv = nullPrin->Init(aOriginAttributes);
-  NS_ENSURE_SUCCESS(rv, nullptr);
+  MOZ_RELEASE_ASSERT(NS_SUCCEEDED(rv));
 
   return nullPrin.forget();
 }
 
 nsresult
-nsNullPrincipal::Init(const OriginAttributes& aOriginAttributes)
+nsNullPrincipal::Init(const PrincipalOriginAttributes& aOriginAttributes)
 {
   mOriginAttributes = aOriginAttributes;
 

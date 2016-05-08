@@ -11,6 +11,7 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/MemoryReporting.h"
 #include "mozilla/SheetType.h"
+#include "mozilla/UniquePtr.h"
 
 #include "nsIPrincipal.h"
 #include "nsIURI.h"
@@ -47,6 +48,18 @@ class CSSStyleSheet;
       type_ *dlm_next = cur->member_;                                          \
       cur->member_ = nullptr;                                                  \
       delete cur;                                                              \
+      cur = dlm_next;                                                          \
+    }                                                                          \
+  }
+// Ditto, but use NS_RELEASE instead of 'delete' (bug 1221902).
+#define NS_CSS_NS_RELEASE_LIST_MEMBER(type_, ptr_, member_)                    \
+  {                                                                            \
+    type_ *cur = (ptr_)->member_;                                              \
+    (ptr_)->member_ = nullptr;                                                 \
+    while (cur) {                                                              \
+      type_ *dlm_next = cur->member_;                                          \
+      cur->member_ = nullptr;                                                  \
+      NS_RELEASE(cur);                                                         \
       cur = dlm_next;                                                          \
     }                                                                          \
   }
@@ -135,7 +148,7 @@ private:
 public:
   // Inherit operator== from URLValue
 
-  nsRefPtrHashtable<nsPtrHashKey<nsISupports>, imgRequestProxy> mRequests; 
+  nsRefPtrHashtable<nsPtrHashKey<nsIDocument>, imgRequestProxy> mRequests;
 
   // Override AddRef and Release to not only log ourselves correctly, but
   // also so that we delete correctly without a virtual destructor (assuming
@@ -434,6 +447,8 @@ public:
   nsCSSUnit GetUnit() const { return mUnit; }
   bool      IsLengthUnit() const
     { return eCSSUnit_PhysicalMillimeter <= mUnit && mUnit <= eCSSUnit_Pixel; }
+  bool      IsLengthPercentCalcUnit() const
+    { return IsLengthUnit() || mUnit == eCSSUnit_Percent || IsCalcUnit(); }
   /**
    * A "fixed" length unit is one that means a specific physical length
    * which we try to match based on the physical characteristics of an
@@ -455,8 +470,10 @@ public:
   /**
    * A "pixel" length unit is a some multiple of CSS pixels.
    */
+  static bool IsPixelLengthUnit(nsCSSUnit aUnit)
+    { return eCSSUnit_Point <= aUnit && aUnit <= eCSSUnit_Pixel; }
   bool      IsPixelLengthUnit() const
-    { return eCSSUnit_Point <= mUnit && mUnit <= eCSSUnit_Pixel; }
+    { return IsPixelLengthUnit(mUnit); }
   bool      IsAngularUnit() const  
     { return eCSSUnit_Degree <= mUnit && mUnit <= eCSSUnit_Turn; }
   bool      IsFrequencyUnit() const  
@@ -702,6 +719,10 @@ public:
   nsCSSValueList* SetListValue();
   nsCSSValuePairList* SetPairListValue();
 
+  // These take ownership of the passed-in resource.
+  void AdoptListValue(mozilla::UniquePtr<nsCSSValueList> aValue);
+  void AdoptPairListValue(mozilla::UniquePtr<nsCSSValuePairList> aValue);
+
   void StartImageLoad(nsIDocument* aDocument) const;  // Only pretend const
 
   // Initializes as a function value with the specified function id.
@@ -726,6 +747,9 @@ public:
                                  const nsCSSValue* aValues[],
                                  nsAString& aResult,
                                  Serialization aValueSerialization);
+  static void
+  AppendAlignJustifyValueToString(int32_t aValue, nsAString& aResult);
+
 private:
   static const char16_t* GetBufferValue(nsStringBuffer* aBuffer) {
     return static_cast<char16_t*>(aBuffer->Data());
@@ -972,7 +996,7 @@ nsCSSValue::GetListValue()
   if (mUnit == eCSSUnit_List)
     return mValue.mList;
   else {
-    MOZ_ASSERT(mUnit == eCSSUnit_ListDep, "not a pairlist value");
+    MOZ_ASSERT(mUnit == eCSSUnit_ListDep, "not a list value");
     return mValue.mListDependent;
   }
 }
@@ -983,7 +1007,7 @@ nsCSSValue::GetListValue() const
   if (mUnit == eCSSUnit_List)
     return mValue.mList;
   else {
-    MOZ_ASSERT(mUnit == eCSSUnit_ListDep, "not a pairlist value");
+    MOZ_ASSERT(mUnit == eCSSUnit_ListDep, "not a list value");
     return mValue.mListDependent;
   }
 }
@@ -1097,6 +1121,12 @@ struct nsCSSValuePair {
   ~nsCSSValuePair()
   {
     MOZ_COUNT_DTOR(nsCSSValuePair);
+  }
+
+  nsCSSValuePair& operator=(const nsCSSValuePair& aOther) {
+    mXValue = aOther.mXValue;
+    mYValue = aOther.mYValue;
+    return *this;
   }
 
   bool operator==(const nsCSSValuePair& aOther) const {

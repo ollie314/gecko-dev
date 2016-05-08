@@ -33,6 +33,7 @@ function putRecord(channelID, scope, quota) {
     version: null,
     originAttributes: '',
     quota: quota,
+    systemRecord: quota == Infinity,
   });
 }
 
@@ -45,13 +46,13 @@ function makePushPermission(url, capability) {
     principal: Services.scriptSecurityManager.getCodebasePrincipal(
       Services.io.newURI(url, null, null)
     ),
-    type: 'push',
+    type: 'desktop-notification',
   };
 }
 
 function promiseSubscriptionChanges(count) {
   let notifiedScopes = [];
-  let subChangePromise = promiseObserverNotification('push-subscription-change', (subject, data) => {
+  let subChangePromise = promiseObserverNotification(PushServiceComponent.subscriptionChangeTopic, (subject, data) => {
     notifiedScopes.push(data);
     return notifiedScopes.length == count;
   });
@@ -100,7 +101,6 @@ add_task(function* setUp() {
   let handshakePromise = new Promise(resolve => handshakeDone = resolve);
   PushService.init({
     serverURI: 'wss://push.example.org/',
-    networkInfo: new MockDesktopNetworkInfo(),
     db,
     makeWebSocket(uri) {
       return new MockWebSocket(uri, {
@@ -117,14 +117,15 @@ add_task(function* setUp() {
           equal(typeof resolve, 'function',
             'Dropped unexpected channel ID ' + request.channelID);
           delete unregisterDefers[request.channelID];
+          equal(request.code, 202,
+            'Expected permission revoked unregister reason');
           resolve();
         },
         onACK(request) {},
       });
     }
   });
-  yield waitForPromise(handshakePromise, DEFAULT_TIMEOUT,
-    'Timed out waiting for handshake');
+  yield handshakePromise;
 });
 
 add_task(function* test_permissions_allow_added() {
@@ -134,8 +135,7 @@ add_task(function* test_permissions_allow_added() {
     makePushPermission('https://example.info', 'ALLOW_ACTION'),
     'added'
   );
-  let notifiedScopes = yield waitForPromise(subChangePromise, DEFAULT_TIMEOUT,
-      'Timed out waiting for notifications after adding allow');
+  let notifiedScopes = yield subChangePromise;
 
   deepEqual(notifiedScopes, [
     'https://example.info/page/2',
@@ -158,8 +158,7 @@ add_task(function* test_permissions_allow_deleted() {
     'deleted'
   );
 
-  yield waitForPromise(unregisterPromise, DEFAULT_TIMEOUT,
-    'Timed out waiting for unregister after deleting allow');
+  yield unregisterPromise;
 
   let record = yield db.getByKeyID('active-allow');
   ok(record.isExpired(),
@@ -178,8 +177,7 @@ add_task(function* test_permissions_deny_added() {
     makePushPermission('https://example.net', 'DENY_ACTION'),
     'added'
   );
-  yield waitForPromise(unregisterPromise, DEFAULT_TIMEOUT,
-    'Timed out waiting for notifications after adding deny');
+  yield unregisterPromise;
 
   let isExpired = yield allExpired(
     'active-deny-added-1',
@@ -209,8 +207,7 @@ add_task(function* test_permissions_allow_changed() {
     'changed'
   );
 
-  let notifiedScopes = yield waitForPromise(subChangePromise, DEFAULT_TIMEOUT,
-    'Timed out waiting for notifications after changing to allow');
+  let notifiedScopes = yield subChangePromise;
 
   deepEqual(notifiedScopes, [
     'https://example.net/eggs',
@@ -236,8 +233,7 @@ add_task(function* test_permissions_deny_changed() {
     'changed'
   );
 
-  yield waitForPromise(unregisterPromise, DEFAULT_TIMEOUT,
-    'Timed out waiting for unregister after changing to deny');
+  yield unregisterPromise;
 
   let record = yield db.getByKeyID('active-deny-changed');
   ok(record.isExpired(),
@@ -258,8 +254,7 @@ add_task(function* test_permissions_clear() {
 
   yield PushService._onPermissionChange(null, 'cleared');
 
-  yield waitForPromise(unregisterPromise, DEFAULT_TIMEOUT,
-    'Timed out waiting for unregister requests after clearing permissions');
+  yield unregisterPromise;
 
   records = yield db.getAllKeyIDs();
   deepEqual(records.map(record => record.keyID).sort(), [

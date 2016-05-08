@@ -9,6 +9,7 @@
 
 #include "jswrapper.h"
 
+#include "js/GCHashTable.h"
 #include "js/UbiNode.h"
 
 namespace js {
@@ -16,6 +17,8 @@ namespace js {
 class SavedFrame : public NativeObject {
     friend class SavedStacks;
     friend struct ::JSStructuredCloneReader;
+
+    static const ClassSpec      classSpec_;
 
   public:
     static const Class          class_;
@@ -133,9 +136,9 @@ class SavedFrame : public NativeObject {
     struct Lookup;
     struct HashPolicy;
 
-    typedef HashSet<js::ReadBarriered<SavedFrame*>,
-                    HashPolicy,
-                    SystemAllocPolicy> Set;
+    typedef JS::GCHashSet<ReadBarriered<SavedFrame*>,
+                          HashPolicy,
+                          SystemAllocPolicy> Set;
 
     class AutoLookupVector;
 
@@ -185,7 +188,7 @@ class SavedFrame : public NativeObject {
 struct SavedFrame::HashPolicy
 {
     typedef SavedFrame::Lookup              Lookup;
-    typedef PointerHasher<SavedFrame*, 3>   SavedFramePtrHasher;
+    typedef MovableCellHasher<SavedFrame*>  SavedFramePtrHasher;
     typedef PointerHasher<JSPrincipals*, 3> JSPrincipalsPtrHasher;
 
     static HashNumber hash(const Lookup& lookup);

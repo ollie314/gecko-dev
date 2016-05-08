@@ -112,7 +112,7 @@ HTMLLabelElement::PostHandleEvent(EventChainPostVisitor& aVisitor)
     return NS_OK;
   }
 
-  nsCOMPtr<nsIContent> target = do_QueryInterface(aVisitor.mEvent->target);
+  nsCOMPtr<nsIContent> target = do_QueryInterface(aVisitor.mEvent->mTarget);
   if (InInteractiveHTMLContent(target, this)) {
     return NS_OK;
   }
@@ -128,7 +128,7 @@ HTMLLabelElement::PostHandleEvent(EventChainPostVisitor& aVisitor)
           // We reset the mouse-down point on every event because there is
           // no guarantee we will reach the eMouseClick code below.
           LayoutDeviceIntPoint* curPoint =
-            new LayoutDeviceIntPoint(mouseEvent->refPoint);
+            new LayoutDeviceIntPoint(mouseEvent->mRefPoint);
           SetProperty(nsGkAtoms::labelMouseDownPtProperty,
                       static_cast<void*>(curPoint),
                       nsINode::DeleteProperty<LayoutDeviceIntPoint>);
@@ -146,7 +146,7 @@ HTMLLabelElement::PostHandleEvent(EventChainPostVisitor& aVisitor)
             LayoutDeviceIntPoint dragDistance = *mouseDownPoint;
             DeleteProperty(nsGkAtoms::labelMouseDownPtProperty);
 
-            dragDistance -= mouseEvent->refPoint;
+            dragDistance -= mouseEvent->mRefPoint;
             const int CLICK_DISTANCE = 2;
             dragSelect = dragDistance.x > CLICK_DISTANCE ||
                          dragDistance.x < -CLICK_DISTANCE ||
@@ -175,8 +175,10 @@ HTMLLabelElement::PostHandleEvent(EventChainPostVisitor& aVisitor)
               // caused by the user pressing an accesskey.
               nsCOMPtr<nsIDOMElement> elem = do_QueryInterface(content);
               bool byMouse = (mouseEvent->inputSource != nsIDOMMouseEvent::MOZ_SOURCE_KEYBOARD);
+              bool byTouch = (mouseEvent->inputSource == nsIDOMMouseEvent::MOZ_SOURCE_TOUCH);
               fm->SetFocus(elem, nsIFocusManager::FLAG_BYMOVEFOCUS |
-                                 (byMouse ? nsIFocusManager::FLAG_BYMOUSE : 0));
+                                 (byMouse ? nsIFocusManager::FLAG_BYMOUSE : 0) |
+                                 (byTouch ? nsIFocusManager::FLAG_BYTOUCH : 0));
             }
           }
           // Dispatch a new click event to |content|

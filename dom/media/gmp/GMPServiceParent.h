@@ -13,6 +13,8 @@
 #include "nsDataHashtable.h"
 #include "mozilla/Atomics.h"
 #include "nsThreadUtils.h"
+#include "mozilla/MozPromise.h"
+#include "GMPStorage.h"
 
 template <class> struct already_AddRefed;
 
@@ -30,7 +32,7 @@ public:
   static already_AddRefed<GeckoMediaPluginServiceParent> GetSingleton();
 
   GeckoMediaPluginServiceParent();
-  virtual nsresult Init() override;
+  nsresult Init() override;
 
   NS_DECL_ISUPPORTS_INHERITED
 
@@ -41,10 +43,9 @@ public:
                                     nsACString& aOutVersion) override;
   NS_IMETHOD GetNodeId(const nsAString& aOrigin,
                        const nsAString& aTopLevelOrigin,
+                       const nsAString& aGMPName,
                        bool aInPrivateBrowsingMode,
                        UniquePtr<GetNodeIdCallback>&& aCallback) override;
-  NS_IMETHOD UpdateTrialCreateState(const nsAString& aKeySystem,
-                                    uint32_t aState) override;
 
   NS_DECL_MOZIGECKOMEDIAPLUGINCHROMESERVICE
   NS_DECL_NSIOBSERVER
@@ -56,6 +57,13 @@ public:
 #ifdef MOZ_CRASHREPORTER
   void SetAsyncShutdownPluginState(GMPParent* aGMPParent, char aId, const nsCString& aState);
 #endif // MOZ_CRASHREPORTER
+  RefPtr<GenericPromise> EnsureInitialized();
+  RefPtr<GenericPromise> AsyncAddPluginDirectory(const nsAString& aDirectory);
+
+  // GMP thread access only
+  bool IsShuttingDown();
+
+  already_AddRefed<GMPStorage> GetMemoryStorageFor(const nsACString& aNodeId);
 
 private:
   friend class GMPServiceParent;
@@ -64,15 +72,17 @@ private:
 
   void ClearStorage();
 
-  GMPParent* SelectPluginForAPI(const nsACString& aNodeId,
-                                const nsCString& aAPI,
-                                const nsTArray<nsCString>& aTags);
-  GMPParent* FindPluginForAPIFrom(size_t aSearchStartIndex,
-                                  const nsCString& aAPI,
-                                  const nsTArray<nsCString>& aTags,
-                                  size_t* aOutPluginIndex);
+  already_AddRefed<GMPParent> SelectPluginForAPI(const nsACString& aNodeId,
+                                                 const nsCString& aAPI,
+                                                 const nsTArray<nsCString>& aTags);
+
+  already_AddRefed<GMPParent> FindPluginForAPIFrom(size_t aSearchStartIndex,
+                                                   const nsCString& aAPI,
+                                                   const nsTArray<nsCString>& aTags,
+                                                   size_t* aOutPluginIndex);
 
   nsresult GetNodeId(const nsAString& aOrigin, const nsAString& aTopLevelOrigin,
+                     const nsAString& aGMPName,
                      bool aInPrivateBrowsing, nsACString& aOutId);
 
   void UnloadPlugins();
@@ -80,10 +90,8 @@ private:
   void NotifySyncShutdownComplete();
   void NotifyAsyncShutdownComplete();
 
-  void LoadFromEnvironment();
   void ProcessPossiblePlugin(nsIFile* aDir);
 
-  void AddOnGMPThread(const nsAString& aDirectory);
   void RemoveOnGMPThread(const nsAString& aDirectory,
                          const bool aDeleteFromDisk,
                          const bool aCanDefer);
@@ -95,7 +103,8 @@ private:
     ~DirectoryFilter() {}
   };
   void ClearNodeIdAndPlugin(DirectoryFilter& aFilter);
-
+  void ClearNodeIdAndPlugin(nsIFile* aPluginStorageDir,
+                            DirectoryFilter& aFilter);
   void ForgetThisSiteOnGMPThread(const nsACString& aOrigin);
   void ClearRecentHistoryOnGMPThread(PRTime aSince);
 
@@ -103,22 +112,25 @@ protected:
   friend class GMPParent;
   void ReAddOnGMPThread(const RefPtr<GMPParent>& aOld);
   void PluginTerminated(const RefPtr<GMPParent>& aOld);
-  virtual void InitializePlugins() override;
-  virtual bool GetContentParentFrom(const nsACString& aNodeId,
-                                    const nsCString& aAPI,
-                                    const nsTArray<nsCString>& aTags,
-                                    UniquePtr<GetGMPContentParentCallback>&& aCallback)
+  void InitializePlugins() override;
+  RefPtr<GenericPromise::AllPromiseType> LoadFromEnvironment();
+  RefPtr<GenericPromise> AddOnGMPThread(nsString aDirectory);
+  bool GetContentParentFrom(const nsACString& aNodeId,
+                            const nsCString& aAPI,
+                            const nsTArray<nsCString>& aTags,
+                            UniquePtr<GetGMPContentParentCallback>&& aCallback)
     override;
 private:
-  GMPParent* ClonePlugin(const GMPParent* aOriginal);
+  // Creates a copy of aOriginal. Note that the caller is responsible for
+  // adding this to GeckoMediaPluginServiceParent::mPlugins.
+  already_AddRefed<GMPParent> ClonePlugin(const GMPParent* aOriginal);
   nsresult EnsurePluginsOnDiskScanned();
   nsresult InitStorage();
 
-  class PathRunnable : public nsRunnable
+  class PathRunnable : public Runnable
   {
   public:
     enum EOperation {
-      ADD,
       REMOVE,
       REMOVE_AND_DELETE_FROM_DISK,
     };
@@ -153,7 +165,7 @@ private:
     void Update(const nsCString& aPlugin, const nsCString& aInstance,
                 char aId, const nsCString& aState);
   private:
-    struct State { nsAutoCString mStateSequence; nsCString mLastStateDescription; };
+    struct State { nsCString mStateSequence; nsCString mLastStateDescription; };
     typedef nsClassHashtable<nsCStringHashKey, State> StatesByInstance;
     typedef nsClassHashtable<nsCStringHashKey, StatesByInstance> StateInstancesByPlugin;
     StateInstancesByPlugin mStates;
@@ -192,6 +204,15 @@ private:
   // Hashes node id to whether that node id is allowed to store data
   // persistently on disk.
   nsDataHashtable<nsCStringHashKey, bool> mPersistentStorageAllowed;
+
+  // Synchronization for barrier that ensures we've loaded GMPs from
+  // MOZ_GMP_PATH before allowing GetContentParentFrom() to proceed.
+  Monitor mInitPromiseMonitor;
+  MozPromiseHolder<GenericPromise> mInitPromise;
+  bool mLoadPluginsFromDiskComplete;
+
+  // Hashes nodeId to the hashtable of storage for that nodeId.
+  nsRefPtrHashtable<nsCStringHashKey, GMPStorage> mTempGMPStorage;
 };
 
 nsresult ReadSalt(nsIFile* aPath, nsACString& aOutData);
@@ -206,25 +227,24 @@ public:
   }
   virtual ~GMPServiceParent();
 
-  virtual bool RecvLoadGMP(const nsCString& aNodeId,
-                           const nsCString& aApi,
-                           nsTArray<nsCString>&& aTags,
-                           nsTArray<ProcessId>&& aAlreadyBridgedTo,
-                           base::ProcessId* aID,
-                           nsCString* aDisplayName,
-                           uint32_t* aPluginId) override;
-  virtual bool RecvGetGMPNodeId(const nsString& aOrigin,
-                                const nsString& aTopLevelOrigin,
-                                const bool& aInPrivateBrowsing,
-                                nsCString* aID) override;
+  bool RecvLoadGMP(const nsCString& aNodeId,
+                   const nsCString& aApi,
+                   nsTArray<nsCString>&& aTags,
+                   nsTArray<ProcessId>&& aAlreadyBridgedTo,
+                   base::ProcessId* aID,
+                   nsCString* aDisplayName,
+                   uint32_t* aPluginId,
+                   nsresult* aRv) override;
+  bool RecvGetGMPNodeId(const nsString& aOrigin,
+                        const nsString& aTopLevelOrigin,
+                        const nsString& aGMPName,
+                        const bool& aInPrivateBrowsing,
+                        nsCString* aID) override;
   static bool RecvGetGMPPluginVersionForAPI(const nsCString& aAPI,
                                             nsTArray<nsCString>&& aTags,
                                             bool* aHasPlugin,
                                             nsCString* aVersion);
-  virtual bool RecvUpdateGMPTrialCreateState(const nsString& aKeySystem,
-                                             const uint32_t& aState) override;
-
-  virtual void ActorDestroy(ActorDestroyReason aWhy) override;
+  void ActorDestroy(ActorDestroyReason aWhy) override;
 
   static PGMPServiceParent* Create(Transport* aTransport, ProcessId aOtherPid);
 

@@ -43,6 +43,9 @@ SPSProfiler::init()
     if (lock_ == nullptr)
         return false;
 
+    if (!strings.init())
+        return false;
+
     return true;
 }
 
@@ -61,8 +64,8 @@ SPSProfiler::setProfilingStack(ProfileEntry* stack, uint32_t* size, uint32_t max
 {
     AutoSPSLock lock(lock_);
     MOZ_ASSERT_IF(size_ && *size_ != 0, !enabled());
-    if (!strings.initialized())
-        strings.init();
+    MOZ_ASSERT(strings.initialized());
+
     stack_ = stack;
     size_  = size;
     max_   = max;
@@ -302,8 +305,8 @@ void
 SPSProfiler::pop()
 {
     MOZ_ASSERT(installed());
+    MOZ_ASSERT(*size_ > 0);
     (*size_)--;
-    MOZ_ASSERT(*(int*)size_ >= 0);
 }
 
 /*
@@ -346,21 +349,70 @@ SPSProfiler::allocProfileString(JSScript* script, JSFunction* maybeFun)
     // Construct the descriptive string.
     DebugOnly<size_t> ret;
     if (atom) {
-        JS::AutoCheckCannotGC nogc;
-        auto atomStr = mozilla::UniquePtr<char, JS::FreePolicy>(
-            atom->hasLatin1Chars()
-            ? JS::CharsToNewUTF8CharsZ(nullptr, atom->latin1Range(nogc)).c_str()
-            : JS::CharsToNewUTF8CharsZ(nullptr, atom->twoByteRange(nogc)).c_str());
-        if (!atomStr)
+        UniqueChars atomStr = StringToNewUTF8CharsZ(nullptr, *atom);
+        if (!atomStr) {
+            js_free(cstr);
             return nullptr;
-        ret = JS_snprintf(cstr, len + 1, "%s (%s:%llu)", atomStr.get(), filename, lineno);
+        }
+        ret = JS_snprintf(cstr, len + 1, "%s (%s:%" PRIu64 ")", atomStr.get(), filename, lineno);
     } else {
-        ret = JS_snprintf(cstr, len + 1, "%s:%llu", filename, lineno);
+        ret = JS_snprintf(cstr, len + 1, "%s:%" PRIu64, filename, lineno);
     }
 
     MOZ_ASSERT(ret == len, "Computed length should match actual length!");
 
     return cstr;
+}
+
+void
+SPSProfiler::trace(JSTracer* trc)
+{
+    if (stack_) {
+        size_t limit = Min(*size_, max_);
+        for (size_t i = 0; i < limit; i++)
+            stack_[i].trace(trc);
+    }
+}
+
+void
+SPSProfiler::fixupStringsMapAfterMovingGC()
+{
+    if (!strings.initialized())
+        return;
+
+    for (ProfileStringMap::Enum e(strings); !e.empty(); e.popFront()) {
+        JSScript* script = e.front().key();
+        if (IsForwarded(script)) {
+            script = Forwarded(script);
+            e.rekeyFront(script);
+        }
+    }
+}
+
+#ifdef JSGC_HASH_TABLE_CHECKS
+void
+SPSProfiler::checkStringsMapAfterMovingGC()
+{
+    if (!strings.initialized())
+        return;
+
+    for (auto r = strings.all(); !r.empty(); r.popFront()) {
+        JSScript* script = r.front().key();
+        CheckGCThingAfterMovingGC(script);
+        auto ptr = strings.lookup(script);
+        MOZ_RELEASE_ASSERT(ptr.found() && &*ptr == &r.front());
+    }
+}
+#endif
+
+void
+ProfileEntry::trace(JSTracer* trc)
+{
+    if (isJs()) {
+        JSScript* s = script();
+        TraceNullableRoot(trc, &s, "ProfileEntry script");
+        spOrScript = s;
+    }
 }
 
 SPSEntryMarker::SPSEntryMarker(JSRuntime* rt,

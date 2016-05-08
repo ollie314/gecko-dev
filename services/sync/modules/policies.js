@@ -14,6 +14,7 @@ Cu.import("resource://services-sync/constants.js");
 Cu.import("resource://services-sync/engines.js");
 Cu.import("resource://services-sync/util.js");
 Cu.import("resource://services-common/logmanager.js");
+Cu.import("resource://services-common/async.js");
 
 XPCOMUtils.defineLazyModuleGetter(this, "Status",
                                   "resource://services-sync/status.js");
@@ -239,7 +240,10 @@ SyncScheduler.prototype = {
          this.setDefaults();
          try {
            Svc.Idle.removeIdleObserver(this, Svc.Prefs.get("scheduler.idleTime"));
-         } catch (ex if (ex.result == Cr.NS_ERROR_FAILURE)) {
+         } catch (ex) {
+           if (ex.result != Cr.NS_ERROR_FAILURE) {
+             throw ex;
+           }
            // In all likelihood we didn't have an idle observer registered yet.
            // It's all good.
          }
@@ -272,10 +276,11 @@ SyncScheduler.prototype = {
       case "wake_notification":
         this._log.debug("Woke from sleep.");
         Utils.nextTick(() => {
-          // Trigger a sync if we have multiple clients.
+          // Trigger a sync if we have multiple clients. We give it 5 seconds
+          // incase the network is still in the process of coming back up.
           if (this.numClients > 1) {
-            this._log.debug("More than 1 client. Syncing.");
-            this.scheduleNextSync(0);
+            this._log.debug("More than 1 client. Will sync in 5s.");
+            this.scheduleNextSync(5000);
           }
         });
         break;
@@ -556,7 +561,9 @@ ErrorHandler.prototype = {
     root.level = Log.Level[Svc.Prefs.get("log.rootLogger")];
 
     let logs = ["Sync", "FirefoxAccounts", "Hawk", "Common.TokenServerClient",
-                "Sync.SyncMigration", "browserwindow.syncui"];
+                "Sync.SyncMigration", "browserwindow.syncui",
+                "Services.Common.RESTRequest", "Services.Common.RESTRequest",
+               ];
 
     this._logManager = new LogManager(Svc.Prefs, logs, "sync");
   },
@@ -573,18 +580,22 @@ ErrorHandler.prototype = {
           this._log.debug(data + " failed to apply some records.");
         }
         break;
-      case "weave:engine:sync:error":
+      case "weave:engine:sync:error": {
         let exception = subject;  // exception thrown by engine's sync() method
         let engine_name = data;   // engine name that threw the exception
 
-        this.checkServerError(exception, "engines/" + engine_name);
+        this.checkServerError(exception);
 
         Status.engines = [engine_name, exception.failureCode || ENGINE_UNKNOWN_FAIL];
-        this._log.debug(engine_name + " failed: " + Utils.exceptionStr(exception));
-
-        Services.telemetry.getKeyedHistogramById("WEAVE_ENGINE_SYNC_ERRORS")
-                          .add(engine_name);
+        if (Async.isShutdownException(exception)) {
+          this._log.debug(engine_name + " was interrupted due to the application shutting down");
+        } else {
+          this._log.debug(engine_name + " failed", exception);
+          Services.telemetry.getKeyedHistogramById("WEAVE_ENGINE_SYNC_ERRORS")
+                            .add(engine_name);
+        }
         break;
+      }
       case "weave:service:login:error":
         this._log.error("Sync encountered a login error");
         this.resetFileLog();
@@ -597,12 +608,22 @@ ErrorHandler.prototype = {
 
         this.dontIgnoreErrors = false;
         break;
-      case "weave:service:sync:error":
+      case "weave:service:sync:error": {
         if (Status.sync == CREDENTIALS_CHANGED) {
           this.service.logout();
         }
 
-        this._log.error("Sync encountered an error");
+        let exception = subject;
+        if (Async.isShutdownException(exception)) {
+          // If we are shutting down we just log the fact, attempt to flush
+          // the log file and get out of here!
+          this._log.error("Sync was interrupted due to the application shutting down");
+          this.resetFileLog();
+          break;
+        }
+
+        // Not a shutdown related exception...
+        this._log.error("Sync encountered an error", exception);
         this.resetFileLog();
 
         if (this.shouldReportError()) {
@@ -613,6 +634,7 @@ ErrorHandler.prototype = {
 
         this.dontIgnoreErrors = false;
         break;
+      }
       case "weave:service:sync:finish":
         this._log.trace("Status.service is " + Status.service);
 
@@ -830,7 +852,7 @@ ErrorHandler.prototype = {
    *
    * This method also looks for "side-channel" warnings.
    */
-  checkServerError: function (resp, cause) {
+  checkServerError: function (resp) {
     switch (resp.status) {
       case 200:
       case 404:
@@ -860,9 +882,6 @@ ErrorHandler.prototype = {
         break;
 
       case 401:
-        Services.telemetry.getKeyedHistogramById(
-          "WEAVE_STORAGE_AUTH_ERRORS").add(cause);
-
         this.service.logout();
         this._log.info("Got 401 response; resetting clusterURL.");
         Svc.Prefs.reset("clusterURL");

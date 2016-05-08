@@ -50,6 +50,8 @@ static const uint32_t PAYLOAD_INDEX = 1;
 # error "Unknown!"
 #endif
 
+static const uint32_t INT64_PIECES = sizeof(int64_t) / sizeof(uintptr_t);
+
 // Represents storage for an operand. For constants, the pointer is tagged
 // with a single bit, and the untagged pointer is a pointer to a Value.
 class LAllocation : public TempObject
@@ -69,7 +71,7 @@ class LAllocation : public TempObject
 
   public:
     enum Kind {
-        CONSTANT_VALUE, // Constant js::Value.
+        CONSTANT_VALUE, // MConstant*.
         CONSTANT_INDEX, // Constant arbitrary index.
         USE,            // Use of a virtual register, with physical allocation policy.
         GPR,            // General purpose register.
@@ -107,10 +109,10 @@ class LAllocation : public TempObject
         MOZ_ASSERT(isBogus());
     }
 
-    // The value pointer must be rooted in MIR and have its low bits cleared.
-    explicit LAllocation(const Value* vp) {
-        MOZ_ASSERT(vp);
-        bits_ = uintptr_t(vp);
+    // The MConstant pointer must have its low bits cleared.
+    explicit LAllocation(const MConstant* c) {
+        MOZ_ASSERT(c);
+        bits_ = uintptr_t(c);
         MOZ_ASSERT((bits_ & (KIND_MASK << KIND_SHIFT)) == 0);
         bits_ |= CONSTANT_VALUE << KIND_SHIFT;
     }
@@ -166,9 +168,9 @@ class LAllocation : public TempObject
     inline const LConstantIndex* toConstantIndex() const;
     inline AnyRegister toRegister() const;
 
-    const Value* toConstant() const {
+    const MConstant* toConstant() const {
         MOZ_ASSERT(isConstantValue());
-        return reinterpret_cast<const Value*>(bits_ & ~(KIND_MASK << KIND_SHIFT));
+        return reinterpret_cast<const MConstant*>(bits_ & ~(KIND_MASK << KIND_SHIFT));
     }
 
     bool operator ==(const LAllocation& other) const {
@@ -183,7 +185,7 @@ class LAllocation : public TempObject
         return bits_;
     }
 
-    const char* toString() const;
+    UniqueChars toString() const;
     bool aliases(const LAllocation& other) const;
     void dump() const;
 
@@ -290,6 +292,50 @@ class LUse : public LAllocation
 };
 
 static const uint32_t MAX_VIRTUAL_REGISTERS = LUse::VREG_MASK;
+
+class LBoxAllocation
+{
+#ifdef JS_NUNBOX32
+    LAllocation type_;
+    LAllocation payload_;
+#else
+    LAllocation value_;
+#endif
+
+  public:
+#ifdef JS_NUNBOX32
+    LBoxAllocation(LAllocation type, LAllocation payload) : type_(type), payload_(payload) {}
+
+    LAllocation type() const { return type_; }
+    LAllocation payload() const { return payload_; }
+#else
+    explicit LBoxAllocation(LAllocation value) : value_(value) {}
+
+    LAllocation value() const { return value_; }
+#endif
+};
+
+class LInt64Allocation
+{
+#if JS_BITS_PER_WORD == 32
+    LAllocation high_;
+    LAllocation low_;
+#else
+    LAllocation value_;
+#endif
+
+  public:
+#if JS_BITS_PER_WORD == 32
+    LInt64Allocation(LAllocation high, LAllocation low) : high_(high), low_(low) {}
+
+    LAllocation high() const { return high_; }
+    LAllocation low() const { return low_; }
+#else
+    explicit LInt64Allocation(LAllocation value) : value_(value) {}
+
+    LAllocation value() const { return value_; }
+#endif
+};
 
 class LGeneralReg : public LAllocation
 {
@@ -484,10 +530,8 @@ class LDefinition
                 return r.fpu().isSingle();
             if (type() == DOUBLE)
                 return r.fpu().isDouble();
-            if (type() == INT32X4)
-                return r.fpu().isInt32x4();
-            if (type() == FLOAT32X4)
-                return r.fpu().isFloat32x4();
+            if (isSimdType())
+                return r.fpu().isSimd128();
             MOZ_CRASH("Unexpected MDefinition type");
         }
         return !isFloatReg() && !r.isFloat();
@@ -544,42 +588,46 @@ class LDefinition
 
     static inline Type TypeFrom(MIRType type) {
         switch (type) {
-          case MIRType_Boolean:
-          case MIRType_Int32:
+          case MIRType::Boolean:
+          case MIRType::Int32:
             // The stack slot allocator doesn't currently support allocating
-            // 1-byte slots, so for now we lower MIRType_Boolean into INT32.
+            // 1-byte slots, so for now we lower MIRType::Boolean into INT32.
             static_assert(sizeof(bool) <= sizeof(int32_t), "bool doesn't fit in an int32 slot");
             return LDefinition::INT32;
-          case MIRType_String:
-          case MIRType_Symbol:
-          case MIRType_Object:
-          case MIRType_ObjectOrNull:
+          case MIRType::String:
+          case MIRType::Symbol:
+          case MIRType::Object:
+          case MIRType::ObjectOrNull:
             return LDefinition::OBJECT;
-          case MIRType_Double:
+          case MIRType::Double:
             return LDefinition::DOUBLE;
-          case MIRType_Float32:
+          case MIRType::Float32:
             return LDefinition::FLOAT32;
 #if defined(JS_PUNBOX64)
-          case MIRType_Value:
+          case MIRType::Value:
             return LDefinition::BOX;
 #endif
-          case MIRType_SinCosDouble:
+          case MIRType::SinCosDouble:
             return LDefinition::SINCOS;
-          case MIRType_Slots:
-          case MIRType_Elements:
+          case MIRType::Slots:
+          case MIRType::Elements:
             return LDefinition::SLOTS;
-          case MIRType_Pointer:
+          case MIRType::Pointer:
+#if JS_BITS_PER_WORD == 64
+          case MIRType::Int64:
+#endif
             return LDefinition::GENERAL;
-          case MIRType_Int32x4:
+          case MIRType::Bool32x4:
+          case MIRType::Int32x4:
             return LDefinition::INT32X4;
-          case MIRType_Float32x4:
+          case MIRType::Float32x4:
             return LDefinition::FLOAT32X4;
           default:
             MOZ_CRASH("unexpected type");
         }
     }
 
-    const char* toString() const;
+    UniqueChars toString() const;
 
     void dump() const;
 };
@@ -1051,6 +1099,22 @@ class LInstructionHelper : public details::LInstructionFixedDefsTempsHelper<Defs
     void setOperand(size_t index, const LAllocation& a) final override {
         operands_[index] = a;
     }
+    void setBoxOperand(size_t index, const LBoxAllocation& alloc) {
+#ifdef JS_NUNBOX32
+        operands_[index] = alloc.type();
+        operands_[index + 1] = alloc.payload();
+#else
+        operands_[index] = alloc.value();
+#endif
+    }
+    void setInt64Operand(size_t index, const LInt64Allocation& alloc) {
+#if JS_BITS_PER_WORD == 32
+        operands_[index] = alloc.low();
+        operands_[index + 1] = alloc.high();
+#else
+        operands_[index] = alloc.value();
+#endif
+    }
 };
 
 template<size_t Defs, size_t Temps>
@@ -1247,9 +1311,6 @@ class LSnapshot : public TempObject
     }
     BailoutKind bailoutKind() const {
         return bailoutKind_;
-    }
-    void setBailoutKind(BailoutKind kind) {
-        bailoutKind_ = kind;
     }
     void rewriteRecoveredInput(LUse input);
 };
@@ -1769,8 +1830,6 @@ class LIRGraph
     }
     void setEntrySnapshot(LSnapshot* snapshot) {
         MOZ_ASSERT(!entrySnapshot_);
-        MOZ_ASSERT(snapshot->bailoutKind() == Bailout_InitialState);
-        snapshot->setBailoutKind(Bailout_ArgumentCheck);
         entrySnapshot_ = snapshot;
     }
     LSnapshot* entrySnapshot() const {
@@ -1827,9 +1886,11 @@ LAllocation::toRegister() const
 # include "jit/arm/LIR-arm.h"
 #elif defined(JS_CODEGEN_ARM64)
 # include "jit/arm64/LIR-arm64.h"
-#elif defined(JS_CODEGEN_MIPS32)
+#elif defined(JS_CODEGEN_MIPS32) || defined(JS_CODEGEN_MIPS64)
 # if defined(JS_CODEGEN_MIPS32)
 #  include "jit/mips32/LIR-mips32.h"
+# elif defined(JS_CODEGEN_MIPS64)
+#  include "jit/mips64/LIR-mips64.h"
 # endif
 # include "jit/mips-shared/LIR-mips-shared.h"
 #elif defined(JS_CODEGEN_NONE)

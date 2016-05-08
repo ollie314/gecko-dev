@@ -30,6 +30,7 @@ XPIDL_SOURCES += [
     'nsICaptivePortalService.idl',
     'nsIChannel.idl',
     'nsIChannelEventSink.idl',
+    'nsIChannelWithDivertableParentListener.idl',
     'nsIChildChannel.idl',
     'nsIClassOfService.idl',
     'nsIContentSniffer.idl',
@@ -46,8 +47,10 @@ XPIDL_SOURCES += [
     'nsIFileStreams.idl',
     'nsIFileURL.idl',
     'nsIForcePendingChannel.idl',
+    'nsIFormPOSTActionChannel.idl',
     'nsIHttpPushListener.idl',
     'nsIIncrementalDownload.idl',
+    'nsIIncrementalStreamLoader.idl',
     'nsIInputStreamChannel.idl',
     'nsIInputStreamPump.idl',
     'nsIIOService.idl',
@@ -69,7 +72,6 @@ XPIDL_SOURCES += [
     'nsINSSErrorsService.idl',
     'nsINullChannel.idl',
     'nsIPACGenerator.idl',
-    'nsIPackagedAppChannelListener.idl',
     'nsIPackagedAppService.idl',
     'nsIPackagedAppUtils.idl',
     'nsIPackagedAppVerifier.idl',
@@ -92,11 +94,11 @@ XPIDL_SOURCES += [
     'nsIRedirectChannelRegistrar.idl',
     'nsIRedirectResultListener.idl',
     'nsIRequest.idl',
+    'nsIRequestContext.idl',
     'nsIRequestObserver.idl',
     'nsIRequestObserverProxy.idl',
     'nsIResponseHeadProvider.idl',
     'nsIResumableChannel.idl',
-    'nsISchedulingContext.idl',
     'nsISecCheckWrapChannel.idl',
     'nsISecretDecoderRing.idl',
     'nsISecureBrowserUI.idl',
@@ -106,6 +108,7 @@ XPIDL_SOURCES += [
     'nsISerializationHelper.idl',
     'nsIServerSocket.idl',
     'nsISimpleStreamListener.idl',
+    'nsISocketFilter.idl',
     'nsISocketTransport.idl',
     'nsISocketTransportService.idl',
     'nsISpeculativeConnect.idl',
@@ -125,12 +128,10 @@ XPIDL_SOURCES += [
     'nsITraceableChannel.idl',
     'nsITransport.idl',
     'nsIUDPSocket.idl',
-    'nsIUDPSocketFilter.idl',
     'nsIUnicharStreamLoader.idl',
     'nsIUploadChannel.idl',
     'nsIUploadChannel2.idl',
     'nsIURI.idl',
-    'nsIURIChecker.idl',
     'nsIURIClassifier.idl',
     'nsIURIWithPrincipal.idl',
     'nsIURL.idl',
@@ -154,7 +155,7 @@ EXPORTS += [
     'nsInputStreamPump.h',
     'nsMIMEInputStream.h',
     'nsNetUtil.h',
-    'nsNetUtil.inl',
+    'nsNetUtilInlines.h',
     'nsReadLine.h',
     'nsSerializationHelper.h',
     'nsSimpleNestedURI.h',
@@ -167,6 +168,7 @@ EXPORTS += [
 ]
 
 EXPORTS.mozilla += [
+    'LoadContextInfo.h',
     'LoadInfo.h',
     'LoadTainting.h',
 ]
@@ -179,6 +181,7 @@ EXPORTS.mozilla.net += [
     'DashboardTypes.h',
     'MemoryDownloader.h',
     'OfflineObserver.h',
+    'Predictor.h',
     'ReferrerPolicy.h',
 ]
 
@@ -193,7 +196,6 @@ UNIFIED_SOURCES += [
     'CaptivePortalService.cpp',
     'ChannelDiverterChild.cpp',
     'ChannelDiverterParent.cpp',
-    'ClosingService.cpp',
     'Dashboard.cpp',
     'EventTokenBucket.cpp',
     'LoadContextInfo.cpp',
@@ -213,6 +215,7 @@ UNIFIED_SOURCES += [
     'nsDownloader.cpp',
     'nsFileStreams.cpp',
     'nsIncrementalDownload.cpp',
+    'nsIncrementalStreamLoader.cpp',
     'nsInputStreamChannel.cpp',
     'nsInputStreamPump.cpp',
     'nsIOService.cpp',
@@ -244,14 +247,15 @@ UNIFIED_SOURCES += [
     'nsTransportUtils.cpp',
     'nsUDPSocket.cpp',
     'nsUnicharStreamLoader.cpp',
-    'nsURIChecker.cpp',
     'nsURLHelper.cpp',
     'nsURLParsers.cpp',
     'OfflineObserver.cpp',
+    'PollableEvent.cpp',
     'Predictor.cpp',
     'ProxyAutoConfig.cpp',
     'RedirectChannelRegistrar.cpp',
-    'SchedulingContextService.cpp',
+    'RequestContextService.cpp',
+    'SimpleBuffer.cpp',
     'StreamingProtocolService.cpp',
     'Tickler.cpp',
     'TLSServerSocket.cpp',
@@ -262,6 +266,7 @@ if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'windows':
         'nsAutodialWin.cpp',
         'nsNativeConnectionHelper.cpp',
         'nsURLHelperWin.cpp',
+        'ShutdownLayer.cpp',
     ]
 elif CONFIG['MOZ_WIDGET_TOOLKIT'] == 'cocoa':
     SOURCES += [
@@ -291,6 +296,7 @@ include('/ipc/chromium/chromium-config.mozbuild')
 FINAL_LIBRARY = 'xul'
 
 LOCAL_INCLUDES += [
+    '/docshell/base',
     '/dom/base',
     '/netwerk/protocol/http'
 ]
@@ -305,9 +311,6 @@ if CONFIG['MOZ_ENABLE_QTNETWORK']:
     LOCAL_INCLUDES += [
         '/netwerk/system/qt',
     ]
-
-if CONFIG['ENABLE_TESTS']:
-    DEFINES['PREDICTOR_TESTS'] = True
 
 if CONFIG['MOZ_ENABLE_QTNETWORK']:
     CXXFLAGS += CONFIG['MOZ_QT_CFLAGS']

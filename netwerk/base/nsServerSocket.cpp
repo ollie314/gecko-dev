@@ -30,10 +30,7 @@ typedef void (nsServerSocket:: *nsServerSocketFunc)(void);
 static nsresult
 PostEvent(nsServerSocket *s, nsServerSocketFunc func)
 {
-  nsCOMPtr<nsIRunnable> ev = NS_NewRunnableMethod(s, func);
-  if (!ev)
-    return NS_ERROR_OUT_OF_MEMORY;
-
+  nsCOMPtr<nsIRunnable> ev = NewRunnableMethod(s, func);
   if (!gSocketTransportService)
     return NS_ERROR_FAILURE;
 
@@ -129,7 +126,7 @@ nsServerSocket::TryAttach()
   if (!gSocketTransportService->CanAttachSocket())
   {
     nsCOMPtr<nsIRunnable> event =
-      NS_NewRunnableMethod(this, &nsServerSocket::OnMsgAttach);
+      NewRunnableMethod(this, &nsServerSocket::OnMsgAttach);
     if (!event)
       return NS_ERROR_OUT_OF_MEMORY;
 
@@ -233,15 +230,17 @@ nsServerSocket::OnSocketDetached(PRFileDesc *fd)
     mListener->OnStopListening(this, mCondition);
 
     // need to atomically clear mListener.  see our Close() method.
-    nsIServerSocketListener *listener = nullptr;
+    RefPtr<nsIServerSocketListener> listener = nullptr;
     {
       MutexAutoLock lock(mLock);
-      mListener.swap(listener);
+      listener = mListener.forget();
     }
+
     // XXX we need to proxy the release to the listener's target thread to work
     // around bug 337492.
-    if (listener)
-      NS_ProxyRelease(mListenerTarget, listener);
+    if (listener) {
+      NS_ProxyRelease(mListenerTarget, listener.forget());
+    }
   }
 }
 
@@ -433,7 +432,7 @@ public:
   NS_DECL_THREADSAFE_ISUPPORTS
   NS_DECL_NSISERVERSOCKETLISTENER
 
-  class OnSocketAcceptedRunnable : public nsRunnable
+  class OnSocketAcceptedRunnable : public Runnable
   {
   public:
     OnSocketAcceptedRunnable(const nsMainThreadPtrHandle<nsIServerSocketListener>& aListener,
@@ -452,7 +451,7 @@ public:
     nsCOMPtr<nsISocketTransport> mTransport;
   };
 
-  class OnStopListeningRunnable : public nsRunnable
+  class OnStopListeningRunnable : public Runnable
   {
   public:
     OnStopListeningRunnable(const nsMainThreadPtrHandle<nsIServerSocketListener>& aListener,

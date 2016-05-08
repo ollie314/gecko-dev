@@ -54,6 +54,8 @@ public:
 
   virtual void ConfigurationChanged(const TrackInfo& aConfig) {}
 
+  virtual const char* GetDescriptionName() const = 0;
+
 protected:
   // IMFTransform wrapper that performs the decoding.
   RefPtr<MFTDecoder> mDecoder;
@@ -84,6 +86,11 @@ public:
   bool IsHardwareAccelerated(nsACString& aFailureReason) const override;
 
   nsresult ConfigurationChanged(const TrackInfo& aConfig) override;
+
+  const char* GetDescriptionName() const override
+  {
+    return mMFTManager ? mMFTManager->GetDescriptionName() : "";
+  }
 
 private:
 
@@ -118,12 +125,10 @@ private:
   // This is used to approximate the decoder's position in the media resource.
   int64_t mLastStreamOffset;
 
-  // For access to and waiting on mIsFlushing
-  Monitor mMonitor;
   // Set on reader/decode thread calling Flush() to indicate that output is
   // not required and so input samples on mTaskQueue need not be processed.
   // Cleared on mTaskQueue.
-  bool mIsFlushing;
+  Atomic<bool> mIsFlushing;
 
   bool mIsShutDown;
 

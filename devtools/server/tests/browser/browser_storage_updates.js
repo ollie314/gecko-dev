@@ -4,7 +4,7 @@
 
 "use strict";
 
-const {StorageFront} = require("devtools/server/actors/storage");
+const {StorageFront} = require("devtools/client/fronts/storage");
 const beforeReload = {
   cookies: ["test1.example.org", "sectest1.example.org"],
   localStorage: ["http://test1.example.org", "http://sectest1.example.org"],
@@ -282,7 +282,8 @@ function* finishTests(client) {
 }
 
 add_task(function*() {
-  let doc = yield addTab(MAIN_DOMAIN + "storage-updates.html");
+  let browser = yield addTab(MAIN_DOMAIN + "storage-updates.html");
+  let doc = browser.contentDocument;
 
   initDebuggerServer();
 

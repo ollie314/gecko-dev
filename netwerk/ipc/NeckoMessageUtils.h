@@ -96,10 +96,9 @@ struct ParamTraits<mozilla::net::NetAddr>
                       "https://bugzilla.mozilla.org/show_bug.cgi?id=661158");
       aMsg->WriteBytes(aParam.local.path, sizeof(aParam.local.path));
 #endif
+    } else {
+      NS_RUNTIMEABORT("Unknown socket family");
     }
-
-    /* If we get here without hitting any of the cases above, there's not much
-     * we can do but let the deserializer fail when it gets this message */
   }
 
   static bool Read(const Message* aMsg, void** aIter, mozilla::net::NetAddr* aResult)
@@ -108,9 +107,12 @@ struct ParamTraits<mozilla::net::NetAddr>
       return false;
 
     if (aResult->raw.family == AF_UNSPEC) {
-      return aMsg->ReadBytes(aIter,
-                             reinterpret_cast<const char**>(&aResult->raw.data),
-                             sizeof(aResult->raw.data));
+      const char *tmp;
+      if (aMsg->ReadBytes(aIter, &tmp, sizeof(aResult->raw.data))) {
+        memcpy(&(aResult->raw.data), tmp, sizeof(aResult->raw.data));
+        return true;
+      }
+      return false;
     } else if (aResult->raw.family == AF_INET) {
       return ReadParam(aMsg, aIter, &aResult->inet.port) &&
              ReadParam(aMsg, aIter, &aResult->inet.ip);
@@ -122,9 +124,12 @@ struct ParamTraits<mozilla::net::NetAddr>
              ReadParam(aMsg, aIter, &aResult->inet6.scope_id);
 #if defined(XP_UNIX)
     } else if (aResult->raw.family == AF_LOCAL) {
-      return aMsg->ReadBytes(aIter,
-                             reinterpret_cast<const char**>(&aResult->local.path),
-                             sizeof(aResult->local.path));
+      const char *tmp;
+      if (aMsg->ReadBytes(aIter, &tmp, sizeof(aResult->local.path))) {
+        memcpy(&(aResult->local.path), tmp, sizeof(aResult->local.path));
+        return true;
+      }
+      return false;
 #endif
     }
 
@@ -149,6 +154,13 @@ struct ParamTraits<mozilla::net::ResourceTimingStruct>
     WriteParam(aMsg, aParam.fetchStart);
     WriteParam(aMsg, aParam.redirectStart);
     WriteParam(aMsg, aParam.redirectEnd);
+
+    WriteParam(aMsg, aParam.transferSize);
+    WriteParam(aMsg, aParam.encodedBodySize);
+    WriteParam(aMsg, aParam.protocolVersion);
+
+    WriteParam(aMsg, aParam.cacheReadStart);
+    WriteParam(aMsg, aParam.cacheReadEnd);
   }
 
   static bool Read(const Message* aMsg, void** aIter, mozilla::net::ResourceTimingStruct* aResult)
@@ -162,7 +174,12 @@ struct ParamTraits<mozilla::net::ResourceTimingStruct>
            ReadParam(aMsg, aIter, &aResult->responseEnd) &&
            ReadParam(aMsg, aIter, &aResult->fetchStart) &&
            ReadParam(aMsg, aIter, &aResult->redirectStart) &&
-           ReadParam(aMsg, aIter, &aResult->redirectEnd);
+           ReadParam(aMsg, aIter, &aResult->redirectEnd) &&
+           ReadParam(aMsg, aIter, &aResult->transferSize) &&
+           ReadParam(aMsg, aIter, &aResult->encodedBodySize) &&
+           ReadParam(aMsg, aIter, &aResult->protocolVersion) &&
+           ReadParam(aMsg, aIter, &aResult->cacheReadStart) &&
+           ReadParam(aMsg, aIter, &aResult->cacheReadEnd);
   }
 };
 

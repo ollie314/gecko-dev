@@ -3,21 +3,12 @@
 
 package org.mozilla.android.sync.test;
 
-import static org.junit.Assert.assertArrayEquals;
-import static org.junit.Assert.assertEquals;
-import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
-
-import java.io.IOException;
-import java.io.UnsupportedEncodingException;
-import java.util.Arrays;
-
 import org.json.simple.JSONArray;
 import org.json.simple.JSONObject;
-import org.json.simple.parser.ParseException;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.mozilla.apache.commons.codec.binary.Base64;
+import org.mozilla.gecko.background.testhelpers.TestRunner;
 import org.mozilla.gecko.sync.CryptoRecord;
 import org.mozilla.gecko.sync.ExtendedJSONObject;
 import org.mozilla.gecko.sync.NonObjectJSONException;
@@ -27,16 +18,30 @@ import org.mozilla.gecko.sync.crypto.KeyBundle;
 import org.mozilla.gecko.sync.repositories.domain.ClientRecord;
 import org.mozilla.gecko.sync.repositories.domain.HistoryRecord;
 import org.mozilla.gecko.sync.repositories.domain.Record;
-import org.robolectric.RobolectricGradleTestRunner;
 
-@RunWith(RobolectricGradleTestRunner.class)
+import java.io.IOException;
+import java.io.UnsupportedEncodingException;
+import java.util.Arrays;
+
+import static org.junit.Assert.assertArrayEquals;
+import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
+
+@RunWith(TestRunner.class)
 public class TestCryptoRecord {
   String base64EncryptionKey = "9K/wLdXdw+nrTtXo4ZpECyHFNr4d7aYHqeg3KW9+m6Q=";
   String base64HmacKey = "MMntEfutgLTc8FlTLQFms8/xMPmCldqPlq/QQXEjx70=";
 
   @Test
-  public void testBaseCryptoRecordEncrypt() throws IOException, ParseException, NonObjectJSONException, CryptoException {
-    ExtendedJSONObject clearPayload = ExtendedJSONObject.parseJSONObject("{\"id\":\"5qRsgXWRJZXr\",\"title\":\"Index of file:///Users/jason/Library/Application Support/Firefox/Profiles/ksgd7wpk.LocalSyncServer/weave/logs/\",\"histUri\":\"file:///Users/jason/Library/Application%20Support/Firefox/Profiles/ksgd7wpk.LocalSyncServer/weave/logs/\",\"visits\":[{\"type\":1,\"date\":1319149012372425}]}");
+  public void testBaseCryptoRecordEncrypt() throws IOException, NonObjectJSONException, CryptoException {
+
+    ExtendedJSONObject clearPayload = new ExtendedJSONObject("{\"id\":\"5qRsgXWRJZXr\"," +
+            "\"title\":\"Index of file:///Users/jason/Library/Application " +
+            "Support/Firefox/Profiles/ksgd7wpk.LocalSyncServer/weave/logs/\"," +
+            "\"histUri\":\"file:///Users/jason/Library/Application%20Support/Firefox/Profiles" +
+            "/ksgd7wpk.LocalSyncServer/weave/logs/\",\"visits\":[{\"type\":1," +
+            "\"date\":1319149012372425}]}");
 
     CryptoRecord record = new CryptoRecord();
     record.payload = clearPayload;
@@ -256,7 +261,7 @@ public class TestCryptoRecord {
     assertEquals(expectedJson.get("collections"), decrypted.payload.get("collections"));
 
     // Check that the extracted keys were as expected.
-    JSONArray keys = ExtendedJSONObject.parseJSONObject(decrypted.payload.toJSONString()).getArray("default");
+    JSONArray keys = new ExtendedJSONObject(decrypted.payload.toJSONString()).getArray("default");
     KeyBundle keyBundle = KeyBundle.fromBase64EncodedKeys((String)keys.get(0), (String)keys.get(1));
 
     assertArrayEquals(Base64.decodeBase64(expectedBase64EncryptionKey.getBytes("UTF-8")), keyBundle.getEncryptionKey());

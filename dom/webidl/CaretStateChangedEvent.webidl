@@ -10,7 +10,8 @@ enum CaretChangedReason {
   "longpressonemptycontent",
   "taponcaret",
   "presscaret",
-  "releasecaret"
+  "releasecaret",
+  "scroll"
 };
 
 dictionary CaretStateChangedEventInit : EventInit {
@@ -18,6 +19,7 @@ dictionary CaretStateChangedEventInit : EventInit {
   DOMRectReadOnly? boundingClientRect = null;
   CaretChangedReason reason = "visibilitychange";
   boolean caretVisible = false;
+  boolean caretVisuallyVisible = false;
   boolean selectionVisible = false;
   boolean selectionEditable = false;
   DOMString selectedTextContent = "";
@@ -30,6 +32,7 @@ interface CaretStateChangedEvent : Event {
   readonly attribute DOMRectReadOnly? boundingClientRect;
   readonly attribute CaretChangedReason reason;
   readonly attribute boolean caretVisible;
+  readonly attribute boolean caretVisuallyVisible;
   readonly attribute boolean selectionVisible;
   readonly attribute boolean selectionEditable;
   readonly attribute DOMString selectedTextContent;

@@ -9,6 +9,8 @@
 #include "Units.h"                      // for ScreenPoint
 #include "mozilla/Assertions.h"         // for MOZ_ASSERT, etc
 #include "mozilla/RefPtr.h"             // for already_AddRefed, RefCounted
+#include "mozilla/gfx/2D.h"             // for DrawTarget
+#include "mozilla/gfx/MatrixFwd.h"      // for Matrix4x4
 #include "mozilla/gfx/Point.h"          // for IntSize, Point
 #include "mozilla/gfx/Rect.h"           // for Rect, IntRect
 #include "mozilla/gfx/Types.h"          // for Float
@@ -19,6 +21,7 @@
 #include "nsRegion.h"
 #include <vector>
 #include "mozilla/WidgetUtils.h"
+#include "CompositorWidgetProxy.h"
 
 /**
  * Different elements of a web pages are rendered into separate "layers" before
@@ -106,13 +109,12 @@
  */
 
 class nsIWidget;
-class nsIntRegion;
 
 namespace mozilla {
 namespace gfx {
 class Matrix;
-class Matrix4x4;
 class DrawTarget;
+class DataSourceSurface;
 } // namespace gfx
 
 namespace layers {
@@ -120,12 +122,17 @@ namespace layers {
 struct Effect;
 struct EffectChain;
 class Image;
+class ImageHostOverlay;
 class Layer;
 class TextureSource;
 class DataTextureSource;
 class CompositingRenderTarget;
-class PCompositorParent;
+class CompositorBridgeParent;
 class LayerManagerComposite;
+class CompositorOGL;
+class CompositorD3D9;
+class CompositorD3D11;
+class BasicCompositor;
 
 enum SurfaceInitMode
 {
@@ -183,17 +190,25 @@ protected:
 public:
   NS_INLINE_DECL_REFCOUNTING(Compositor)
 
-  explicit Compositor(PCompositorParent* aParent = nullptr)
+  explicit Compositor(widget::CompositorWidgetProxy* aWidget,
+                      CompositorBridgeParent* aParent = nullptr)
     : mCompositorID(0)
     , mDiagnosticTypes(DiagnosticTypes::NO_DIAGNOSTIC)
     , mParent(aParent)
     , mScreenRotation(ROTATION_0)
+    , mWidget(aWidget)
   {
   }
 
   virtual already_AddRefed<DataTextureSource> CreateDataTextureSource(TextureFlags aFlags = TextureFlags::NO_FLAGS) = 0;
+
+  virtual already_AddRefed<DataTextureSource>
+  CreateDataTextureSourceAround(gfx::DataSourceSurface* aSurface) { return nullptr; }
+
   virtual bool Initialize() = 0;
   virtual void Destroy() = 0;
+
+  virtual void DetachWidget() { mWidget = nullptr; }
 
   /**
    * Return true if the effect type is supported.
@@ -358,10 +373,14 @@ public:
    * If aRenderBoundsOut is non-null, it will be set to the render bounds
    * actually used by the compositor in window space. If aRenderBoundsOut
    * is returned empty, composition should be aborted.
+   *
+   * If aOpaque is true, then all of aInvalidRegion will be drawn to with
+   * opaque content.
    */
   virtual void BeginFrame(const nsIntRegion& aInvalidRegion,
                           const gfx::Rect* aClipRectIn,
                           const gfx::Rect& aRenderBounds,
+                          const nsIntRegion& aOpaqueRegion,
                           gfx::Rect* aClipRectOut = nullptr,
                           gfx::Rect* aRenderBoundsOut = nullptr) = 0;
 
@@ -370,7 +389,7 @@ public:
    */
   virtual void EndFrame() = 0;
 
-  virtual void SetDispAcquireFence(Layer* aLayer, nsIWidget* aWidget);
+  virtual void SetDispAcquireFence(Layer* aLayer);
 
   virtual FenceHandle GetReleaseFence();
 
@@ -414,6 +433,11 @@ public:
 
   virtual LayersBackend GetBackendType() const = 0;
 
+  virtual CompositorOGL* AsCompositorOGL() { return nullptr; }
+  virtual CompositorD3D9* AsCompositorD3D9() { return nullptr; }
+  virtual CompositorD3D11* AsCompositorD3D11() { return nullptr; }
+  virtual BasicCompositor* AsBasicCompositor() { return nullptr; }
+
   /**
    * Each Compositor has a unique ID.
    * This ID is used to keep references to each Compositor in a map accessed
@@ -450,9 +474,15 @@ public:
    */
   virtual bool Ready() { return true; }
 
-  // XXX I expect we will want to move mWidget into this class and implement
-  // these methods properly.
-  virtual nsIWidget* GetWidget() const { return nullptr; }
+  virtual void ForcePresent() { }
+
+  widget::CompositorWidgetProxy* GetWidget() const { return mWidget; }
+
+  virtual bool HasImageHostOverlays() { return false; }
+
+  virtual void AddImageHostOverlay(ImageHostOverlay* aOverlay) {}
+
+  virtual void RemoveImageHostOverlay(ImageHostOverlay* aOverlay) {}
 
   /**
    * Debug-build assertion that can be called to ensure code is running on the
@@ -499,6 +529,14 @@ public:
     return mCompositeUntilTime;
   }
 
+  // A stale Compositor has no CompositorBridgeParent; it will not process
+  // frames and should not be used.
+  void SetInvalid();
+  bool IsValid() const;
+  CompositorBridgeParent* GetCompositorBridgeParent() const {
+    return mParent;
+  }
+
 protected:
   void DrawDiagnosticsInternal(DiagnosticFlags aFlags,
                                const gfx::Rect& aVisibleRect,
@@ -507,6 +545,21 @@ protected:
                                uint32_t aFlashCounter);
 
   bool ShouldDrawDiagnostics(DiagnosticFlags);
+
+  /**
+   * Given a layer rect, clip, and transform, compute the area of the backdrop that
+   * needs to be copied for mix-blending. The output transform translates from 0..1
+   * space into the backdrop rect space.
+   *
+   * The transformed layer quad is also optionally returned - this is the same as
+   * the result rect, before rounding.
+   */
+  gfx::IntRect ComputeBackdropCopyRect(
+    const gfx::Rect& aRect,
+    const gfx::Rect& aClipRect,
+    const gfx::Matrix4x4& aTransform,
+    gfx::Matrix4x4* aOutTransform,
+    gfx::Rect* aOutLayerQuad = nullptr);
 
   /**
    * Render time for the current composition.
@@ -521,7 +574,7 @@ protected:
 
   uint32_t mCompositorID;
   DiagnosticTypes mDiagnosticTypes;
-  PCompositorParent* mParent;
+  CompositorBridgeParent* mParent;
 
   /**
    * We keep track of the total number of pixels filled as we composite the
@@ -533,10 +586,10 @@ protected:
 
   ScreenRotation mScreenRotation;
 
-  virtual gfx::IntSize GetWidgetSize() const = 0;
-
   RefPtr<gfx::DrawTarget> mTarget;
   gfx::IntRect mTargetBounds;
+
+  widget::CompositorWidgetProxy* mWidget;
 
 #if defined(MOZ_WIDGET_GONK) && ANDROID_VERSION >= 17
   FenceHandle mReleaseFenceHandle;
@@ -553,6 +606,31 @@ size_t DecomposeIntoNoRepeatRects(const gfx::Rect& aRect,
                                   const gfx::Rect& aTexCoordRect,
                                   decomposedRectArrayT* aLayerRects,
                                   decomposedRectArrayT* aTextureRects);
+
+static inline bool
+BlendOpIsMixBlendMode(gfx::CompositionOp aOp)
+{
+  switch (aOp) {
+  case gfx::CompositionOp::OP_MULTIPLY:
+  case gfx::CompositionOp::OP_SCREEN:
+  case gfx::CompositionOp::OP_OVERLAY:
+  case gfx::CompositionOp::OP_DARKEN:
+  case gfx::CompositionOp::OP_LIGHTEN:
+  case gfx::CompositionOp::OP_COLOR_DODGE:
+  case gfx::CompositionOp::OP_COLOR_BURN:
+  case gfx::CompositionOp::OP_HARD_LIGHT:
+  case gfx::CompositionOp::OP_SOFT_LIGHT:
+  case gfx::CompositionOp::OP_DIFFERENCE:
+  case gfx::CompositionOp::OP_EXCLUSION:
+  case gfx::CompositionOp::OP_HUE:
+  case gfx::CompositionOp::OP_SATURATION:
+  case gfx::CompositionOp::OP_COLOR:
+  case gfx::CompositionOp::OP_LUMINOSITY:
+    return true;
+  default:
+    return false;
+  }
+}
 
 } // namespace layers
 } // namespace mozilla

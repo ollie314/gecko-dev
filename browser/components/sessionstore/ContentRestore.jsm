@@ -8,7 +8,6 @@ this.EXPORTED_SYMBOLS = ["ContentRestore"];
 
 const Cu = Components.utils;
 const Ci = Components.interfaces;
-const Cr = Components.results;
 
 Cu.import("resource://gre/modules/XPCOMUtils.jsm", this);
 
@@ -139,7 +138,7 @@ ContentRestoreInternal.prototype = {
     // Add a listener to watch for reloads.
     let listener = new HistoryListener(this.docShell, () => {
       // On reload, restore tab contents.
-      this.restoreTabContent(null, callbacks.onLoadFinished);
+      this.restoreTabContent(null, false, callbacks.onLoadFinished);
     });
 
     webNavigation.sessionHistory.addSHistoryListener(listener);
@@ -176,32 +175,21 @@ ContentRestoreInternal.prototype = {
    * Start loading the current page. When the data has finished loading from the
    * network, finishCallback is called. Returns true if the load was successful.
    */
-  restoreTabContent: function (loadArguments, finishCallback) {
+  restoreTabContent: function (loadArguments, isRemotenessUpdate, finishCallback) {
     let tabData = this._tabData;
     this._tabData = null;
 
     let webNavigation = this.docShell.QueryInterface(Ci.nsIWebNavigation);
     let history = webNavigation.sessionHistory;
 
-    // Wait for the tab load to complete or fail
-    this.restoreTabContentStarted((status) => {
-      // If loadArgument is not null then we're attempting to load a new url
-      // that required us to switch process. If that load is cancelled (for
-      // example by a content handler) we want to restore the current history
-      // entry.
-      if (loadArguments && (status == Cr.NS_BINDING_ABORTED)) {
-        this._tabData = tabData;
-        this.restoreTabContent(null, finishCallback);
-      } else {
-        finishCallback();
-      }
-    });
+    // Listen for the tab to finish loading.
+    this.restoreTabContentStarted(finishCallback);
 
     // Reset the current URI to about:blank. We changed it above for
     // switch-to-tab, but now it must go back to the correct value before the
     // load happens. Don't bother doing this if we're restoring immediately
     // due to a process switch.
-    if (!loadArguments) {
+    if (!isRemotenessUpdate) {
       webNavigation.setCurrentURI(Utils.makeURI("about:blank"));
     }
 
@@ -260,26 +248,22 @@ ContentRestoreInternal.prototype = {
    */
   restoreTabContentStarted(finishCallback) {
     // The reload listener is no longer needed.
-    if (this._historyListener) {
-      this._historyListener.uninstall();
-      this._historyListener = null;
-    }
+    this._historyListener.uninstall();
+    this._historyListener = null;
 
     // Remove the old progress listener.
-    if (this._progressListener) {
-      this._progressListener.uninstall();
-    }
+    this._progressListener.uninstall();
 
     // We're about to start a load. This listener will be called when the load
     // has finished getting everything from the network.
     this._progressListener = new ProgressListener(this.docShell, {
-      onStopRequest: (status) => {
+      onStopRequest: () => {
         // Call resetRestore() to reset the state back to normal. The data
         // needed for restoreDocument() (which hasn't happened yet) will
         // remain in _restoringDocument.
         this.resetRestore();
 
-        finishCallback(status);
+        finishCallback();
       }
     });
   },
@@ -431,7 +415,7 @@ ProgressListener.prototype = {
     }
 
     if (stateFlags & STATE_STOP && this.callbacks.onStopRequest) {
-      this.callbacks.onStopRequest(status);
+      this.callbacks.onStopRequest();
     }
   },
 

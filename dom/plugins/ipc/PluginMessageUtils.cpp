@@ -19,7 +19,7 @@ using mozilla::ipc::MessageChannel;
 
 namespace {
 
-class DeferNPObjectReleaseRunnable : public nsRunnable
+class DeferNPObjectReleaseRunnable : public mozilla::Runnable
 {
 public:
   DeferNPObjectReleaseRunnable(const NPNetscapeFuncs* f, NPObject* o)
@@ -65,8 +65,8 @@ NPRemoteWindow::NPRemoteWindow() :
 }
 
 ipc::RacyInterruptPolicy
-MediateRace(const MessageChannel::Message& parent,
-            const MessageChannel::Message& child)
+MediateRace(const MessageChannel::MessageInfo& parent,
+            const MessageChannel::MessageInfo& child)
 {
   switch (parent.type()) {
   case PPluginInstance::Msg_Paint__ID:
@@ -120,12 +120,10 @@ UnmungePluginDsoPath(const string& munged)
 }
 
 
-PRLogModuleInfo*
+LogModule*
 GetPluginLog()
 {
-  static PRLogModuleInfo *sLog;
-  if (!sLog)
-    sLog = PR_NewLogModule("IPCPlugins");
+  static LazyLogModule sLog("IPCPlugins");
   return sLog;
 }
 

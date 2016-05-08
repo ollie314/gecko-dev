@@ -207,6 +207,9 @@ var ClickEventHandler = {
       this._scrollErrorX = (desiredScrollX - actualScrollX);
     }
 
+    const kAutoscroll = 15;  // defined in mozilla/layers/ScrollInputMethods.h
+    Services.telemetry.getHistogramById("SCROLL_INPUT_METHODS").add(kAutoscroll);
+
     if (this._scrollable instanceof content.Window) {
       this._scrollable.scrollBy(actualScrollX, actualScrollY);
     } else { // an element with overflow
@@ -291,6 +294,7 @@ var PopupBlocking = {
       case "pagehide":
         return this.onPageHide(ev);
     }
+    return undefined;
   },
 
   onPopupBlocked: function(ev) {
@@ -300,7 +304,7 @@ var PopupBlocking = {
     }
 
     let obj = {
-      popupWindowURI: ev.popupWindowURI.spec,
+      popupWindowURI: ev.popupWindowURI ? ev.popupWindowURI.spec : "about:blank",
       popupWindowFeatures: ev.popupWindowFeatures,
       popupWindowName: ev.popupWindowName
     };
@@ -580,15 +584,10 @@ var FindBar = {
   FIND_NORMAL: 0,
   FIND_TYPEAHEAD: 1,
   FIND_LINKS: 2,
-  FAYT_LINKS_KEY: "'".charCodeAt(0),
-  FAYT_TEXT_KEY: "/".charCodeAt(0),
 
   _findMode: 0,
-  _findAsYouType: false,
 
   init() {
-    this._findAsYouType =
-      Services.prefs.getBoolPref("accessibility.typeaheadfind");
     addMessageListener("Findbar:UpdateState", this);
     Services.els.addSystemEventListener(global, "keypress", this, false);
     Services.els.addSystemEventListener(global, "mouseup", this, false);
@@ -598,7 +597,6 @@ var FindBar = {
     switch (msg.name) {
       case "Findbar:UpdateState":
         this._findMode = msg.data.findMode;
-        this._findAsYouType = msg.data.findAsYouType;
         break;
     }
   },
@@ -618,43 +616,51 @@ var FindBar = {
    * Returns whether FAYT can be used for the given event in
    * the current content state.
    */
-  _shouldFastFind() {
-    //XXXgijs: why all these shenanigans? Why not use the event's target?
-    let focusedWindow = {};
-    let elt = Services.focus.getFocusedElementForWindow(content, true, focusedWindow);
-    let win = focusedWindow.value;
+  _canAndShouldFastFind() {
     let {BrowserUtils} = Cu.import("resource://gre/modules/BrowserUtils.jsm", {});
-    return BrowserUtils.shouldFastFind(elt, win);
+    let should = false;
+    let can = BrowserUtils.canFastFind(content);
+    if (can) {
+      //XXXgijs: why all these shenanigans? Why not use the event's target?
+      let focusedWindow = {};
+      let elt = Services.focus.getFocusedElementForWindow(content, true, focusedWindow);
+      let win = focusedWindow.value;
+      should = BrowserUtils.shouldFastFind(elt, win);
+    }
+    return { can, should }
   },
 
   _onKeypress(event) {
     // Useless keys:
     if (event.ctrlKey || event.altKey || event.metaKey || event.defaultPrevented) {
-      return;
-    }
-    // Not interested in random keypresses most of the time:
-    if (this._findMode == this.FIND_NORMAL && !this._findAsYouType &&
-        event.charCode != this.FAYT_LINKS_KEY && event.charCode != this.FAYT_TEXT_KEY) {
-      return;
+      return undefined;
     }
 
     // Check the focused element etc.
-    if (!this._shouldFastFind()) {
-      return;
+    let fastFind = this._canAndShouldFastFind();
+
+    // Can we even use find in this page at all?
+    if (!fastFind.can) {
+      return undefined;
     }
 
     let fakeEvent = {};
     for (let k in event) {
-      if (typeof event[k] != "object" && typeof event[k] != "function") {
+      if (typeof event[k] != "object" && typeof event[k] != "function" &&
+          !(k in content.KeyboardEvent)) {
         fakeEvent[k] = event[k];
       }
     }
     // sendSyncMessage returns an array of the responses from all listeners
-    let rv = sendSyncMessage("Findbar:Keypress", fakeEvent);
+    let rv = sendSyncMessage("Findbar:Keypress", {
+      fakeEvent: fakeEvent,
+      shouldFastFind: fastFind.should
+    });
     if (rv.indexOf(false) !== -1) {
       event.preventDefault();
       return false;
     }
+    return undefined;
   },
 
   _onMouseup(event) {
@@ -713,7 +719,9 @@ var AudioPlaybackListener = {
 
   init() {
     Services.obs.addObserver(this, "audio-playback", false);
-    addMessageListener("AudioPlaybackMute", this);
+    Services.obs.addObserver(this, "AudioFocusChanged", false);
+
+    addMessageListener("AudioPlayback", this);
     addEventListener("unload", () => {
       AudioPlaybackListener.uninit();
     });
@@ -721,7 +729,47 @@ var AudioPlaybackListener = {
 
   uninit() {
     Services.obs.removeObserver(this, "audio-playback");
-    removeMessageListener("AudioPlaybackMute", this);
+    Services.obs.removeObserver(this, "AudioFocusChanged");
+
+    removeMessageListener("AudioPlayback", this);
+  },
+
+  handleMediaControlMessage(msg) {
+    let utils = global.content.QueryInterface(Ci.nsIInterfaceRequestor)
+                              .getInterface(Ci.nsIDOMWindowUtils);
+    let suspendTypes = Ci.nsISuspendedTypes;
+    switch (msg) {
+      case "mute":
+        utils.audioMuted = true;
+        break;
+      case "unmute":
+        utils.audioMuted = false;
+        break;
+      case "lostAudioFocus":
+        utils.mediaSuspend = suspendTypes.SUSPENDED_STOP_DISPOSABLE;
+        break;
+      case "lostAudioFocusTransiently":
+        utils.mediaSuspend = suspendTypes.SUSPENDED_PAUSE;
+        break;
+      case "gainAudioFocus":
+        utils.mediaSuspend = suspendTypes.NONE_SUSPENDED;
+        break;
+      case "mediaControlPaused":
+        utils.mediaSuspend = suspendTypes.SUSPENDED_PAUSE_DISPOSABLE;
+        break;
+      case "mediaControlStopped":
+        utils.mediaSuspend = suspendTypes.SUSPENDED_STOP_DISPOSABLE;
+        break;
+      case "blockInactivePageMedia":
+        utils.mediaSuspend = suspendTypes.SUSPENDED_BLOCK;
+        break;
+      case "resumeMedia":
+        utils.mediaSuspend = suspendTypes.NONE_SUSPENDED;
+        break;
+      default:
+        dump("Error : wrong media control msg!\n");
+        break;
+    }
   },
 
   observe(subject, topic, data) {
@@ -731,14 +779,14 @@ var AudioPlaybackListener = {
         name += (data === "active") ? "Start" : "Stop";
         sendAsyncMessage(name);
       }
+    } else if (topic == "AudioFocusChanged") {
+      this.handleMediaControlMessage(data);
     }
   },
 
   receiveMessage(msg) {
-    if (msg.name == "AudioPlaybackMute") {
-      let utils = global.content.QueryInterface(Ci.nsIInterfaceRequestor)
-                                .getInterface(Ci.nsIDOMWindowUtils);
-      utils.audioMuted = msg.data.type === "mute";
+    if (msg.name == "AudioPlayback") {
+      this.handleMediaControlMessage(msg.data.type);
     }
   },
 };
@@ -965,7 +1013,7 @@ var ViewSelectionSource = {
       topNode = topNode.parentNode;
     }
     if (!topNode)
-      return;
+      return undefined;
 
     // serialize
     const VIEW_SOURCE_CSS = "resource://gre-resources/viewsource.css";
@@ -1126,3 +1174,15 @@ var ViewSelectionSource = {
 };
 
 ViewSelectionSource.init();
+
+addEventListener("MozApplicationManifest", function(e) {
+  let doc = e.target;
+  let info = {
+    uri: doc.documentURI,
+    characterSet: doc.characterSet,
+    manifest: doc.documentElement.getAttribute("manifest"),
+    principal: doc.nodePrincipal,
+  };
+  sendAsyncMessage("MozApplicationManifest", info);
+}, false);
+

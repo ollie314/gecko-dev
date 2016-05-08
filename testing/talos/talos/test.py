@@ -30,6 +30,8 @@ class Test(object):
     keys = []
     desktop = True
     filters = filter.ignore_first.prepare(1) + filter.median.prepare()
+    lower_is_better = True
+    alert_threshold = 2.0
 
     @classmethod
     def name(cls):
@@ -137,6 +139,7 @@ class ts_paint(TsBase):
     rss = False
     mainthread = False
     responsiveness = False
+    unit = 'ms'
 
 
 @register_test()
@@ -148,7 +151,8 @@ class sessionrestore(TsBase):
     2. Launch Firefox.
     3. Measure the delta between firstPaint and sessionRestored.
     """
-    extensions = '${talos}/startup_test/sessionrestore/addon'
+    extensions = \
+        '${talos}/startup_test/sessionrestore/addon/sessionrestore-signed.xpi'
     cycles = 10
     timeout = 1000000
     sps_profile_startup = True
@@ -159,6 +163,7 @@ class sessionrestore(TsBase):
     reinstall = ['sessionstore.js', 'sessionCheckpoints.json']
     # Restore the session
     preferences = {'browser.startup.page': 3}
+    unit = 'ms'
 
 
 @register_test()
@@ -189,6 +194,7 @@ class tpaint(TsBase):
     sps_profile_entries = 2000000
     tpmozafterpaint = True
     filters = filter.ignore_first.prepare(5) + filter.median.prepare()
+    unit = 'ms'
 
 
 @register_test()
@@ -196,7 +202,7 @@ class tresize(TsBase):
     """
     This test does some resize thing.
     """
-    extensions = '${talos}/startup_test/tresize/addon'
+    extensions = '${talos}/startup_test/tresize/addon/tresize-signed.xpi'
     cycles = 20
     url = 'startup_test/tresize/addon/content/tresize-test.html'
     timeout = 150
@@ -204,18 +210,8 @@ class tresize(TsBase):
     sps_profile_entries = 1000000
     tpmozafterpaint = True
     filters = filter.ignore_first.prepare(5) + filter.median.prepare()
+    unit = 'ms'
 
-
-# Media Test
-@register_test()
-class media_tests(TsBase):
-    """
-    Media Performance Tests
-    """
-    cycles = 5
-    desktop = True
-    url = 'http://localhost:16932/startup_test/media/html/media_tests.html'
-    timeout = 360
 
 # pageloader tests(tp5, etc)
 
@@ -240,7 +236,31 @@ class PageloaderTest(Test):
             'timeout', 'shutdown', 'responsiveness', 'profile_path',
             'xperf_providers', 'xperf_user_providers', 'xperf_stackwalk',
             'filters', 'preferences', 'extensions', 'setup', 'cleanup',
-            'test_name_extension']
+            'test_name_extension', 'lower_is_better', 'alert_threshold',
+            'unit']
+
+
+@register_test()
+class tabpaint(PageloaderTest):
+    """
+    Tests the amount of time it takes to open new tabs, triggered from
+    both the parent process and the content process.
+    """
+    extensions = '${talos}/tests/tabpaint/tabpaint-signed.xpi'
+    tpmanifest = '${talos}/tests/tabpaint/tabpaint.manifest'
+    tppagecycles = 20
+    sps_profile_entries = 1000000
+    tploadnocache = True
+    unit = 'ms'
+    preferences = {
+        # By default, Talos is configured to open links from
+        # content in new windows. We're overriding them so that
+        # they open in new tabs instead.
+        # See http://kb.mozillazine.org/Browser.link.open_newwindow
+        # and http://kb.mozillazine.org/Browser.link.open_newwindow.restriction
+        'browser.link.open_newwindow': 3,
+        'browser.link.open_newwindow.restriction': 2,
+    }
 
 
 @register_test()
@@ -248,7 +268,7 @@ class tps(PageloaderTest):
     """
     Tests the amount of time it takes to switch between tabs
     """
-    extensions = '${talos}/tests/tabswitch'
+    extensions = '${talos}/tests/tabswitch/tabswitch-signed.xpi'
     tpmanifest = '${talos}/tests/tabswitch/tps.manifest'
     tppagecycles = 5
     sps_profile_entries = 1000000
@@ -263,6 +283,7 @@ class tps(PageloaderTest):
         'addon.test.tabswitch.maxurls':
             45 if utils.PLATFORM_TYPE == 'win_' else -1,
     }
+    unit = 'ms'
 
 
 @register_test()
@@ -289,7 +310,7 @@ class tart(PageloaderTest):
       - all: average interval over all recorded intervals.
     """
     tpmanifest = '${talos}/tests/tart/tart.manifest'
-    extensions = '${talos}/tests/tart/addon'
+    extensions = '${talos}/tests/tart/addon/tart-signed.xpi'
     tpcycles = 1
     tppagecycles = 25
     tploadnocache = True
@@ -308,6 +329,7 @@ class tart(PageloaderTest):
                    'docshell.event_starvation_delay_hint': 1,
                    'dom.send_after_paint_to_content': False}
     filters = filter.ignore_first.prepare(1) + filter.median.prepare()
+    unit = 'ms'
 
 
 @register_test()
@@ -325,7 +347,7 @@ class cart(PageloaderTest):
     3-customize-enter-css - only the CSS animation part of entering customize
     """
     tpmanifest = '${talos}/tests/tart/cart.manifest'
-    extensions = '${talos}/tests/tart/addon'
+    extensions = '${talos}/tests/tart/addon/tart-signed.xpi'
     tpcycles = 1
     tppagecycles = 25
     tploadnocache = True
@@ -340,6 +362,7 @@ class cart(PageloaderTest):
                    'docshell.event_starvation_delay_hint': 1,
                    'dom.send_after_paint_to_content': False}
     filters = filter.ignore_first.prepare(1) + filter.median.prepare()
+    unit = 'ms'
 
 
 @register_test()
@@ -350,7 +373,7 @@ class damp(PageloaderTest):
     for each tool, across a very simple and very complicated page.
     """
     tpmanifest = '${talos}/tests/devtools/damp.manifest'
-    extensions = '${talos}/tests/devtools/addon'
+    extensions = '${talos}/tests/devtools/addon/devtools-signed.xpi'
     tpcycles = 1
     tppagecycles = 25
     tploadnocache = True
@@ -359,7 +382,9 @@ class damp(PageloaderTest):
     sps_profile_entries = 1000000
     win_counters = w7_counters = linux_counters = mac_counters = None
     filters = filter.ignore_first.prepare(1) + filter.median.prepare()
-    preferences = {'devtools.memory.enabled': True}
+    preferences = {'devtools.memory.enabled': True,
+                   'addon.test.damp.webserver': '${webserver}'}
+    unit = 'ms'
 
 
 @register_test()
@@ -385,6 +410,7 @@ class glterrain(PageloaderTest):
                    'docshell.event_starvation_delay_hint': 1,
                    'dom.send_after_paint_to_content': False}
     filters = filter.ignore_first.prepare(1) + filter.median.prepare()
+    unit = 'frame interval'
 
 
 @register_test()
@@ -429,6 +455,7 @@ class tp5n(PageloaderTest):
     cleanup = '${talos}/xtalos/parse_xperf.py -c ${talos}/bcontroller.json'
     preferences = {'extensions.enabledScopes': '',
                    'talos.logfile': 'browser_output.txt'}
+    unit = 'ms'
 
 
 @register_test()
@@ -454,6 +481,7 @@ class tp5o(PageloaderTest):
     sps_profile_entries = 4000000
     filters = filter.ignore_first.prepare(5) + filter.median.prepare()
     timeout = 1800
+    unit = 'ms'
 
 
 @register_test()
@@ -474,6 +502,7 @@ class tp5o_scroll(PageloaderTest):
                    'docshell.event_starvation_delay_hint': 1,
                    'dom.send_after_paint_to_content': False}
     filters = filter.ignore_first.prepare(1) + filter.median.prepare()
+    unit = '1/FPS'
 
 
 @register_test()
@@ -493,6 +522,8 @@ class v8_7(PageloaderTest):
     tpmozafterpaint = False
     preferences = {'dom.send_after_paint_to_content': False}
     filters = filter.v8_subtest.prepare()
+    unit = 'score'
+    lower_is_better = False
 
 
 @register_test()
@@ -509,6 +540,7 @@ class kraken(PageloaderTest):
     tpmozafterpaint = False
     preferences = {'dom.send_after_paint_to_content': False}
     filters = filter.mean.prepare()
+    unit = 'score'
 
 
 @register_test()
@@ -526,11 +558,15 @@ class tcanvasmark(PageloaderTest):
     tpmozafterpaint = False
     preferences = {'dom.send_after_paint_to_content': False}
     filters = filter.ignore_first.prepare(1) + filter.median.prepare()
+    unit = 'score'
+    lower_is_better = False
 
 
 class dromaeo(PageloaderTest):
     """abstract base class for dramaeo tests"""
     filters = filter.dromaeo.prepare()
+    lower_is_better = False
+    alert_threshold = 5.0
 
 
 @register_test()
@@ -545,6 +581,7 @@ class dromaeo_css(dromaeo):
     sps_profile_interval = 2
     sps_profile_entries = 10000000
     tpmanifest = '${talos}/tests/dromaeo/css.manifest'
+    unit = 'score'
 
 
 @register_test()
@@ -560,6 +597,7 @@ class dromaeo_dom(dromaeo):
     sps_profile_entries = 10000000
     tpmanifest = '${talos}/tests/dromaeo/dom.manifest'
     tpdisable_e10s = True
+    unit = 'score'
 
 
 @register_test()
@@ -578,6 +616,7 @@ class tsvgm(PageloaderTest):
                    'docshell.event_starvation_delay_hint': 1,
                    'dom.send_after_paint_to_content': False}
     filters = filter.ignore_first.prepare(2) + filter.median.prepare()
+    unit = 'ms'
 
 
 @register_test()
@@ -596,6 +635,7 @@ class tsvgx(PageloaderTest):
                    'docshell.event_starvation_delay_hint': 1,
                    'dom.send_after_paint_to_content': False}
     filters = filter.ignore_first.prepare(5) + filter.median.prepare()
+    unit = 'ms'
 
 
 @register_test()
@@ -606,9 +646,11 @@ class tsvgr_opacity(PageloaderTest):
     tpmanifest = '${talos}/tests/svg_opacity/svg_opacity.manifest'
     tpcycles = 1
     tppagecycles = 25
+    tpmozafterpaint = True
     sps_profile_interval = 1
     sps_profile_entries = 10000000
     filters = filter.ignore_first.prepare(5) + filter.median.prepare()
+    unit = 'ms'
 
 
 @register_test()
@@ -627,6 +669,7 @@ class tscrollx(PageloaderTest):
                    'docshell.event_starvation_delay_hint': 1,
                    'dom.send_after_paint_to_content': False}
     filters = filter.ignore_first.prepare(5) + filter.median.prepare()
+    unit = 'ms'
 
 
 @register_test()
@@ -640,3 +683,5 @@ class a11yr(PageloaderTest):
     tppagecycles = 25
     tpmozafterpaint = True
     preferences = {'dom.send_after_paint_to_content': False}
+    unit = 'ms'
+    alert_threshold = 5.0

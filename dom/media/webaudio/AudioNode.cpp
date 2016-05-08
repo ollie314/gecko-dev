@@ -54,9 +54,6 @@ AudioNode::AudioNode(AudioContext* aContext,
   , mChannelInterpretation(aChannelInterpretation)
   , mId(gId++)
   , mPassThrough(false)
-#ifdef DEBUG
-  , mDemiseNotified(false)
-#endif
 {
   MOZ_ASSERT(aContext);
   DOMEventTargetHelper::BindToOwner(aContext->GetParentObject());
@@ -68,10 +65,8 @@ AudioNode::~AudioNode()
   MOZ_ASSERT(mInputNodes.IsEmpty());
   MOZ_ASSERT(mOutputNodes.IsEmpty());
   MOZ_ASSERT(mOutputParams.IsEmpty());
-#ifdef DEBUG
-  MOZ_ASSERT(mDemiseNotified,
+  MOZ_ASSERT(!mStream,
              "The webaudio-node-demise notification must have been sent");
-#endif
   if (mContext) {
     mContext->UnregisterNode(this);
   }
@@ -198,6 +193,10 @@ AudioNode::Connect(AudioNode& aDestination, uint32_t aOutput,
     return &aDestination;
   }
 
+  WEB_AUDIO_API_LOG("%f: %s %u Connect() to %s %u",
+                    Context()->CurrentTime(), NodeType(), Id(),
+                    aDestination.NodeType(), aDestination.Id());
+
   // The MediaStreamGraph will handle cycle detection. We don't need to do it
   // here.
 
@@ -212,7 +211,7 @@ AudioNode::Connect(AudioNode& aDestination, uint32_t aOutput,
     MOZ_ASSERT(aInput <= UINT16_MAX, "Unexpected large input port number");
     MOZ_ASSERT(aOutput <= UINT16_MAX, "Unexpected large output port number");
     input->mStreamPort = destinationStream->
-      AllocateInputPort(mStream, AudioNodeStream::AUDIO_TRACK,
+      AllocateInputPort(mStream, AudioNodeStream::AUDIO_TRACK, TRACK_ANY,
                         static_cast<uint16_t>(aInput),
                         static_cast<uint16_t>(aOutput));
   }
@@ -257,7 +256,7 @@ AudioNode::Connect(AudioParam& aDestination, uint32_t aOutput,
     // Setup our stream as an input to the AudioParam's stream
     MOZ_ASSERT(aOutput <= UINT16_MAX, "Unexpected large output port number");
     input->mStreamPort =
-      ps->AllocateInputPort(mStream, AudioNodeStream::AUDIO_TRACK,
+      ps->AllocateInputPort(mStream, AudioNodeStream::AUDIO_TRACK, TRACK_ANY,
                             0, static_cast<uint16_t>(aOutput));
   }
 }
@@ -300,12 +299,15 @@ AudioNode::Disconnect(uint32_t aOutput, ErrorResult& aRv)
     return;
   }
 
+  WEB_AUDIO_API_LOG("%f: %s %u Disconnect()", Context()->CurrentTime(),
+                    NodeType(), Id());
+
   // An upstream node may be starting to play on the graph thread, and the
   // engine for a downstream node may be sending a PlayingRefChangeHandler
   // ADDREF message to this (main) thread.  Wait for a round trip before
   // releasing nodes, to give engines receiving sound now time to keep their
   // nodes alive.
-  class RunnableRelease final : public nsRunnable
+  class RunnableRelease final : public Runnable
   {
   public:
     explicit RunnableRelease(already_AddRefed<AudioNode> aNode)
@@ -383,9 +385,6 @@ AudioNode::DestroyMediaStream()
       id.AppendPrintf("%u", mId);
       obs->NotifyObservers(nullptr, "webaudio-node-demise", id.get());
     }
-#ifdef DEBUG
-    mDemiseNotified = true;
-#endif
   }
 }
 

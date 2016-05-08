@@ -1,7 +1,7 @@
-# -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
-# This Source Code Form is subject to the terms of the Mozilla Public
-# License, v. 2.0. If a copy of the MPL was not distributed with this
-# file, You can obtain one at http://mozilla.org/MPL/2.0/.
+/* -*- indent-tabs-mode: nil; js-indent-level: 2 -*-
+ * This Source Code Form is subject to the terms of the Mozilla Public
+ * License, v. 2.0. If a copy of the MPL was not distributed with this
+ * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 var FullScreen = {
   _MESSAGES: [
@@ -49,11 +49,11 @@ var FullScreen = {
       fullscreenCommand.removeAttribute("checked");
     }
 
-#ifdef XP_MACOSX
-    // Make sure the menu items are adjusted.
-    document.getElementById("enterFullScreenItem").hidden = enterFS;
-    document.getElementById("exitFullScreenItem").hidden = !enterFS;
-#endif
+    if (AppConstants.platform == "macosx") {
+      // Make sure the menu items are adjusted.
+      document.getElementById("enterFullScreenItem").hidden = enterFS;
+      document.getElementById("exitFullScreenItem").hidden = !enterFS;
+    }
 
     if (!this._fullScrToggler) {
       this._fullScrToggler = document.getElementById("fullscr-toggler");
@@ -64,7 +64,7 @@ var FullScreen = {
     if (enterFS) {
       gNavToolbox.setAttribute("inFullscreen", true);
       document.documentElement.setAttribute("inFullscreen", true);
-      if (!document.mozFullScreen && this.useLionFullScreen)
+      if (!document.fullscreenElement && this.useLionFullScreen)
         document.documentElement.setAttribute("OSXLionFullscreen", true);
     } else {
       gNavToolbox.removeAttribute("inFullscreen");
@@ -72,7 +72,7 @@ var FullScreen = {
       document.documentElement.removeAttribute("OSXLionFullscreen");
     }
 
-    if (!document.mozFullScreen)
+    if (!document.fullscreenElement)
       this._updateToolbars(enterFS);
 
     if (enterFS) {
@@ -80,7 +80,7 @@ var FullScreen = {
       document.addEventListener("popupshown", this._setPopupOpen, false);
       document.addEventListener("popuphidden", this._setPopupOpen, false);
       // In DOM fullscreen mode, we hide toolbars with CSS
-      if (!document.mozFullScreen)
+      if (!document.fullscreenElement)
         this.hideNavToolbox(true);
     }
     else {
@@ -96,20 +96,20 @@ var FullScreen = {
       TabsInTitlebar.updateAppearance(true);
     }
 
-    if (enterFS && !document.mozFullScreen) {
+    if (enterFS && !document.fullscreenElement) {
       Services.telemetry.getHistogramById("FX_BROWSER_FULLSCREEN_USED")
                         .add(1);
     }
   },
 
   exitDomFullScreen : function() {
-    document.mozCancelFullScreen();
+    document.exitFullscreen();
   },
 
   handleEvent: function (event) {
     switch (event.type) {
       case "activate":
-        if (document.mozFullScreen) {
+        if (document.fullscreenElement) {
           this._WarningBox.show();
         }
         break;
@@ -131,22 +131,7 @@ var FullScreen = {
           let topWin = event.target.ownerDocument.defaultView.top;
           browser = gBrowser.getBrowserForContentWindow(topWin);
         }
-        if (!browser || !this.enterDomFullscreen(browser)) {
-          if (document.mozFullScreen) {
-            // MozDOMFullscreen:Entered is dispatched synchronously in
-            // fullscreen change, hence we have to avoid calling this
-            // method synchronously here.
-            setTimeout(() => document.mozCancelFullScreen(), 0);
-          }
-          break;
-        }
-        // If it is a remote browser, send a message to ask the content
-        // to enter fullscreen state. We don't need to do so if it is an
-        // in-process browser, since all related document should have
-        // entered fullscreen state at this point.
-        if (this._isRemoteBrowser(browser)) {
-          browser.messageManager.sendAsyncMessage("DOMFullscreen:Entered");
-        }
+        this.enterDomFullscreen(browser);
         break;
       }
       case "MozDOMFullscreen:Exited":
@@ -178,22 +163,30 @@ var FullScreen = {
   },
 
   enterDomFullscreen : function(aBrowser) {
-    if (!document.mozFullScreen)
-      return false;
+    if (!document.fullscreenElement) {
+      return;
+    }
 
     // If we've received a fullscreen notification, we have to ensure that the
     // element that's requesting fullscreen belongs to the browser that's currently
     // active. If not, we exit fullscreen since the "full-screen document" isn't
     // actually visible now.
-    if (gBrowser.selectedBrowser != aBrowser) {
-      return false;
+    if (!aBrowser || gBrowser.selectedBrowser != aBrowser ||
+        // The top-level window has lost focus since the request to enter
+        // full-screen was made. Cancel full-screen.
+        Services.focus.activeWindow != window) {
+      // This function is called synchronously in fullscreen change, so
+      // we have to avoid calling exitFullscreen synchronously here.
+      setTimeout(() => document.exitFullscreen(), 0);
+      return;
     }
 
-    let focusManager = Services.focus;
-    if (focusManager.activeWindow != window) {
-      // The top-level window has lost focus since the request to enter
-      // full-screen was made. Cancel full-screen.
-      return false;
+    // If it is a remote browser, send a message to ask the content
+    // to enter fullscreen state. We don't need to do so if it is an
+    // in-process browser, since all related document should have
+    // entered fullscreen state at this point.
+    if (this._isRemoteBrowser(aBrowser)) {
+      aBrowser.messageManager.sendAsyncMessage("DOMFullscreen:Entered");
     }
 
     document.documentElement.setAttribute("inDOMFullscreen", true);
@@ -211,8 +204,6 @@ var FullScreen = {
     // If a fullscreen window loses focus, we show a warning when the
     // fullscreen window is refocused.
     window.addEventListener("activate", this);
-
-    return true;
   },
 
   cleanup: function () {
@@ -225,6 +216,9 @@ var FullScreen = {
   },
 
   cleanupDomFullscreen: function () {
+    window.messageManager
+          .broadcastAsyncMessage("DOMFullscreen:CleanUp");
+
     this._WarningBox.close();
     gBrowser.tabContainer.removeEventListener("TabOpen", this.exitDomFullScreen);
     gBrowser.tabContainer.removeEventListener("TabClose", this.exitDomFullScreen);
@@ -232,9 +226,6 @@ var FullScreen = {
     window.removeEventListener("activate", this);
 
     document.documentElement.removeAttribute("inDOMFullscreen");
-
-    window.messageManager
-          .broadcastAsyncMessage("DOMFullscreen:CleanUp");
   },
 
   _isRemoteBrowser: function (aBrowser) {
@@ -365,7 +356,7 @@ var FullScreen = {
 
     // Shows a warning that the site has entered fullscreen for a short duration.
     show: function(aOrigin) {
-      if (!document.mozFullScreen) {
+      if (!document.fullscreenElement) {
         return;
       }
 
@@ -633,10 +624,6 @@ XPCOMUtils.defineLazyGetter(FullScreen, "useLionFullScreen", function() {
   // * on OS X
   // * on Lion or higher (Darwin 11+)
   // * have fullscreenbutton="true"
-#ifdef XP_MACOSX
-  return parseFloat(Services.sysinfo.getProperty("version")) >= 11 &&
+  return AppConstants.isPlatformAndVersionAtLeast("macosx", 11) &&
          document.documentElement.getAttribute("fullscreenbutton") == "true";
-#else
-  return false;
-#endif
 });

@@ -9,6 +9,7 @@
 
 #include "GLContext.h"
 #include "GLXLibrary.h"
+#include "mozilla/X11Util.h"
 
 namespace mozilla {
 namespace gl {
@@ -25,7 +26,14 @@ public:
                     GLXDrawable drawable,
                     GLXFBConfig cfg,
                     bool deleteDrawable,
-                    gfxXlibSurface* pixmap = nullptr);
+                    gfxXlibSurface* pixmap = nullptr,
+                    ContextProfile profile = ContextProfile::OpenGLCompatibility);
+
+    // Finds a GLXFBConfig compatible with the provided window.
+    static bool
+    FindFBConfigForWindow(Display* display, int screen, Window window,
+                          ScopedXFree<GLXFBConfig>* const out_scopedConfigArr,
+                          GLXFBConfig* const out_config, int* const out_visid);
 
     ~GLContextGLX();
 
@@ -70,7 +78,8 @@ private:
                  GLXContext aContext,
                  bool aDeleteDrawable,
                  bool aDoubleBuffered,
-                 gfxXlibSurface *aPixmap);
+                 gfxXlibSurface *aPixmap,
+                 ContextProfile profile);
 
     GLXContext mContext;
     Display *mDisplay;

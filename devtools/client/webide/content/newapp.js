@@ -6,15 +6,15 @@ var Cc = Components.classes;
 var Cu = Components.utils;
 var Ci = Components.interfaces;
 
-Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 
 XPCOMUtils.defineLazyModuleGetter(this, "ZipUtils", "resource://gre/modules/ZipUtils.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "Downloads", "resource://gre/modules/Downloads.jsm");
 
 const {require} = Cu.import("resource://devtools/shared/Loader.jsm", {});
-const {FileUtils} = Cu.import("resource://gre/modules/FileUtils.jsm");
-const {AppProjects} = require("devtools/client/app-manager/app-projects");
+const Services = require("Services");
+const {FileUtils} = Cu.import("resource://gre/modules/FileUtils.jsm", {});
+const {AppProjects} = require("devtools/client/webide/modules/app-projects");
 const {AppManager} = require("devtools/client/webide/modules/app-manager");
 const {getJSON} = require("devtools/client/shared/getjson");
 

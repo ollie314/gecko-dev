@@ -51,7 +51,7 @@ private:
 
 BluetoothProfileController::BluetoothProfileController(
                                    bool aConnect,
-                                   const nsAString& aDeviceAddress,
+                                   const BluetoothAddress& aDeviceAddress,
                                    BluetoothReplyRunnable* aRunnable,
                                    BluetoothProfileControllerCallback aCallback,
                                    uint16_t aServiceUuid,
@@ -64,7 +64,7 @@ BluetoothProfileController::BluetoothProfileController(
   , mSuccess(false)
   , mProfilesIndex(-1)
 {
-  MOZ_ASSERT(!aDeviceAddress.IsEmpty());
+  MOZ_ASSERT(!aDeviceAddress.IsCleared());
   MOZ_ASSERT(aRunnable);
   MOZ_ASSERT(aCallback);
 
@@ -188,6 +188,7 @@ BluetoothProfileController::SetupProfiles(bool aAssignServiceClass)
     AddProfile(BluetoothHfpManager::Get());
     AddProfile(BluetoothA2dpManager::Get());
     AddProfile(BluetoothAvrcpManager::Get()); // register after A2DP
+    AddProfile(BluetoothHidManager::Get());
     return;
   }
 
@@ -199,11 +200,19 @@ BluetoothProfileController::SetupProfiles(bool aAssignServiceClass)
   }
 
   // Rendering bit should be set if remote device supports A2DP.
-  // A device which supports AVRCP should claim that it's a peripheral and it's
-  // a remote control.
-  if (hasRendering || (isPeripheral && isRemoteControl)) {
+  if (hasRendering) {
     AddProfile(BluetoothA2dpManager::Get());
-    AddProfile(BluetoothAvrcpManager::Get()); // register after A2DP
+  }
+
+  // A remote control may either support HID or AVRCP since class of device
+  // value are the same. So we can only differentiate between AVRCP and HID
+  // by using hasRendering bit.
+  if ((isPeripheral && isRemoteControl)) {
+    if (hasRendering) {
+      AddProfile(BluetoothAvrcpManager::Get());
+    } else {
+      AddProfile(BluetoothHidManager::Get());
+    }
   }
 
   // A device which supports HID should claim that it's a peripheral and it's
@@ -230,7 +239,6 @@ void
 BluetoothProfileController::StartSession()
 {
   MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT(!mDeviceAddress.IsEmpty());
   MOZ_ASSERT(mProfilesIndex == -1);
   MOZ_ASSERT(mTimer);
 
@@ -285,7 +293,6 @@ void
 BluetoothProfileController::Next()
 {
   MOZ_ASSERT(NS_IsMainThread());
-  MOZ_ASSERT(!mDeviceAddress.IsEmpty());
   MOZ_ASSERT(mProfilesIndex < (int)mProfiles.Length());
   MOZ_ASSERT(mTimer);
 

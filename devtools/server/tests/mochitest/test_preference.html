@@ -1,7 +1,7 @@
 <!DOCTYPE HTML>
 <html>
 <!--
-Bug 943251 - Allow accessing about:config from app-manager
+Bug 943251 - Allow accessing about:config from WebIDE
 -->
 <head>
   <meta charset="utf-8">
@@ -21,7 +21,7 @@ function runTests() {
   var {require} = Cu.import("resource://devtools/shared/Loader.jsm", {});
   var {DebuggerClient} = require("devtools/shared/client/main");
   var {DebuggerServer} = require("devtools/server/main");
-  Cu.import("resource://gre/modules/Services.jsm");
+  var Services = require("Services");
 
   SimpleTest.waitForExplicitFinish();
 
@@ -31,7 +31,7 @@ function runTests() {
   DebuggerServer.addBrowserActors();
 
   var client = new DebuggerClient(DebuggerServer.connectPipe());
-  client.connect(function onConnect() {
+  client.connect().then(function onConnect() {
     client.listTabs(function onListTabs(aResponse) {
       var p = getPreferenceFront(client, aResponse);
 

@@ -134,6 +134,12 @@ JSRuntime::initializeAtoms(JSContext* cx)
 #define COMMON_NAME_INFO(name, code, init, clasp) { js_##name##_str, sizeof(#name) - 1 },
         JS_FOR_EACH_PROTOTYPE(COMMON_NAME_INFO)
 #undef COMMON_NAME_INFO
+#define COMMON_NAME_INFO(name) { #name, sizeof(#name) - 1 },
+        JS_FOR_EACH_WELL_KNOWN_SYMBOL(COMMON_NAME_INFO)
+#undef COMMON_NAME_INFO
+#define COMMON_NAME_INFO(name) { "Symbol." #name, sizeof("Symbol." #name) - 1 },
+        JS_FOR_EACH_WELL_KNOWN_SYMBOL(COMMON_NAME_INFO)
+#undef COMMON_NAME_INFO
     };
 
     commonNames = cx->new_<JSAtomState>();
@@ -245,20 +251,8 @@ js::MarkWellKnownSymbols(JSTracer* trc)
 void
 JSRuntime::sweepAtoms()
 {
-    if (!atoms_)
-        return;
-
-    for (AtomSet::Enum e(*atoms_); !e.empty(); e.popFront()) {
-        AtomStateEntry entry = e.front();
-        JSAtom* atom = entry.asPtrUnbarriered();
-        bool isDying = IsAboutToBeFinalizedUnbarriered(&atom);
-
-        /* Pinned or interned key cannot be finalized. */
-        MOZ_ASSERT_IF(hasContexts() && entry.isPinned(), !isDying);
-
-        if (isDying)
-            e.removeFront();
-    }
+    if (atoms_)
+        atoms_->sweep();
 }
 
 bool
@@ -438,6 +432,23 @@ js::AtomizeChars(ExclusiveContext* cx, const Latin1Char* chars, size_t length, P
 
 template JSAtom*
 js::AtomizeChars(ExclusiveContext* cx, const char16_t* chars, size_t length, PinningBehavior pin);
+
+JSAtom*
+js::AtomizeUTF8Chars(JSContext* cx, const char* utf8Chars, size_t utf8ByteLength)
+{
+    // This could be optimized to hand the char16_t's directly to the JSAtom
+    // instead of making a copy. UTF8CharsToNewTwoByteCharsZ should be
+    // refactored to take an ExclusiveContext so that this function could also.
+
+    UTF8Chars utf8(utf8Chars, utf8ByteLength);
+
+    size_t length;
+    UniqueTwoByteChars chars(JS::UTF8CharsToNewTwoByteCharsZ(cx, utf8, &length).get());
+    if (!chars)
+        return nullptr;
+
+    return AtomizeChars(cx, chars.get(), length);
+}
 
 bool
 js::IndexToIdSlow(ExclusiveContext* cx, uint32_t index, MutableHandleId idp)

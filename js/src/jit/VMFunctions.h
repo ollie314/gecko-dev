@@ -17,7 +17,7 @@
 namespace js {
 
 class DeclEnvObject;
-class StaticWithObject;
+class StaticWithScope;
 class InlineTypedObject;
 class GeneratorObject;
 
@@ -282,8 +282,8 @@ template <> struct TypeToDataType<Handle<InlineTypedObject*> > { static const Da
 template <> struct TypeToDataType<Handle<ArrayObject*> > { static const DataType result = Type_Handle; };
 template <> struct TypeToDataType<Handle<GeneratorObject*> > { static const DataType result = Type_Handle; };
 template <> struct TypeToDataType<Handle<PlainObject*> > { static const DataType result = Type_Handle; };
-template <> struct TypeToDataType<Handle<StaticWithObject*> > { static const DataType result = Type_Handle; };
-template <> struct TypeToDataType<Handle<StaticBlockObject*> > { static const DataType result = Type_Handle; };
+template <> struct TypeToDataType<Handle<StaticWithScope*> > { static const DataType result = Type_Handle; };
+template <> struct TypeToDataType<Handle<StaticBlockScope*> > { static const DataType result = Type_Handle; };
 template <> struct TypeToDataType<HandleScript> { static const DataType result = Type_Handle; };
 template <> struct TypeToDataType<HandleValue> { static const DataType result = Type_Handle; };
 template <> struct TypeToDataType<MutableHandleValue> { static const DataType result = Type_Handle; };
@@ -323,11 +323,11 @@ template <> struct TypeToArgProperties<Handle<GeneratorObject*> > {
 template <> struct TypeToArgProperties<Handle<PlainObject*> > {
     static const uint32_t result = TypeToArgProperties<PlainObject*>::result | VMFunction::ByRef;
 };
-template <> struct TypeToArgProperties<Handle<StaticWithObject*> > {
-    static const uint32_t result = TypeToArgProperties<StaticWithObject*>::result | VMFunction::ByRef;
+template <> struct TypeToArgProperties<Handle<StaticWithScope*> > {
+    static const uint32_t result = TypeToArgProperties<StaticWithScope*>::result | VMFunction::ByRef;
 };
-template <> struct TypeToArgProperties<Handle<StaticBlockObject*> > {
-    static const uint32_t result = TypeToArgProperties<StaticBlockObject*>::result | VMFunction::ByRef;
+template <> struct TypeToArgProperties<Handle<StaticBlockScope*> > {
+    static const uint32_t result = TypeToArgProperties<StaticBlockScope*>::result | VMFunction::ByRef;
 };
 template <> struct TypeToArgProperties<HandleScript> {
     static const uint32_t result = TypeToArgProperties<JSScript*>::result | VMFunction::ByRef;
@@ -400,10 +400,10 @@ template <> struct TypeToRootType<Handle<GeneratorObject*> > {
 template <> struct TypeToRootType<Handle<PlainObject*> > {
     static const uint32_t result = VMFunction::RootObject;
 };
-template <> struct TypeToRootType<Handle<StaticBlockObject*> > {
+template <> struct TypeToRootType<Handle<StaticBlockScope*> > {
     static const uint32_t result = VMFunction::RootObject;
 };
-template <> struct TypeToRootType<Handle<StaticWithObject*> > {
+template <> struct TypeToRootType<Handle<StaticWithScope*> > {
     static const uint32_t result = VMFunction::RootCell;
 };
 template <class T> struct TypeToRootType<Handle<T> > {
@@ -588,6 +588,7 @@ bool CheckOverRecursed(JSContext* cx);
 bool CheckOverRecursedWithExtra(JSContext* cx, BaselineFrame* frame,
                                 uint32_t extra, uint32_t earlyCheck);
 
+JSObject* BindVar(JSContext* cx, HandleObject scopeChain);
 bool DefVar(JSContext* cx, HandlePropertyName dn, unsigned attrs, HandleObject scopeChain);
 bool DefLexical(JSContext* cx, HandlePropertyName dn, unsigned attrs, HandleObject scopeChain);
 bool DefGlobalLexical(JSContext* cx, HandlePropertyName dn, unsigned attrs);
@@ -612,7 +613,6 @@ bool StringsEqual(JSContext* cx, HandleString left, HandleString right, bool* re
 bool ArrayPopDense(JSContext* cx, HandleObject obj, MutableHandleValue rval);
 bool ArrayPushDense(JSContext* cx, HandleObject obj, HandleValue v, uint32_t* length);
 bool ArrayShiftDense(JSContext* cx, HandleObject obj, MutableHandleValue rval);
-JSObject* ArrayConcatDense(JSContext* cx, HandleObject obj1, HandleObject obj2, HandleObject res);
 JSString* ArrayJoin(JSContext* cx, HandleObject array, HandleString sep);
 
 bool CharCodeAt(JSContext* cx, HandleString str, int32_t index, uint32_t* code);
@@ -639,6 +639,7 @@ bool CreateThis(JSContext* cx, HandleObject callee, HandleObject newTarget, Muta
 void GetDynamicName(JSContext* cx, JSObject* scopeChain, JSString* str, Value* vp);
 
 void PostWriteBarrier(JSRuntime* rt, JSObject* obj);
+void PostWriteElementBarrier(JSRuntime* rt, JSObject* obj, int32_t index);
 void PostGlobalWriteBarrier(JSRuntime* rt, JSObject* obj);
 
 uint32_t GetIndexFromString(JSString* str);
@@ -672,10 +673,10 @@ bool OnDebuggerStatement(JSContext* cx, BaselineFrame* frame, jsbytecode* pc, bo
 bool GlobalHasLiveOnDebuggerStatement(JSContext* cx);
 
 bool EnterWith(JSContext* cx, BaselineFrame* frame, HandleValue val,
-               Handle<StaticWithObject*> templ);
+               Handle<StaticWithScope*> templ);
 bool LeaveWith(JSContext* cx, BaselineFrame* frame);
 
-bool PushBlockScope(JSContext* cx, BaselineFrame* frame, Handle<StaticBlockObject*> block);
+bool PushBlockScope(JSContext* cx, BaselineFrame* frame, Handle<StaticBlockScope*> block);
 bool PopBlockScope(JSContext* cx, BaselineFrame* frame);
 bool DebugLeaveThenPopBlockScope(JSContext* cx, BaselineFrame* frame, jsbytecode* pc);
 bool FreshenBlockScope(JSContext* cx, BaselineFrame* frame);
@@ -692,8 +693,6 @@ bool ArraySpliceDense(JSContext* cx, HandleObject obj, uint32_t start, uint32_t 
 
 bool Recompile(JSContext* cx);
 bool ForcedRecompile(JSContext* cx);
-JSString* RegExpReplace(JSContext* cx, HandleString string, HandleObject regexp,
-                        HandleString repl);
 JSString* StringReplace(JSContext* cx, HandleString string, HandleString pattern,
                         HandleString repl);
 
@@ -717,25 +716,30 @@ inline void*
 IonMarkFunction(MIRType type)
 {
     switch (type) {
-      case MIRType_Value:
+      case MIRType::Value:
         return JS_FUNC_TO_DATA_PTR(void*, MarkValueFromIon);
-      case MIRType_String:
+      case MIRType::String:
         return JS_FUNC_TO_DATA_PTR(void*, MarkStringFromIon);
-      case MIRType_Object:
+      case MIRType::Object:
         return JS_FUNC_TO_DATA_PTR(void*, MarkObjectFromIon);
-      case MIRType_Shape:
+      case MIRType::Shape:
         return JS_FUNC_TO_DATA_PTR(void*, MarkShapeFromIon);
-      case MIRType_ObjectGroup:
+      case MIRType::ObjectGroup:
         return JS_FUNC_TO_DATA_PTR(void*, MarkObjectGroupFromIon);
       default: MOZ_CRASH();
     }
 }
 
 bool ObjectIsCallable(JSObject* obj);
+bool ObjectIsConstructor(JSObject* obj);
 
 bool ThrowRuntimeLexicalError(JSContext* cx, unsigned errorNumber);
 bool BaselineThrowUninitializedThis(JSContext* cx, BaselineFrame* frame);
 bool ThrowBadDerivedReturn(JSContext* cx, HandleValue v);
+
+bool ThrowObjectCoercible(JSContext* cx, HandleValue v);
+
+bool BaselineGetFunctionThis(JSContext* cx, BaselineFrame* frame, MutableHandleValue res);
 
 } // namespace jit
 } // namespace js
