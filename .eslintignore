@@ -76,7 +76,6 @@ browser/locales/**
 browser/extensions/loop/**
 
 # devtools/ exclusions
-devtools/*.js
 devtools/client/canvasdebugger/**
 devtools/client/commandline/**
 devtools/client/debugger/**
@@ -118,6 +117,7 @@ devtools/client/webconsole/**
 devtools/client/webide/**
 devtools/server/**
 !devtools/server/actors/webbrowser.js
+!devtools/server/actors/styles.js
 devtools/shared/*.js
 !devtools/shared/css-lexer.js
 devtools/shared/*.jsm

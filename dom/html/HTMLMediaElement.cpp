@@ -1908,6 +1908,14 @@ public:
     mElement->AddDecoderPrincipalChangeObserver(this);
   }
 
+  void Destroy() override
+  {
+    MOZ_ASSERT(mElement);
+    DebugOnly<bool> res = mElement->RemoveDecoderPrincipalChangeObserver(this);
+    NS_ASSERTION(res, "Removing decoder principal changed observer failed. "
+                      "Had it already been removed?");
+  }
+
   MediaSourceEnum GetMediaSource() const override
   {
     return MediaSourceEnum::Other;
@@ -1944,11 +1952,6 @@ public:
 protected:
   virtual ~CaptureStreamTrackSource()
   {
-    if (mElement) {
-      DebugOnly<bool> res = mElement->RemoveDecoderPrincipalChangeObserver(this);
-      NS_ASSERTION(res, "Removing decoder principal changed observer failed. "
-                        "Had it already been removed?");
-    }
   }
 
   RefPtr<HTMLMediaElement> mElement;
@@ -2792,7 +2795,7 @@ HTMLMediaElement::ReportEMETelemetry()
 #endif
 
 void
-HTMLMediaElement::ReportMSETelemetry()
+HTMLMediaElement::ReportTelemetry()
 {
   // Report telemetry for videos when a page is unloaded. We
   // want to know data on what state the video is at when
@@ -4455,7 +4458,7 @@ void HTMLMediaElement::SuspendOrResumeElement(bool aPauseElement, bool aSuspendE
     UpdateAudioChannelPlayingState();
     if (aPauseElement) {
       if (mMediaSource) {
-        ReportMSETelemetry();
+        ReportTelemetry();
 #ifdef MOZ_EME
         ReportEMETelemetry();
 #endif

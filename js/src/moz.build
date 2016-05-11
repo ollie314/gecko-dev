@@ -342,6 +342,7 @@ UNIFIED_SOURCES += [
     'vm/SelfHosting.cpp',
     'vm/Shape.cpp',
     'vm/SharedArrayObject.cpp',
+    'vm/SharedImmutableStringsCache.cpp',
     'vm/SPSProfiler.cpp',
     'vm/Stack.cpp',
     'vm/Stopwatch.cpp',
@@ -641,13 +642,6 @@ USE_LIBS += [
     'nspr',
     'zlib',
 ]
-
-if CONFIG['MOZ_ETW']:
-    GENERATED_FILES = [
-        'ETWProvider.h',
-    ]
-    # This will get the ETW provider resources into the library mozjs.dll
-    RESFILE = 'ETWProvider.res'
 
 if CONFIG['NIGHTLY_BUILD']:
     DEFINES['ENABLE_BINARYDATA'] = True

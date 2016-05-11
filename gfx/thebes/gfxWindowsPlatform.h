@@ -97,8 +97,6 @@ struct ClearTypeParameterInfo {
     int32_t     enhancedContrast;
 };
 
-extern bool gANGLESupportsD3D11;
-
 class gfxWindowsPlatform : public gfxPlatform {
 public:
     enum TextRenderingMode {
@@ -262,8 +260,6 @@ public:
     }
     bool SupportsPluginDirectDXGIDrawing();
 
-    virtual bool CanUseDirect3D11ANGLE();
-
 protected:
     bool AccelerateLayersByDefault() override {
       return true;
@@ -290,6 +286,7 @@ private:
     void DisableD2D(mozilla::gfx::FeatureStatus aStatus, const char* aMessage);
 
     void InitializeConfig();
+    void InitializeD3D9Config();
     void InitializeD3D11Config();
     void InitializeD2DConfig();
 

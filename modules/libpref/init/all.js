@@ -352,6 +352,13 @@ pref("media.apple.mp3.enabled", true);
 pref("media.apple.mp4.enabled", true);
 #endif
 
+// GMP storage version number. At startup we check the version against
+// media.gmp.storage.version.observed, and if the versions don't match,
+// we clear storage and set media.gmp.storage.version.observed=expected.
+// This provides a mechanism to clear GMP storage when non-compatible
+// changes are made.
+pref("media.gmp.storage.version.expected", 1);
+
 // Filter what triggers user notifications.
 // See DecoderDoctorDocumentWatcher::ReportAnalysis for details.
 pref("media.decoder-doctor.notifications-allowed", "MediaWidevineNoWMFNoSilverlight");
@@ -5247,6 +5254,12 @@ pref("reader.errors.includeURLs", false);
 
 // The default relative font size in reader mode (1-9)
 pref("reader.font_size", 5);
+
+// The default relative content width in reader mode (1-9)
+pref("reader.content_width", 3);
+
+// The default relative line height in reader mode (1-9)
+pref("reader.line_height", 4);
 
 // The default color scheme in reader mode (light, dark, sepia, auto)
 // auto = color automatically adjusts according to ambient light level

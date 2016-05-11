@@ -824,10 +824,6 @@ struct MOZ_NEEDS_MEMMOVABLE_MEMBERS nsStyleMargin
 
   nsStyleSides  mMargin;          // [reset] coord, percent, calc, auto
 
-  bool IsWidthDependent() const {
-    return !mMargin.ConvertsToLength();
-  }
-
   bool GetMargin(nsMargin& aMargin) const
   {
     if (mMargin.ConvertsToLength()) {
@@ -842,7 +838,7 @@ struct MOZ_NEEDS_MEMMOVABLE_MEMBERS nsStyleMargin
   {
     MOZ_ASSERT(mMargin.ConvertsToLength());
     NS_FOR_CSS_SIDES(side) {
-      aMargin.Side(side) = mMargin.Get(side).ToLength();
+      aMargin.Side(side) = mMargin.ToLength(side);
     }
   }
 };
@@ -900,7 +896,7 @@ struct MOZ_NEEDS_MEMMOVABLE_MEMBERS nsStylePadding
     MOZ_ASSERT(mPadding.ConvertsToLength());
     NS_FOR_CSS_SIDES(side) {
       // Clamp negative calc() to 0.
-      aPadding.Side(side) = std::max(mPadding.Get(side).ToLength(), 0);
+      aPadding.Side(side) = std::max(mPadding.ToLength(side), 0);
     }
   }
 };
@@ -1304,7 +1300,7 @@ struct MOZ_NEEDS_MEMMOVABLE_MEMBERS nsStyleOutline
       FreeByObjectID(mozilla::eArenaObjectID_nsStyleOutline, this);
   }
 
-  void RecalcData(nsPresContext* aContext);
+  void RecalcData();
   nsChangeHint CalcDifference(const nsStyleOutline& aOther) const;
   static nsChangeHint MaxDifference() {
     return NS_CombineHint(NS_CombineHint(nsChangeHint_UpdateOverflow,
