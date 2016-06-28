@@ -2,6 +2,7 @@
    http://creativecommons.org/publicdomain/zero/1.0/ */
 
 const promise = require("promise");
+const defer = require("devtools/shared/defer");
 
 var gAppId = "actor-test";
 const APP_ORIGIN = "app://" + gAppId;
@@ -115,7 +116,7 @@ add_test(function testCloseApp() {
 // The 128px icon is a single red pixel and the 64px one is a blue one
 // bug 899177: there is a bug with xhr and app:// and jar:// uris
 // that ends up forcing the content type to application/xml
-var red1px =  "data:application/xml;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVQI12P4z8AAAAMBAQAY3Y2wAAAAAElFTkSuQmCC";
+var red1px = "data:application/xml;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVQI12P4z8AAAAMBAQAY3Y2wAAAAAElFTkSuQmCC";
 var blue1px = "data:application/xml;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVQI12MwZDgHAAFlAQBDpjhLAAAAAElFTkSuQmCC";
 
 add_test(function testGetIcon() {
@@ -177,7 +178,7 @@ add_test(function testFileUploadInstall() {
   // Disable the bulk trait temporarily to test the JSON upload path
   gClient.traits.bulk = false;
 
-  let progressDeferred = promise.defer();
+  let progressDeferred = defer();
   // Ensure we get at least one progress event at the end
   gActorFront.on("install-progress", function onProgress(e, progress) {
     if (progress.bytesSent == progress.totalBytes) {
@@ -206,7 +207,7 @@ add_test(function testBulkUploadInstall() {
   let packageFile = do_get_file("data/app.zip");
   do_check_true(gClient.traits.bulk);
 
-  let progressDeferred = promise.defer();
+  let progressDeferred = defer();
   // Ensure we get at least one progress event at the end
   gActorFront.on("install-progress", function onProgress(e, progress) {
     if (progress.bytesSent == progress.totalBytes) {

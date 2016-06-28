@@ -187,12 +187,13 @@ WidevineDecryptor::DecryptingComplete()
 {
   Log("WidevineDecryptor::DecryptingComplete() this=%p", this);
   mCDM = nullptr;
+  mCallback = nullptr;
   Release();
 }
 
 class WidevineBuffer : public cdm::Buffer {
 public:
-  WidevineBuffer(size_t aSize) {
+  explicit WidevineBuffer(size_t aSize) {
     Log("WidevineBuffer(size=" PRIuSIZE ") created", aSize);
     mBuffer.SetLength(aSize);
   }

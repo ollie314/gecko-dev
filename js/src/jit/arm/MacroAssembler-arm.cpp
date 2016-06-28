@@ -6,6 +6,7 @@
 
 #include "jit/arm/MacroAssembler-arm.h"
 
+#include "mozilla/Attributes.h"
 #include "mozilla/Casting.h"
 #include "mozilla/DebugOnly.h"
 #include "mozilla/MathAlgorithms.h"
@@ -2224,15 +2225,6 @@ MacroAssemblerARMCompat::store32(Register src, const BaseIndex& dest)
     ma_str(src, DTRAddr(base, DtrRegImmShift(dest.index, LSL, scale)));
 }
 
-void
-MacroAssemblerARMCompat::store32_NoSecondScratch(Imm32 src, const Address& address)
-{
-    // move32() needs to use the ScratchRegister internally, but there is no additional
-    // scratch register available since this function forbids use of the second one.
-    move32(src, ScratchRegister);
-    storePtr(ScratchRegister, address);
-}
-
 template <typename T>
 void
 MacroAssemblerARMCompat::storePtr(ImmWord imm, T address)
@@ -3066,35 +3058,6 @@ MacroAssemblerARMCompat::extractTag(const BaseIndex& address, Register scratch)
     ma_alu(address.base, lsl(address.index, address.scale), scratch, OpAdd, LeaveCC);
     return extractTag(Address(scratch, address.offset), scratch);
 }
-
-template <typename T>
-void
-MacroAssemblerARMCompat::storeUnboxedValue(ConstantOrRegister value, MIRType valueType,
-                                           const T& dest, MIRType slotType)
-{
-    if (valueType == MIRType::Double) {
-        storeDouble(value.reg().typedReg().fpu(), dest);
-        return;
-    }
-
-    // Store the type tag if needed.
-    if (valueType != slotType)
-        storeTypeTag(ImmType(ValueTypeFromMIRType(valueType)), dest);
-
-    // Store the payload.
-    if (value.constant())
-        storePayload(value.value(), dest);
-    else
-        storePayload(value.reg().typedReg().gpr(), dest);
-}
-
-template void
-MacroAssemblerARMCompat::storeUnboxedValue(ConstantOrRegister value, MIRType valueType,
-                                           const Address& dest, MIRType slotType);
-
-template void
-MacroAssemblerARMCompat::storeUnboxedValue(ConstantOrRegister value, MIRType valueType,
-                                           const BaseIndex& dest, MIRType slotType);
 
 void
 MacroAssemblerARMCompat::moveValue(const Value& val, Register type, Register data)
@@ -4843,6 +4806,31 @@ MacroAssembler::repatchThunk(uint8_t* code, uint32_t u32Offset, uint32_t targetO
     *u32 = (targetOffset - addOffset) - 8;
 }
 
+CodeOffset
+MacroAssembler::nopPatchableToNearJump()
+{
+    // Inhibit pools so that the offset points precisely to the nop.
+    AutoForbidPools afp(this, 1);
+
+    CodeOffset offset(currentOffset());
+    ma_nop();
+    return offset;
+}
+
+void
+MacroAssembler::patchNopToNearJump(uint8_t* jump, uint8_t* target)
+{
+    MOZ_ASSERT(reinterpret_cast<Instruction*>(jump)->is<InstNOP>());
+    new (jump) InstBImm(BOffImm(target - jump), Assembler::Always);
+}
+
+void
+MacroAssembler::patchNearJumpToNop(uint8_t* jump)
+{
+    MOZ_ASSERT(reinterpret_cast<Instruction*>(jump)->is<InstBImm>());
+    new (jump) InstNOP();
+}
+
 void
 MacroAssembler::pushReturnAddress()
 {
@@ -4919,14 +4907,14 @@ MacroAssembler::callWithABIPost(uint32_t stackAdjust, MoveOp::Type result)
         if (!UseHardFpABI()) {
             // Move double from r0/r1 to ReturnFloatReg.
             ma_vxfer(r0, r1, ReturnDoubleReg);
-            break;
         }
+        break;
       case MoveOp::FLOAT32:
         if (!UseHardFpABI()) {
             // Move float32 from r0 to ReturnFloatReg.
             ma_vxfer(r0, ReturnFloat32Reg.singleOverlay());
-            break;
         }
+        break;
       case MoveOp::GENERAL:
         break;
 
@@ -5067,5 +5055,35 @@ MacroAssembler::branchTestValue(Condition cond, const ValueOperand& lhs,
     ma_cmp(lhs.typeReg(), Imm32(jv.s.tag), Equal);
     ma_b(label, cond);
 }
+
+// ========================================================================
+// Memory access primitives.
+template <typename T>
+void
+MacroAssembler::storeUnboxedValue(ConstantOrRegister value, MIRType valueType, const T& dest,
+                                  MIRType slotType)
+{
+    if (valueType == MIRType::Double) {
+        storeDouble(value.reg().typedReg().fpu(), dest);
+        return;
+    }
+
+    // Store the type tag if needed.
+    if (valueType != slotType)
+        storeTypeTag(ImmType(ValueTypeFromMIRType(valueType)), dest);
+
+    // Store the payload.
+    if (value.constant())
+        storePayload(value.value(), dest);
+    else
+        storePayload(value.reg().typedReg().gpr(), dest);
+}
+
+template void
+MacroAssembler::storeUnboxedValue(ConstantOrRegister value, MIRType valueType,
+                                  const Address& dest, MIRType slotType);
+template void
+MacroAssembler::storeUnboxedValue(ConstantOrRegister value, MIRType valueType,
+                                  const BaseIndex& dest, MIRType slotType);
 
 //}}} check_macroassembler_style

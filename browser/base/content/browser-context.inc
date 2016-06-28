@@ -54,6 +54,10 @@
                 label="&openLinkCmdInCurrent.label;"
                 accesskey="&openLinkCmdInCurrent.accesskey;"
                 oncommand="gContextMenu.openLinkInCurrent();"/>
+# label and usercontextid are dynamically set.
+      <menuitem id="context-openlinkincontainertab"
+                accesskey="&openLinkCmdInTab.accesskey;"
+                oncommand="gContextMenu.openLinkInTab(event);"/>
       <menuitem id="context-openlinkintab"
                 label="&openLinkCmdInTab.label;"
                 accesskey="&openLinkCmdInTab.accesskey;"
@@ -64,20 +68,8 @@
             label="&openLinkCmdInContainerTab.label;"
             accesskey="&openLinkCmdInContainerTab.accesskey;"
             hidden="true">
-        <menupopup oncommand="gContextMenu.openLinkInTab(event);">
-          <menuitem label="&userContextPersonal.label;"
-                    usercontextid="1"
-                    accesskey="&userContextPersonal.accesskey;"/>
-          <menuitem label="&userContextWork.label;"
-                    usercontextid="2"
-                    accesskey="&userContextWork.accesskey;"/>
-          <menuitem label="&userContextBanking.label;"
-                    usercontextid="3"
-                    accesskey="&userContextBanking.accesskey;"/>
-          <menuitem label="&userContextShopping.label;"
-                    usercontextid="4"
-                    accesskey="&userContextShopping.accesskey;"/>
-        </menupopup>
+        <menupopup oncommand="gContextMenu.openLinkInTab(event);"
+                   onpopupshowing="return gContextMenu.createContainerMenu(event);" />
       </menu>
 
       <menuitem id="context-openlink"
@@ -130,7 +122,7 @@
                 label="&mediaUnmute.label;"
                 accesskey="&mediaUnmute.accesskey;"
                 oncommand="gContextMenu.mediaCommand('unmute');"/>
-      <menu id="context-media-playbackrate" label="&mediaPlaybackRate.label;" accesskey="&mediaPlaybackRate.accesskey;">
+      <menu id="context-media-playbackrate" label="&mediaPlaybackRate2.label;" accesskey="&mediaPlaybackRate2.accesskey;">
         <menupopup>
           <menuitem id="context-media-playbackrate-050x"
                     label="&mediaPlaybackRate050x2.label;"
@@ -165,6 +157,11 @@
                     oncommand="gContextMenu.mediaCommand('playbackRate', 2.0);"/>
         </menupopup>
       </menu>
+      <menuitem id="context-media-loop"
+                label="&mediaLoop.label;"
+                accesskey="&mediaLoop.accesskey;"
+                type="checkbox"
+                oncommand="gContextMenu.mediaCommand('loop');"/>
       <menuitem id="context-media-showcontrols"
                 label="&mediaShowControls.label;"
                 accesskey="&mediaShowControls.accesskey;"
@@ -173,14 +170,6 @@
                 label="&mediaHideControls.label;"
                 accesskey="&mediaHideControls.accesskey;"
                 oncommand="gContextMenu.mediaCommand('hidecontrols');"/>
-      <menuitem id="context-video-showstats"
-                accesskey="&videoShowStats.accesskey;"
-                label="&videoShowStats.label;"
-                oncommand="gContextMenu.mediaCommand('showstats');"/>
-      <menuitem id="context-video-hidestats"
-                accesskey="&videoHideStats.accesskey;"
-                label="&videoHideStats.label;"
-                oncommand="gContextMenu.mediaCommand('hidestats');"/>
       <menuitem id="context-video-fullscreen"
                 accesskey="&videoFullScreen.accesskey;"
                 label="&videoFullScreen.label;"

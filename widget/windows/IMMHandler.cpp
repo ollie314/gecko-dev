@@ -168,7 +168,7 @@ namespace widget {
 
 static IMMHandler* gIMMHandler = nullptr;
 
-PRLogModuleInfo* gIMMLog = nullptr;
+LazyLogModule gIMMLog("nsIMM32HandlerWidgets");
 
 /******************************************************************************
  * IMEContext
@@ -238,9 +238,6 @@ IMMHandler::EnsureHandlerInstance()
 void
 IMMHandler::Initialize()
 {
-  if (!gIMMLog) {
-    gIMMLog = PR_NewLogModule("nsIMM32HandlerWidgets");
-  }
   if (!sWM_MSIME_MOUSE) {
     sWM_MSIME_MOUSE = ::RegisterWindowMessage(RWM_MOUSE);
   }
@@ -1891,7 +1888,7 @@ IMMHandler::CommitCompositionOnPreviousWindow(nsWindow* aWindow)
   return false;
 }
 
-static uint32_t
+static TextRangeType
 PlatformToNSAttr(uint8_t aAttr)
 {
   switch (aAttr)
@@ -1899,35 +1896,16 @@ PlatformToNSAttr(uint8_t aAttr)
     case ATTR_INPUT_ERROR:
     // case ATTR_FIXEDCONVERTED:
     case ATTR_INPUT:
-      return NS_TEXTRANGE_RAWINPUT;
+      return TextRangeType::eRawClause;
     case ATTR_CONVERTED:
-      return NS_TEXTRANGE_CONVERTEDTEXT;
+      return TextRangeType::eConvertedClause;
     case ATTR_TARGET_NOTCONVERTED:
-      return NS_TEXTRANGE_SELECTEDRAWTEXT;
+      return TextRangeType::eSelectedRawClause;
     case ATTR_TARGET_CONVERTED:
-      return NS_TEXTRANGE_SELECTEDCONVERTEDTEXT;
+      return TextRangeType::eSelectedClause;
     default:
       NS_ASSERTION(false, "unknown attribute");
-      return NS_TEXTRANGE_CARETPOSITION;
-  }
-}
-
-static const char*
-GetRangeTypeName(uint32_t aRangeType)
-{
-  switch (aRangeType) {
-    case NS_TEXTRANGE_RAWINPUT:
-      return "NS_TEXTRANGE_RAWINPUT";
-    case NS_TEXTRANGE_CONVERTEDTEXT:
-      return "NS_TEXTRANGE_CONVERTEDTEXT";
-    case NS_TEXTRANGE_SELECTEDRAWTEXT:
-      return "NS_TEXTRANGE_SELECTEDRAWTEXT";
-    case NS_TEXTRANGE_SELECTEDCONVERTEDTEXT:
-      return "NS_TEXTRANGE_SELECTEDCONVERTEDTEXT";
-    case NS_TEXTRANGE_CARETPOSITION:
-      return "NS_TEXTRANGE_CARETPOSITION";
-    default:
-      return "UNKNOWN SELECTION TYPE!!";
+      return TextRangeType::eCaret;
   }
 }
 
@@ -1975,8 +1953,8 @@ IMMHandler::DispatchCompositionChangeEvent(nsWindow* aWindow,
 
   // NOTE: Calling SetIMERelatedWindowsPos() from this method will be failure
   //       in e10s mode.  compositionchange event will notify this of
-  //       NOTIFY_IME_OF_COMPOSITION_UPDATE, then SetIMERelatedWindowsPos()
-  //       will be called.
+  //       NOTIFY_IME_OF_COMPOSITION_EVENT_HANDLED, then
+  //       SetIMERelatedWindowsPos() will be called.
 
   // XXX Sogou (Simplified Chinese IME) returns contradictory values:
   //     The cursor position is actual cursor position. However, other values
@@ -2017,8 +1995,9 @@ IMMHandler::DispatchCompositionChangeEvent(nsWindow* aWindow,
       }
 
       uint32_t length = current - lastOffset;
-      uint32_t attr = PlatformToNSAttr(mAttributeArray[lastOffset]);
-      rv = dispatcher->AppendClauseToPendingComposition(length, attr);
+      TextRangeType textRangeType =
+        PlatformToNSAttr(mAttributeArray[lastOffset]);
+      rv = dispatcher->AppendClauseToPendingComposition(length, textRangeType);
       if (NS_WARN_IF(NS_FAILED(rv))) {
         MOZ_LOG(gIMMLog, LogLevel::Error,
           ("IMM: DispatchCompositionChangeEvent, FAILED due to"
@@ -2031,7 +2010,7 @@ IMMHandler::DispatchCompositionChangeEvent(nsWindow* aWindow,
       MOZ_LOG(gIMMLog, LogLevel::Info,
         ("IMM: DispatchCompositionChangeEvent, index=%ld, rangeType=%s, "
          "range length=%lu",
-         i, GetRangeTypeName(attr), length));
+         i, ToChar(textRangeType), length));
     }
   }
 
@@ -2193,22 +2172,6 @@ IMMHandler::GetCharacterRectOfSelectedTextAt(nsWindow* aWindow,
     return false;
   }
 
-  // The base offset of aOffset is the start of composition string during
-  // composing or the start of selected string not during composing.
-  uint32_t baseOffset =
-    mIsComposing ? mCompositionStart : selection.mOffset;
-
-  CheckedInt<uint32_t> checkingOffset =
-    CheckedInt<uint32_t>(baseOffset) + aOffset;
-  if (NS_WARN_IF(!checkingOffset.isValid()) ||
-      checkingOffset.value() == UINT32_MAX) {
-    MOZ_LOG(gIMMLog, LogLevel::Error,
-      ("IMM: GetCharacterRectOfSelectedTextAt, FAILED, due to "
-       "aOffset is too large (aOffset=%u, baseOffset=%u, mIsComposing=%s)",
-       aOffset, baseOffset, GetBoolName(mIsComposing)));
-    return false;
-  }
-
   // If the offset is larger than the end of composition string or selected
   // string, we should return false since such case must be a bug of the caller
   // or the active IME.  If it's an IME's bug, we need to set targetLength to
@@ -2223,8 +2186,6 @@ IMMHandler::GetCharacterRectOfSelectedTextAt(nsWindow* aWindow,
     return false;
   }
 
-  uint32_t offset = checkingOffset.value();
-
   // If there is caret, we might be able to use caret rect.
   uint32_t caretOffset = UINT32_MAX;
   // There is a caret only when the normal selection is collapsed.
@@ -2234,24 +2195,26 @@ IMMHandler::GetCharacterRectOfSelectedTextAt(nsWindow* aWindow,
       // the composition string.
       if (mCursorPosition != NO_IME_CARET) {
         MOZ_ASSERT(mCursorPosition >= 0);
-        caretOffset = mCompositionStart + mCursorPosition;
+        caretOffset = mCursorPosition;
       } else if (!ShouldDrawCompositionStringOurselves() ||
                  mCompositionString.IsEmpty()) {
         // Otherwise, if there is no composition string, we should assume that
         // there is a caret at the start of composition string.
-        caretOffset = mCompositionStart;
+        caretOffset = 0;
       }
     } else {
       // If there is no composition, the selection offset is the caret offset.
-      caretOffset = selection.mOffset;
+      caretOffset = 0;
     }
   }
 
   // If there is a caret and retrieving offset is same as the caret offset,
   // we should use the caret rect.
-  if (offset != caretOffset) {
+  if (aOffset != caretOffset) {
     WidgetQueryContentEvent charRect(true, eQueryTextRect, aWindow);
-    charRect.InitForQueryTextRect(offset, 1);
+    WidgetQueryContentEvent::Options options;
+    options.mRelativeToInsertionPoint = true;
+    charRect.InitForQueryTextRect(aOffset, 1, options);
     aWindow->InitEvent(charRect, &point);
     DispatchEvent(aWindow, charRect);
     if (charRect.mSucceeded) {
@@ -2279,16 +2242,10 @@ IMMHandler::GetCaretRect(nsWindow* aWindow,
 {
   LayoutDeviceIntPoint point(0, 0);
 
-  Selection& selection = GetSelection();
-  if (!selection.EnsureValidSelection(aWindow)) {
-    MOZ_LOG(gIMMLog, LogLevel::Error,
-      ("IMM: GetCaretRect, FAILED, due to "
-       "Selection::EnsureValidSelection() failure"));
-    return false;
-  }
-
   WidgetQueryContentEvent caretRect(true, eQueryCaretRect, aWindow);
-  caretRect.InitForQueryCaretRect(selection.mOffset);
+  WidgetQueryContentEvent::Options options;
+  options.mRelativeToInsertionPoint = true;
+  caretRect.InitForQueryCaretRect(0, options);
   aWindow->InitEvent(caretRect, &point);
   DispatchEvent(aWindow, caretRect);
   if (!caretRect.mSucceeded) {

@@ -11,7 +11,6 @@
  */
 
 #include "nsImageLoadingContent.h"
-#include "nsAutoPtr.h"
 #include "nsError.h"
 #include "nsIContent.h"
 #include "nsIDocument.h"
@@ -291,7 +290,7 @@ nsImageLoadingContent::OnUnlockedDraw()
     return;
   }
 
-  presShell->MarkFrameVisibleInDisplayPort(frame);
+  presShell->MarkFrameVisible(frame, VisibilityCounter::IN_DISPLAYPORT);
 }
 
 nsresult
@@ -1425,14 +1424,17 @@ nsImageLoadingContent::UnbindFromTree(bool aDeep, bool aNullParent)
 }
 
 void
-nsImageLoadingContent::OnVisibilityChange(Visibility aNewVisibility,
+nsImageLoadingContent::OnVisibilityChange(Visibility aOldVisibility,
+                                          Visibility aNewVisibility,
                                           const Maybe<OnNonvisible>& aNonvisibleAction)
 {
   switch (aNewVisibility) {
     case Visibility::MAY_BECOME_VISIBLE:
     case Visibility::IN_DISPLAYPORT:
-      TrackImage(mCurrentRequest);
-      TrackImage(mPendingRequest);
+      if (aOldVisibility == Visibility::NONVISIBLE) {
+        TrackImage(mCurrentRequest);
+        TrackImage(mPendingRequest);
+      }
       break;
 
     case Visibility::NONVISIBLE:

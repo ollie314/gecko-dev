@@ -14,11 +14,12 @@ import android.support.annotation.Nullable;
 import android.support.annotation.WorkerThread;
 import android.text.TextUtils;
 
+import android.util.Log;
 import org.mozilla.gecko.AppConstants;
 import org.mozilla.gecko.GeckoProfile;
 import org.mozilla.gecko.Locales;
 import org.mozilla.gecko.search.SearchEngine;
-import org.mozilla.gecko.telemetry.TelemetryConstants;
+import org.mozilla.gecko.sync.ExtendedJSONObject;
 import org.mozilla.gecko.telemetry.TelemetryPing;
 import org.mozilla.gecko.util.DateUtil;
 import org.mozilla.gecko.util.Experiments;
@@ -37,9 +38,13 @@ import java.util.concurrent.TimeUnit;
  * for details on the core ping.
  */
 public class TelemetryCorePingBuilder extends TelemetryPingBuilder {
+    private static final String LOGTAG = StringUtils.safeSubstring(TelemetryCorePingBuilder.class.getSimpleName(), 0, 23);
+
+    // For legacy reasons, this preference key is not namespaced with "core".
+    private static final String PREF_SEQ_COUNT = "telemetry-seqCount";
 
     private static final String NAME = "core";
-    private static final int VERSION_VALUE = 5; // For version history, see toolkit/components/telemetry/docs/core-ping.rst
+    private static final int VERSION_VALUE = 7; // For version history, see toolkit/components/telemetry/docs/core-ping.rst
     private static final String OS_VALUE = "Android";
 
     private static final String ARCHITECTURE = "arch";
@@ -53,13 +58,14 @@ public class TelemetryCorePingBuilder extends TelemetryPingBuilder {
     private static final String OS_VERSION = "osversion";
     private static final String PING_CREATION_DATE = "created";
     private static final String PROFILE_CREATION_DATE = "profileDate";
-    public static final String SEQ = "seq";
+    private static final String SEARCH_COUNTS = "searches";
+    private static final String SEQ = "seq";
+    private static final String SESSION_COUNT = "sessions";
+    private static final String SESSION_DURATION = "durations";
     private static final String TIMEZONE_OFFSET = "tz";
     private static final String VERSION_ATTR = "v";
 
-    public TelemetryCorePingBuilder(final Context context, final int sequenceNumber) {
-        super(sequenceNumber);
-        setSequenceNumber(sequenceNumber);
+    public TelemetryCorePingBuilder(final Context context) {
         initPayloadConstants(context);
     }
 
@@ -136,6 +142,20 @@ public class TelemetryCorePingBuilder extends TelemetryPingBuilder {
     }
 
     /**
+     * @param searchCounts non-empty JSON with {"engine.where": <int-count>}
+     */
+    public TelemetryCorePingBuilder setOptSearchCounts(@NonNull final ExtendedJSONObject searchCounts) {
+        if (searchCounts == null) {
+            throw new IllegalStateException("Expected non-null search counts");
+        } else if (searchCounts.size() == 0) {
+            throw new IllegalStateException("Expected non-empty search counts");
+        }
+
+        payload.put(SEARCH_COUNTS, searchCounts);
+        return this;
+    }
+
+    /**
      * @param date The profile creation date in days to the unix epoch (not millis!), or null if there is an error.
      */
     public TelemetryCorePingBuilder setProfileCreationDate(@Nullable final Long date) {
@@ -149,11 +169,34 @@ public class TelemetryCorePingBuilder extends TelemetryPingBuilder {
     /**
      * @param seq a positive sequence number.
      */
-    private void setSequenceNumber(final int seq) {
+    public TelemetryCorePingBuilder setSequenceNumber(final int seq) {
         if (seq < 0) {
-            throw new IllegalArgumentException("Expected positive sequence number. Recived: " + seq);
+            // Since this is an increasing value, it's possible we can overflow into negative values and get into a
+            // crash loop so we don't crash on invalid arg - we can investigate if we see negative values on the server.
+            Log.w(LOGTAG, "Expected positive sequence number. Received: " + seq);
         }
         payload.put(SEQ, seq);
+        return this;
+    }
+
+    public TelemetryCorePingBuilder setSessionCount(final int sessionCount) {
+        if (sessionCount < 0) {
+            // Since this is an increasing value, it's possible we can overflow into negative values and get into a
+            // crash loop so we don't crash on invalid arg - we can investigate if we see negative values on the server.
+            Log.w(LOGTAG, "Expected positive session count. Received: " + sessionCount);
+        }
+        payload.put(SESSION_COUNT, sessionCount);
+        return this;
+    }
+
+    public TelemetryCorePingBuilder setSessionDuration(final long sessionDuration) {
+        if (sessionDuration < 0) {
+            // Since this is an increasing value, it's possible we can overflow into negative values and get into a
+            // crash loop so we don't crash on invalid arg - we can investigate if we see negative values on the server.
+            Log.w(LOGTAG, "Expected positive session duration. Received: " + sessionDuration);
+        }
+        payload.put(SESSION_DURATION, sessionDuration);
+        return this;
     }
 
     /**
@@ -162,9 +205,9 @@ public class TelemetryCorePingBuilder extends TelemetryPingBuilder {
      */
     @WorkerThread // synchronous shared prefs write.
     public static int getAndIncrementSequenceNumber(final SharedPreferences sharedPrefsForProfile) {
-        final int seq = sharedPrefsForProfile.getInt(TelemetryConstants.PREF_SEQ_COUNT, 1);
+        final int seq = sharedPrefsForProfile.getInt(PREF_SEQ_COUNT, 1);
 
-        sharedPrefsForProfile.edit().putInt(TelemetryConstants.PREF_SEQ_COUNT, seq + 1).apply();
+        sharedPrefsForProfile.edit().putInt(PREF_SEQ_COUNT, seq + 1).apply();
         return seq;
     }
 

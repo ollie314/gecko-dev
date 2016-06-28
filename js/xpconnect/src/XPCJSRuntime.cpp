@@ -15,6 +15,7 @@
 #include "XPCJSMemoryReporter.h"
 #include "WrapperFactory.h"
 #include "mozJSComponentLoader.h"
+#include "nsAutoPtr.h"
 #include "nsNetUtil.h"
 
 #include "nsIMemoryInfoDumper.h"
@@ -131,20 +132,6 @@ xpc::SharedMemoryEnabled() { return sSharedMemoryEnabled; }
 // *All* NativeSets are referenced from mNativeSetMap.
 // So, in mClassInfo2NativeSetMap we just clear references to the unmarked.
 // In mNativeSetMap we clear the references to the unmarked *and* delete them.
-
-bool
-XPCJSRuntime::CustomContextCallback(JSContext* cx, unsigned operation)
-{
-    if (operation == JSCONTEXT_NEW) {
-        if (!OnJSContextNew(cx)) {
-            return false;
-        }
-    } else if (operation == JSCONTEXT_DESTROY) {
-        delete XPCContext::GetXPCContext(cx);
-    }
-
-    return true;
-}
 
 class AsyncFreeSnowWhite : public Runnable
 {
@@ -596,6 +583,22 @@ CompartmentSizeOfIncludingThisCallback(MallocSizeOf mallocSizeOf, JSCompartment*
     return priv ? priv->SizeOfIncludingThis(mallocSizeOf) : 0;
 }
 
+/*
+ * Return true if there exists a non-system inner window which is a current
+ * inner window and whose reflector is gray.  We don't merge system
+ * compartments, so we don't use them to trigger merging CCs.
+ */
+bool XPCJSRuntime::UsefulToMergeZones() const
+{
+    MOZ_ASSERT(NS_IsMainThread());
+
+    // Turns out, actually making this return true often enough makes Windows
+    // mochitest-gl OOM a lot.  Need to figure out what's going on there; see
+    // bug 1277036.
+
+    return false;
+}
+
 void XPCJSRuntime::TraceNativeBlackRoots(JSTracer* trc)
 {
     // Skip this part if XPConnect is shutting down. We get into
@@ -988,6 +991,7 @@ class Watchdog
       , mHibernating(false)
       , mInitialized(false)
       , mShuttingDown(false)
+      , mSlowScriptSecondHalfCount(0)
       , mMinScriptRunTimeSeconds(1)
     {}
     ~Watchdog() { MOZ_ASSERT(!Initialized()); }
@@ -1097,6 +1101,10 @@ class Watchdog
         return mMinScriptRunTimeSeconds;
     }
 
+    uint32_t GetSlowScriptSecondHalfCount() { return mSlowScriptSecondHalfCount; }
+    void IncrementSlowScriptSecondHalfCount() { mSlowScriptSecondHalfCount++; }
+    void ResetSlowScriptSecondHalfCount() { mSlowScriptSecondHalfCount = 0; }
+
   private:
     WatchdogManager* mManager;
 
@@ -1106,6 +1114,10 @@ class Watchdog
     bool mHibernating;
     bool mInitialized;
     bool mShuttingDown;
+
+    // See the comment in WatchdogMain.
+    uint32_t mSlowScriptSecondHalfCount;
+
     mozilla::Atomic<int32_t> mMinScriptRunTimeSeconds;
 };
 
@@ -1173,6 +1185,8 @@ class WatchdogManager : public nsIObserver
 
         // Write state.
         mTimestamps[TimestampRuntimeStateChange] = PR_Now();
+        if (mWatchdog)
+            mWatchdog->ResetSlowScriptSecondHalfCount();
         mRuntimeState = active ? RUNTIME_ACTIVE : RUNTIME_INACTIVE;
 
         // The watchdog may be hibernating, waiting for the runtime to go
@@ -1302,26 +1316,49 @@ WatchdogMain(void* arg)
         // been running long enough that we might show the slow script dialog.
         // Triggering the callback from off the main thread can be expensive.
 
-        // We want to avoid showing the slow script dialog if the user's laptop
-        // goes to sleep in the middle of running a script. To ensure this, we
-        // invoke the interrupt callback after only half the timeout has
-        // elapsed. The callback simply records the fact that it was called in
-        // the mSlowScriptSecondHalf flag. Then we wait another (timeout/2)
-        // seconds and invoke the callback again. This time around it sees
-        // mSlowScriptSecondHalf is set and so it shows the slow script
-        // dialog. If the computer is put to sleep during one of the (timeout/2)
-        // periods, the script still has the other (timeout/2) seconds to
-        // finish.
-        PRTime usecs = self->MinScriptRunTimeSeconds() * PR_USEC_PER_SEC / 2;
-        if (manager->IsRuntimeActive() &&
-            manager->TimeSinceLastRuntimeStateChange() >= usecs)
-        {
-            bool debuggerAttached = false;
-            nsCOMPtr<nsIDebug2> dbg = do_GetService("@mozilla.org/xpcom/debug;1");
-            if (dbg)
-                dbg->GetIsDebuggerAttached(&debuggerAttached);
-            if (!debuggerAttached)
-                JS_RequestInterruptCallback(manager->Runtime()->Runtime());
+        // If we spend too much time running JS code in an event handler, then
+        // we want to show the slow script UI.  The timeout T is controlled by
+        // prefs.  We want to avoid showing the slow script dialog if the
+        // user's laptop goes to sleep in the middle of running a script.  To
+        // ensure this, we invoke the interrupt callback only after the T/2
+        // elapsed twice.  If the computer is put to sleep during one of the
+        // T/2 periods, the script still has the other T/2 seconds to finish.
+        //
+        //   + <-- TimestampRuntimeStateChange = PR_Now()
+        //   |     mSlowScriptSecondHalfCount = 0
+        //   |
+        //   | T/2
+        //   |
+        //   + <-- mSlowScriptSecondHalfCount = 1
+        //   |
+        //   | T/2
+        //   |
+        //   + <-- mSlowScriptSecondHalfCount = 2
+        //   |     Invoke interrupt callback
+        //   |
+        //   | T/2
+        //   |
+        //   + <-- mSlowScriptSecondHalfCount = 3
+        //   |
+        //   | T/2
+        //   |
+        //   + <-- mSlowScriptSecondHalfCount = 4
+        //         Invoke interrupt callback
+        //
+        PRTime usecs = self->MinScriptRunTimeSeconds() * PR_USEC_PER_SEC;
+        if (manager->IsRuntimeActive()) {
+            uint32_t count = self->GetSlowScriptSecondHalfCount() + 1;
+            if (manager->TimeSinceLastRuntimeStateChange() >= usecs * count / 2) {
+                self->IncrementSlowScriptSecondHalfCount();
+                if (count % 2 == 0) {
+                    bool debuggerAttached = false;
+                    nsCOMPtr<nsIDebug2> dbg = do_GetService("@mozilla.org/xpcom/debug;1");
+                    if (dbg)
+                        dbg->GetIsDebuggerAttached(&debuggerAttached);
+                    if (!debuggerAttached)
+                        JS_RequestInterruptCallback(manager->Runtime()->Runtime());
+                }
+            }
         }
     }
 
@@ -1364,7 +1401,8 @@ XPCJSRuntime::InterruptCallback(JSContext* cx)
     // care of that case.
     if (self->mSlowScriptCheckpoint.IsNull()) {
         self->mSlowScriptCheckpoint = TimeStamp::NowLoRes();
-        self->mSlowScriptSecondHalf = false;
+        self->mSlowScriptActualWait = mozilla::TimeDuration();
+        self->mTimeoutAccumulated = false;
         return true;
     }
 
@@ -1383,17 +1421,10 @@ XPCJSRuntime::InterruptCallback(JSContext* cx)
     int32_t limit = Preferences::GetInt(prefName, chrome ? 20 : 10);
 
     // If there's no limit, or we're within the limit, let it go.
-    if (limit == 0 || duration.ToSeconds() < limit / 2.0)
+    if (limit == 0 || duration.ToSeconds() < limit)
         return true;
 
-    // In order to guard against time changes or laptops going to sleep, we
-    // don't trigger the slow script warning until (limit/2) seconds have
-    // elapsed twice.
-    if (!self->mSlowScriptSecondHalf) {
-        self->mSlowScriptCheckpoint = TimeStamp::NowLoRes();
-        self->mSlowScriptSecondHalf = true;
-        return true;
-    }
+    self->mSlowScriptActualWait += duration;
 
     //
     // This has gone on long enough! Time to take action. ;-)
@@ -1431,10 +1462,20 @@ XPCJSRuntime::InterruptCallback(JSContext* cx)
         return false;
     }
 
+    // Accumulate slow script invokation delay.
+    if (!chrome && !self->mTimeoutAccumulated) {
+      uint32_t delay = uint32_t(self->mSlowScriptActualWait.ToMilliseconds() - (limit * 1000.0));
+      Telemetry::Accumulate(Telemetry::SLOW_SCRIPT_NOTIFY_DELAY, delay);
+      self->mTimeoutAccumulated = true;
+    }
+
     // Show the prompt to the user, and kill if requested.
     nsGlobalWindow::SlowScriptResponse response = win->ShowSlowScriptDialog();
-    if (response == nsGlobalWindow::KillSlowScript)
+    if (response == nsGlobalWindow::KillSlowScript) {
+        if (Preferences::GetBool("dom.global_stop_script", true))
+            xpc::Scriptability::Get(global).Block();
         return false;
+    }
 
     // The user chose to continue the script. Reset the timer, and disable this
     // machinery with a pref of the user opted out of future slow-script dialogs.
@@ -1505,12 +1546,6 @@ CompartmentPrivate::SizeOfIncludingThis(MallocSizeOf mallocSizeOf)
 
 /***************************************************************************/
 
-void XPCJSRuntime::DestroyJSContextStack()
-{
-    delete mJSContextStack;
-    mJSContextStack = nullptr;
-}
-
 void XPCJSRuntime::SystemIsBeingShutDown()
 {
     for (auto i = mDetachedWrappedNativeProtoMap->Iter(); !i.Done(); i.Next()) {
@@ -1538,6 +1573,7 @@ ReloadPrefsCallback(const char* pref, void* data)
     bool useIon = Preferences::GetBool(JS_OPTIONS_DOT_STR "ion") && !safeMode;
     bool useAsmJS = Preferences::GetBool(JS_OPTIONS_DOT_STR "asmjs") && !safeMode;
     bool useWasm = Preferences::GetBool(JS_OPTIONS_DOT_STR "wasm") && !safeMode;
+    bool useWasmBaseline = Preferences::GetBool(JS_OPTIONS_DOT_STR "wasm_baselinejit") && !safeMode;
     bool throwOnAsmJSValidationFailure = Preferences::GetBool(JS_OPTIONS_DOT_STR
                                                               "throw_on_asmjs_validation_failure");
     bool useNativeRegExp = Preferences::GetBool(JS_OPTIONS_DOT_STR "native_regexp") && !safeMode;
@@ -1569,10 +1605,21 @@ ReloadPrefsCallback(const char* pref, void* data)
     sExtraWarningsForSystemJS = Preferences::GetBool(JS_OPTIONS_DOT_STR "strict.debug");
 #endif
 
+#ifdef JS_GC_ZEAL
+    int32_t zeal = Preferences::GetInt(JS_OPTIONS_DOT_STR "gczeal", -1);
+    int32_t zeal_frequency =
+        Preferences::GetInt(JS_OPTIONS_DOT_STR "gczeal.frequency",
+                            JS_DEFAULT_ZEAL_FREQ);
+    if (zeal >= 0) {
+        JS_SetGCZeal(rt, (uint8_t)zeal, zeal_frequency);
+    }
+#endif // JS_GC_ZEAL
+
     JS::RuntimeOptionsRef(rt).setBaseline(useBaseline)
                              .setIon(useIon)
                              .setAsmJS(useAsmJS)
                              .setWasm(useWasm)
+                             .setWasmAlwaysBaseline(useWasmBaseline)
                              .setThrowOnAsmJSValidationFailure(throwOnAsmJSValidationFailure)
                              .setNativeRegExp(useNativeRegExp)
                              .setAsyncStack(useAsyncStack)
@@ -2728,7 +2775,8 @@ class OrphanReporter : public JS::ObjectPrivateVisitor
             // sub-tree that this node belongs to, measure the sub-tree's size
             // and then record its root so we don't measure it again.
             nsCOMPtr<nsINode> orphanTree = node->SubtreeRoot();
-            if (!mAlreadyMeasuredOrphanTrees.Contains(orphanTree)) {
+            if (orphanTree &&
+                !mAlreadyMeasuredOrphanTrees.Contains(orphanTree)) {
                 // If PutEntry() fails we don't measure this tree, which could
                 // lead to under-measurement. But that's better than the
                 // alternatives, which are over-measurement or an OOM abort.
@@ -3332,8 +3380,7 @@ static const JSWrapObjectCallbacks WrapObjectCallbacks = {
 };
 
 XPCJSRuntime::XPCJSRuntime()
- : mJSContextStack(new XPCJSContextStack(this)),
-   mCallContext(nullptr),
+ : mCallContext(nullptr),
    mAutoRoots(nullptr),
    mResolveName(JSID_VOID),
    mResolvingWrapper(nullptr),
@@ -3354,7 +3401,8 @@ XPCJSRuntime::XPCJSRuntime()
    mObjectHolderRoots(nullptr),
    mWatchdogManager(new WatchdogManager(this)),
    mAsyncSnowWhiteFreer(new AsyncFreeSnowWhite()),
-   mSlowScriptSecondHalf(false)
+   mTimeoutAccumulated(false),
+   mPendingResult(NS_OK)
 {
 }
 
@@ -3519,6 +3567,10 @@ XPCJSRuntime::Initialize()
     js::SetActivityCallback(runtime, ActivityCallback, this);
     JS_SetInterruptCallback(runtime, InterruptCallback);
     js::SetWindowProxyClass(runtime, &OuterWindowProxyClass);
+#ifdef MOZ_CRASHREPORTER
+    js::AutoEnterOOMUnsafeRegion::setAnnotateOOMAllocationSizeCallback(
+            CrashReporter::AnnotateOOMAllocationSize);
+#endif
 
     // The JS engine needs to keep the source code around in order to implement
     // Function.prototype.toSource(). It'd be nice to not have to do this for
@@ -3593,11 +3645,8 @@ XPCJSRuntime::newXPCJSRuntime()
 }
 
 bool
-XPCJSRuntime::OnJSContextNew(JSContext* cx)
+XPCJSRuntime::JSContextInitialized(JSContext* cx)
 {
-    // If we were the first cx ever created (like the SafeJSContext), the caller
-    // would have had no way to enter a request. Enter one now before doing the
-    // rest of the cx setup.
     JSAutoRequest ar(cx);
 
     // if it is our first context then we need to generate our string ids
@@ -3617,10 +3666,6 @@ XPCJSRuntime::OnJSContextNew(JSContext* cx)
             return false;
         }
     }
-
-    XPCContext* xpc = new XPCContext(this, cx);
-    if (!xpc)
-        return false;
 
     return true;
 }
@@ -3688,15 +3733,12 @@ XPCJSRuntime::BeforeProcessTask(bool aMightBlock)
 
     // Start the slow script timer.
     mSlowScriptCheckpoint = mozilla::TimeStamp::NowLoRes();
-    mSlowScriptSecondHalf = false;
+    mSlowScriptActualWait = mozilla::TimeDuration();
+    mTimeoutAccumulated = false;
 
     // As we may be entering a nested event loop, we need to
     // cancel any ongoing performance measurement.
     js::ResetPerformanceMonitoring(Get()->Runtime());
-
-    // Push a null JSContext so that we don't see any script during
-    // event processing.
-    PushNullJSContext();
 
     CycleCollectedJSRuntime::BeforeProcessTask(aMightBlock);
 }
@@ -3706,7 +3748,6 @@ XPCJSRuntime::AfterProcessTask(uint32_t aNewRecursionDepth)
 {
     // Now that we're back to the event loop, reset the slow script checkpoint.
     mSlowScriptCheckpoint = mozilla::TimeStamp();
-    mSlowScriptSecondHalf = false;
 
     // Call cycle collector occasionally.
     MOZ_ASSERT(NS_IsMainThread());
@@ -3717,8 +3758,6 @@ XPCJSRuntime::AfterProcessTask(uint32_t aNewRecursionDepth)
     // Now that we are certain that the event is complete,
     // we can flush any ongoing performance measurement.
     js::FlushPerformanceMonitoring(Get()->Runtime());
-
-    PopNullJSContext();
 }
 
 /***************************************************************************/
@@ -3731,20 +3770,7 @@ XPCJSRuntime::DebugDump(int16_t depth)
     XPC_LOG_ALWAYS(("XPCJSRuntime @ %x", this));
         XPC_LOG_INDENT();
         XPC_LOG_ALWAYS(("mJSRuntime @ %x", Runtime()));
-
-        int cxCount = 0;
-        JSContext* iter = nullptr;
-        while (JS_ContextIterator(Runtime(), &iter))
-            ++cxCount;
-        XPC_LOG_ALWAYS(("%d JS context(s)", cxCount));
-
-        iter = nullptr;
-        while (JS_ContextIterator(Runtime(), &iter)) {
-            XPCContext* xpc = XPCContext::GetXPCContext(iter);
-            XPC_LOG_INDENT();
-            xpc->DebugDump(depth);
-            XPC_LOG_OUTDENT();
-        }
+        XPC_LOG_ALWAYS(("mJSContext @ %x", Context()));
 
         XPC_LOG_ALWAYS(("mWrappedJSClassMap @ %x with %d wrapperclasses(s)",
                         mWrappedJSClassMap, mWrappedJSClassMap->Count()));
@@ -3790,6 +3816,8 @@ XPCJSRuntime::DebugDump(int16_t depth)
             }
             XPC_LOG_OUTDENT();
         }
+
+        XPC_LOG_ALWAYS(("mPendingResult of %x", mPendingResult));
 
         XPC_LOG_OUTDENT();
 #endif
@@ -3850,7 +3878,7 @@ void
 XPCJSRuntime::InitSingletonScopes()
 {
     // This all happens very early, so we don't bother with cx pushing.
-    JSContext* cx = GetJSContextStack()->GetSafeJSContext();
+    JSContext* cx = Context();
     JSAutoRequest ar(cx);
     RootedValue v(cx);
     nsresult rv;

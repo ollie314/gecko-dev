@@ -11,6 +11,8 @@ const { LocalizationHelper } = require("devtools/client/shared/l10n");
 const l10n = new LocalizationHelper("chrome://devtools/locale/components.properties");
 
 module.exports = createClass({
+  displayName: "Frame",
+
   propTypes: {
     // SavedFrame, or an object containing all the required properties.
     frame: PropTypes.shape({
@@ -18,6 +20,7 @@ module.exports = createClass({
       source: PropTypes.string.isRequired,
       line: PropTypes.oneOfType([ PropTypes.string, PropTypes.number ]),
       column: PropTypes.oneOfType([ PropTypes.string, PropTypes.number ]),
+      showEmptyPathAsHost: PropTypes.bool,
     }).isRequired,
     // Clicking on the frame link -- probably should link to the debugger.
     onClick: PropTypes.func.isRequired,
@@ -31,13 +34,13 @@ module.exports = createClass({
     return {
       showFunctionName: false,
       showHost: false,
+      showEmptyPathAsHost: false,
     };
   },
 
-  displayName: "Frame",
-
   render() {
     let { onClick, frame, showFunctionName, showHost } = this.props;
+    let { showEmptyPathAsHost } = frame;
     let source = frame.source ? String(frame.source) : "";
     let line = frame.line != void 0 ? Number(frame.line) : null;
     let column = frame.column != void 0 ? Number(frame.column) : null;
@@ -72,13 +75,18 @@ module.exports = createClass({
 
     if (showFunctionName && frame.functionDisplayName) {
       elements.push(
-        dom.span({ className: "frame-link-function-display-name" }, frame.functionDisplayName)
+        dom.span({ className: "frame-link-function-display-name" },
+                 frame.functionDisplayName)
       );
     }
 
+    let displaySource = short;
+    if (showEmptyPathAsHost && (short === "" || short === "/")) {
+      displaySource = host;
+    }
     sourceElements.push(dom.span({
       className: "frame-link-filename",
-    }, short));
+    }, displaySource));
 
     // If source is linkable, and we have a line number > 0
     if (isLinkable && line) {
@@ -87,7 +95,9 @@ module.exports = createClass({
       // Intentionally exclude 0
       if (column) {
         sourceElements.push(dom.span({ className: "frame-link-colon" }, ":"));
-        sourceElements.push(dom.span({ className: "frame-link-column" }, column));
+        sourceElements.push(
+          dom.span({ className: "frame-link-column" }, column)
+        );
         // Add `data-column` attribute for testing
         attributes["data-column"] = column;
       }
@@ -100,7 +110,11 @@ module.exports = createClass({
     // it an anchor link, as we can't link to it.
     if (isLinkable) {
       sourceEl = dom.a({
-        onClick,
+        onClick: e => {
+          e.preventDefault();
+          onClick(e);
+        },
+        href: source,
         className: "frame-link-source",
         title: l10n.getFormatStr("frame.viewsourceindebugger", tooltip)
       }, sourceElements);

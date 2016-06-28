@@ -2116,71 +2116,77 @@ CSSParserImpl::ParseSourceSizeList(const nsAString& aBuffer,
   // See ParseMediaList comment about HTML mode
   mHTMLMediaMode = aHTMLMode;
 
-  bool hitError = false;
-  for (;;) {
-    nsAutoPtr<nsMediaQuery> query;
-    nsCSSValue value;
+  // https://html.spec.whatwg.org/multipage/embedded-content.html#parse-a-sizes-attribute
+  bool hitEnd = false;
+  do {
+    bool hitError = false;
+    // Parse single <media-condition> <source-size-value>
+    do {
+      nsAutoPtr<nsMediaQuery> query;
+      nsCSSValue value;
 
-    bool hitStop;
-    if (!ParseMediaQuery(eMediaQuerySingleCondition, getter_Transfers(query),
-                         &hitStop)) {
-      NS_ASSERTION(!hitStop, "should return true when hit stop");
-      hitError = true;
-      break;
+      bool hitStop;
+      if (!ParseMediaQuery(eMediaQuerySingleCondition, getter_Transfers(query),
+                           &hitStop)) {
+        NS_ASSERTION(!hitStop, "should return true when hit stop");
+        hitError = true;
+        break;
+      }
+
+      if (!query) {
+        REPORT_UNEXPECTED_EOF(PEParseSourceSizeListEOF);
+        NS_ASSERTION(hitStop,
+                     "should return hitStop or an error if returning no query");
+        hitError = true;
+        break;
+      }
+
+      if (hitStop) {
+        // Empty conditions (e.g. just a bare value) should be treated as always
+        // matching (a query with no expressions fails to match, so a negated one
+        // always matches.)
+        query->SetNegated();
+      }
+
+      // https://html.spec.whatwg.org/multipage/embedded-content.html#source-size-value
+      // Percentages are not allowed in a <source-size-value>, to avoid
+      // confusion about what it would be relative to.
+      if (ParseNonNegativeVariant(value, VARIANT_LCALC, nullptr) !=
+          CSSParseResult::Ok) {
+        hitError = true;
+        break;
+      }
+
+      if (GetToken(true)) {
+        if (!mToken.IsSymbol(',')) {
+          REPORT_UNEXPECTED_TOKEN(PEParseSourceSizeListNotComma);
+          hitError = true;
+          break;
+        }
+      } else {
+        hitEnd = true;
+      }
+
+      aQueries.AppendElement(query.forget());
+      aValues.AppendElement(value);
+    } while(0);
+
+    if (hitError) {
+      OUTPUT_ERROR();
+
+      // Per spec, we just skip the current entry if there was a parse error.
+      // Jumps to next entry of <source-size-list> which is a comma-separated list.
+      if (!SkipUntil(',')) {
+        hitEnd = true;
+      }
     }
-
-    if (!query) {
-      REPORT_UNEXPECTED_EOF(PEParseSourceSizeListEOF);
-      NS_ASSERTION(hitStop,
-                   "should return hitStop or an error if returning no query");
-      hitError = true;
-      break;
-    }
-
-    if (hitStop) {
-      // Empty conditions (e.g. just a bare value) should be treated as always
-      // matching (a query with no expressions fails to match, so a negated one
-      // always matches.)
-      query->SetNegated();
-    }
-
-    // https://html.spec.whatwg.org/multipage/embedded-content.html#source-size-value
-    // Percentages are not allowed in a <source-size-value>, to avoid
-    // confusion about what it would be relative to.
-    if (ParseNonNegativeVariant(value, VARIANT_LCALC, nullptr) !=
-        CSSParseResult::Ok) {
-      hitError = true;
-      break;
-    }
-
-    aQueries.AppendElement(query.forget());
-    aValues.AppendElement(value);
-
-    if (!GetToken(true)) {
-      // Expected EOF
-      break;
-    }
-
-    if (eCSSToken_Symbol != mToken.mType || mToken.mSymbol != ',') {
-      REPORT_UNEXPECTED_TOKEN(PEParseSourceSizeListNotComma);
-      hitError = true;
-      break;
-    }
-  }
-
-  if (hitError) {
-    // Per spec, a parse failure in this list invalidates it
-    // entirely. Currently, this grammar is specified standalone and not part of
-    // any larger grammar, so it doesn't make sense to try to advance the token
-    // beyond it.
-    OUTPUT_ERROR();
-  }
+  } while (!hitEnd);
 
   CLEAR_ERROR();
   ReleaseScanner();
   mHTMLMediaMode = false;
 
-  return !hitError;
+  return !aQueries.IsEmpty();
 }
 
 bool
@@ -7475,6 +7481,7 @@ const UnitInfo UnitData[] = {
   { STR_WITH_LEN("vmin"), eCSSUnit_ViewportMin, VARIANT_LENGTH },
   { STR_WITH_LEN("vmax"), eCSSUnit_ViewportMax, VARIANT_LENGTH },
   { STR_WITH_LEN("pc"), eCSSUnit_Pica, VARIANT_LENGTH },
+  { STR_WITH_LEN("q"), eCSSUnit_Quarter, VARIANT_LENGTH },
   { STR_WITH_LEN("deg"), eCSSUnit_Degree, VARIANT_ANGLE },
   { STR_WITH_LEN("grad"), eCSSUnit_Grad, VARIANT_ANGLE },
   { STR_WITH_LEN("rad"), eCSSUnit_Radian, VARIANT_ANGLE },
@@ -8523,6 +8530,11 @@ CSSParserImpl::ParseGridAutoFlow()
   return true;
 }
 
+static const nsCSSKeyword kGridLineKeywords[] = {
+  eCSSKeyword_span,
+  eCSSKeyword_UNKNOWN  // End-of-array marker
+};
+
 CSSParseResult
 CSSParserImpl::ParseGridLineNames(nsCSSValue& aValue)
 {
@@ -8554,7 +8566,7 @@ CSSParserImpl::ParseGridLineNames(nsCSSValue& aValue)
   }
   for (;;) {
     if (!(eCSSToken_Ident == mToken.mType &&
-          ParseCustomIdent(item->mValue, mToken.mIdent))) {
+          ParseCustomIdent(item->mValue, mToken.mIdent, kGridLineKeywords))) {
       UngetToken();
       SkipUntil(']');
       return CSSParseResult::Error;
@@ -9562,10 +9574,6 @@ CSSParserImpl::ParseGridLine(nsCSSValue& aValue)
     return true;
   }
 
-  static const nsCSSKeyword kGridLineKeywords[] = {
-    eCSSKeyword_span,
-    eCSSKeyword_UNKNOWN  // End-of-array marker
-  };
   bool hasSpan = false;
   bool hasIdent = false;
   Maybe<int32_t> integer;
@@ -9754,12 +9762,12 @@ CSSParserImpl::ParseGridGap()
     AppendValue(eCSSProperty_grid_column_gap, first);
     return true;
   }
-  if (ParseNonNegativeVariant(first, VARIANT_LCALC, nullptr) !=
+  if (ParseNonNegativeVariant(first, VARIANT_LPCALC, nullptr) !=
         CSSParseResult::Ok) {
     return false;
   }
   nsCSSValue second;
-  auto result = ParseNonNegativeVariant(second, VARIANT_LCALC, nullptr);
+  auto result = ParseNonNegativeVariant(second, VARIANT_LPCALC, nullptr);
   if (result == CSSParseResult::Error) {
     return false;
   }
@@ -12024,15 +12032,22 @@ CSSParserImpl::ParseImageLayersItem(
   // Fill in the values that the shorthand will set if we don't find
   // other values.
   aState.mImage->mValue.SetNoneValue();
-  aState.mRepeat->mXValue.SetIntValue(NS_STYLE_IMAGELAYER_REPEAT_REPEAT,
-                                      eCSSUnit_Enumerated);
-  aState.mRepeat->mYValue.Reset();
   aState.mAttachment->mValue.SetIntValue(NS_STYLE_IMAGELAYER_ATTACHMENT_SCROLL,
                                          eCSSUnit_Enumerated);
   aState.mClip->mValue.SetIntValue(NS_STYLE_IMAGELAYER_CLIP_BORDER,
                                    eCSSUnit_Enumerated);
-  aState.mOrigin->mValue.SetIntValue(NS_STYLE_IMAGELAYER_ORIGIN_PADDING,
-                                     eCSSUnit_Enumerated);
+
+  aState.mRepeat->mXValue.SetIntValue(NS_STYLE_IMAGELAYER_REPEAT_REPEAT,
+                                      eCSSUnit_Enumerated);
+  aState.mRepeat->mYValue.Reset();
+
+  if (eCSSProperty_mask == aTable[nsStyleImageLayers::shorthand]) {
+    aState.mOrigin->mValue.SetIntValue(NS_STYLE_IMAGELAYER_ORIGIN_BORDER,
+                                       eCSSUnit_Enumerated);
+  } else {
+    aState.mOrigin->mValue.SetIntValue(NS_STYLE_IMAGELAYER_ORIGIN_PADDING,
+                                       eCSSUnit_Enumerated);
+  }
 
   RefPtr<nsCSSValue::Array> positionXArr = nsCSSValue::Array::Create(2);
   RefPtr<nsCSSValue::Array> positionYArr = nsCSSValue::Array::Create(2);

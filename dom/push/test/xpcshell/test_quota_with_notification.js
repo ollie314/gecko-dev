@@ -46,7 +46,7 @@ add_task(function* test_expiration_origin_threshold() {
   yield PlacesTestUtils.addVisits({
     uri: 'https://example.com/login',
     title: 'Sign in to see your auctions',
-    visitDate: (Date.now() - 1 * 24 * 60 * 60 * 1000) * 1000,
+    visitDate: (Date.now() - MS_IN_ONE_DAY) * 1000,
     transition: Ci.nsINavHistoryService.TRANSITION_LINK
   });
 
@@ -70,7 +70,7 @@ add_task(function* test_expiration_origin_threshold() {
     let quotaUpdateCount = 0;
     PushService._updateQuotaTestCallback = function() {
       quotaUpdateCount++;
-      if (quotaUpdateCount == 10) {
+      if (quotaUpdateCount == numMessages) {
         resolve();
       }
     };

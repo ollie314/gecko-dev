@@ -12,7 +12,7 @@ class ResultContainer(object):
     :param path: path to the file containing the error
     :param message: text describing the error
     :param lineno: line number that contains the error
-    :param column: column containing the error (default 1)
+    :param column: column containing the error
     :param level: severity of the error, either 'warning' or 'error' (default 'error')
     :param hint: suggestion for fixing the error (optional)
     :param source: source code context of the error (optional)
@@ -34,15 +34,15 @@ class ResultContainer(object):
         'lineoffset',
     )
 
-    def __init__(self, linter, path, message, lineno, column=1, hint=None,
-                 source=None, level='error', rule=None, lineoffset=None):
+    def __init__(self, linter, path, message, lineno, column=None, hint=None,
+                 source=None, level=None, rule=None, lineoffset=None):
         self.path = path
         self.message = message
         self.lineno = lineno
         self.column = column
         self.hint = hint
         self.source = source
-        self.level = level
+        self.level = level or 'error'
         self.linter = linter
         self.rule = rule
         self.lineoffset = lineoffset

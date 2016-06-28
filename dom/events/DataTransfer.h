@@ -16,7 +16,6 @@
 #include "nsIDragService.h"
 #include "nsCycleCollectionParticipant.h"
 
-#include "nsAutoPtr.h"
 #include "mozilla/Attributes.h"
 #include "mozilla/EventForwards.h"
 #include "mozilla/dom/File.h"
@@ -180,7 +179,7 @@ public:
   }
 
   already_AddRefed<DOMStringList> MozTypesAt(uint32_t aIndex,
-                                             mozilla::ErrorResult& aRv);
+                                             mozilla::ErrorResult& aRv) const;
 
   void MozClearDataAt(const nsAString& aFormat, uint32_t aIndex,
                       mozilla::ErrorResult& aRv);

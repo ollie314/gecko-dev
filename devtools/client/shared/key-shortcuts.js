@@ -34,7 +34,6 @@ const ElectronKeysMapping = {
   "F22": "DOM_VK_F22",
   "F23": "DOM_VK_F23",
   "F24": "DOM_VK_F24",
-  "Plus": "DOM_VK_PLUS",
   "Space": "DOM_VK_SPACE",
   "Backspace": "DOM_VK_BACK_SPACE",
   "Delete": "DOM_VK_DELETE",
@@ -51,6 +50,7 @@ const ElectronKeysMapping = {
   "PageDown": "DOM_VK_PAGE_DOWN",
   "Escape": "DOM_VK_ESCAPE",
   "Esc": "DOM_VK_ESCAPE",
+  "Tab": "DOM_VK_TAB",
   "VolumeUp": "DOM_VK_VOLUME_UP",
   "VolumeDown": "DOM_VK_VOLUME_DOWN",
   "VolumeMute": "DOM_VK_VOLUME_MUTE",
@@ -69,72 +69,112 @@ const ElectronKeysMapping = {
  *
  * @param DOMWindow window
  *        The window object of the document to listen events from.
+ * @param DOMElement target
+ *        Optional DOM Element on which we should listen events from.
+ *        If omitted, we listen for all events fired on `window`.
  */
-function KeyShortcuts({ window }) {
+function KeyShortcuts({ window, target }) {
   this.window = window;
+  this.target = target || window;
   this.keys = new Map();
   this.eventEmitter = new EventEmitter();
-  this.window.addEventListener("keydown", this);
+  this.target.addEventListener("keydown", this);
 }
 
-KeyShortcuts.prototype = {
-  /*
-   * Parse an electron-like key string and return a normalized object which
-   * allow efficient match on DOM key event. The normalized object matches DOM
-   * API.
-   *
-   * https://github.com/electron/electron/blob/master/docs/api/accelerator.md
-   */
-  _electronKeyParser(str) {
-    let modifiers = str.split("+");
-    let key = modifiers.pop();
+/*
+ * Parse an electron-like key string and return a normalized object which
+ * allow efficient match on DOM key event. The normalized object matches DOM
+ * API.
+ *
+ * @param DOMWindow window
+ *        Any DOM Window object, just to fetch its `KeyboardEvent` object
+ * @param String str
+ *        The shortcut string to parse, following this document:
+ *        https://github.com/electron/electron/blob/master/docs/api/accelerator.md
+ */
+KeyShortcuts.parseElectronKey = function (window, str) {
+  let modifiers = str.split("+");
+  let key = modifiers.pop();
 
-    let shortcut = {
-      ctrl: false,
-      meta: false,
-      alt: false,
-      shift: false,
-      // Set for character keys
-      key: undefined,
-      // Set for non-character keys
-      keyCode: undefined,
-    };
-    for (let mod of modifiers) {
-      if (mod === "Alt") {
-        shortcut.alt = true;
-      } else if (["Command", "Cmd"].includes(mod)) {
+  let shortcut = {
+    ctrl: false,
+    meta: false,
+    alt: false,
+    shift: false,
+    // Set for character keys
+    key: undefined,
+    // Set for non-character keys
+    keyCode: undefined,
+  };
+  for (let mod of modifiers) {
+    if (mod === "Alt") {
+      shortcut.alt = true;
+    } else if (["Command", "Cmd"].includes(mod)) {
+      shortcut.meta = true;
+    } else if (["CommandOrControl", "CmdOrCtrl"].includes(mod)) {
+      if (isOSX) {
         shortcut.meta = true;
-      } else if (["CommandOrControl", "CmdOrCtrl"].includes(mod)) {
-        if (isOSX) {
-          shortcut.meta = true;
-        } else {
-          shortcut.ctrl = true;
-        }
-      } else if (["Control", "Ctrl"].includes(mod)) {
-        shortcut.ctrl = true;
-      } else if (mod === "Shift") {
-        shortcut.shift = true;
       } else {
-        throw new Error("Unsupported modifier: " + mod);
+        shortcut.ctrl = true;
       }
-    }
-
-    if (key.match(/^\w$/)) {
-      // Match any single character
-      shortcut.key = key.toLowerCase();
-    } else if (key in ElectronKeysMapping) {
-      // Maps the others manually to DOM API DOM_VK_*
-      key = ElectronKeysMapping[key];
-      shortcut.keyCode = this.window.KeyboardEvent[key];
+    } else if (["Control", "Ctrl"].includes(mod)) {
+      shortcut.ctrl = true;
+    } else if (mod === "Shift") {
+      shortcut.shift = true;
     } else {
-      throw new Error("Unsupported key: " + key);
+      throw new Error("Unsupported modifier: " + mod);
     }
+  }
 
-    return shortcut;
-  },
+  // Plus is a special case. It's a character key and shouldn't be matched
+  // against a keycode as it is only accessible via Shift/Capslock
+  if (key === "Plus") {
+    key = "+";
+  }
 
+  if (typeof key === "string" && key.length === 1) {
+    // Match any single character
+    shortcut.key = key.toLowerCase();
+  } else if (key in ElectronKeysMapping) {
+    // Maps the others manually to DOM API DOM_VK_*
+    key = ElectronKeysMapping[key];
+    shortcut.keyCode = window.KeyboardEvent[key];
+    // Used only to stringify the shortcut
+    shortcut.keyCodeString = key;
+  } else {
+    throw new Error("Unsupported key: " + key);
+  }
+
+  return shortcut;
+};
+
+KeyShortcuts.stringify = function (shortcut) {
+  let list = [];
+  if (shortcut.alt) {
+    list.push("Alt");
+  }
+  if (shortcut.ctrl) {
+    list.push("Ctrl");
+  }
+  if (shortcut.meta) {
+    list.push("Cmd");
+  }
+  if (shortcut.shift) {
+    list.push("Shift");
+  }
+  let key;
+  if (shortcut.key) {
+    key = shortcut.key.toUpperCase();
+  } else {
+    key = shortcut.keyCodeString;
+  }
+  list.push(key);
+  return list.join("+");
+};
+
+KeyShortcuts.prototype = {
   destroy() {
-    this.window.removeEventListener("keydown", this);
+    this.target.removeEventListener("keydown", this);
     this.keys.clear();
   },
 
@@ -149,15 +189,20 @@ KeyShortcuts.prototype = {
       return false;
     }
     // Shift is a special modifier, it may implicitely be required if the
-    // expected key is a character and is only accessible via shift.
-    if (shortcut.shift != event.shiftKey &&
-        (shortcut.keyCode || (event.key.toLowerCase() !== shortcut.key))) {
+    // expected key is a special character accessible via shift.
+    if (shortcut.shift != event.shiftKey && event.key &&
+        event.key.match(/[a-zA-Z]/)) {
       return false;
     }
     if (shortcut.keyCode) {
       return event.keyCode == shortcut.keyCode;
     }
-    return event.key.toLowerCase() == shortcut.key;
+    // For character keys, we match if the final character is the expected one.
+    // But for digits we also accept indirect match to please azerty keyboard,
+    // which requires Shift to be pressed to get digits.
+    return event.key.toLowerCase() == shortcut.key ||
+      (shortcut.key.match(/[0-9]/) &&
+       event.keyCode == shortcut.key.charCodeAt(0));
   },
 
   handleEvent(event) {
@@ -170,10 +215,11 @@ KeyShortcuts.prototype = {
 
   on(key, listener) {
     if (typeof listener !== "function") {
-      throw new Error("KeyShortcuts.on() expects a function as second argument");
+      throw new Error("KeyShortcuts.on() expects a function as " +
+                      "second argument");
     }
     if (!this.keys.has(key)) {
-      let shortcut = this._electronKeyParser(key);
+      let shortcut = KeyShortcuts.parseElectronKey(this.window, key);
       this.keys.set(key, shortcut);
     }
     this.eventEmitter.on(key, listener);

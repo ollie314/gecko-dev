@@ -25,7 +25,6 @@ DEFAULTS = dict(
     # base data for all tests
     basetest=dict(
         cycles=1,
-        test_name_extension='',
         profile_path='${talos}/base_profile',
         responsiveness=False,
         e10s=False,
@@ -170,12 +169,6 @@ DEFAULTS = dict(
         'experiments.manifest.uri':
             'https://127.0.0.1/experiments-dummy/manifest',
         'network.http.speculative-parallel-limit': 0,
-        'browser.displayedE10SPrompt': 9999,
-        'browser.displayedE10SPrompt.1': 9999,
-        'browser.displayedE10SPrompt.2': 9999,
-        'browser.displayedE10SPrompt.3': 9999,
-        'browser.displayedE10SPrompt.4': 9999,
-        'browser.displayedE10SPrompt.5': 9999,
         'app.update.badge': False,
         'lightweightThemes.selectedThemeID': "",
         'devtools.webide.widget.enabled': False,
@@ -318,9 +311,11 @@ def get_global_overrides(config):
     global_overrides = {}
     for key in GLOBAL_OVERRIDES:
         # get global overrides for all tests
-        value = config.pop(key)
+        value = config[key]
         if value is not None:
             global_overrides[key] = value
+        if key != 'sps_profile':
+            config.pop(key)
 
     # add noChrome to global overrides (HACK)
     noChrome = config.pop('noChrome')
@@ -355,10 +350,6 @@ def build_manifest(config, manifestName):
 
 def get_test(config, global_overrides, counters, test_instance):
     mozAfterPaint = getattr(test_instance, 'tpmozafterpaint', None)
-
-    # add test_name_extension to config
-    if mozAfterPaint:
-        test_instance.test_name_extension = '_paint'
 
     test_instance.update(**global_overrides)
 
@@ -422,7 +413,6 @@ def get_browser_config(config):
                 'repository': None,
                 'sourcestamp': None,
                 'symbols_path': None,
-                'test_name_extension': '',
                 'test_timeout': 1200,
                 'xperf_path': None,
                 'error_filename': None,

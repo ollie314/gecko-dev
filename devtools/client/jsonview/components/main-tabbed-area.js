@@ -12,13 +12,15 @@ define(function (require, exports, module) {
   const { JsonPanel } = createFactories(require("./json-panel"));
   const { TextPanel } = createFactories(require("./text-panel"));
   const { HeadersPanel } = createFactories(require("./headers-panel"));
-  const { Tabs, TabPanel } = createFactories(require("./reps/tabs"));
+  const { Tabs, TabPanel } = createFactories(require("devtools/client/shared/components/tabs/tabs"));
 
   /**
    * This object represents the root application template
    * responsible for rendering the basic tab layout.
    */
   let MainTabbedArea = createClass({
+    displayName: "MainTabbedArea",
+
     propTypes: {
       jsonText: PropTypes.string,
       tabActive: PropTypes.number,
@@ -31,8 +33,6 @@ define(function (require, exports, module) {
         PropTypes.array
       ])
     },
-
-    displayName: "MainTabbedArea",
 
     getInitialState: function () {
       return {

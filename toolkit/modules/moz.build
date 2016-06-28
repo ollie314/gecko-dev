@@ -32,12 +32,14 @@ EXTRA_JS_MODULES += [
     'CertUtils.jsm',
     'CharsetMenu.jsm',
     'ClientID.jsm',
+    'Color.jsm',
     'Console.jsm',
     'debug.js',
     'DeferredTask.jsm',
     'Deprecated.jsm',
     'FileUtils.jsm',
     'Finder.jsm',
+    'FinderHighlighter.jsm',
     'Geometry.jsm',
     'GMPInstallManager.jsm',
     'GMPUtils.jsm',
@@ -106,6 +108,10 @@ if 'Android' != CONFIG['OS_TARGET']:
     EXTRA_JS_MODULES += [
         'LightweightThemeConsumer.jsm',
     ]
+
+    DIRS += [
+        'subprocess',
+    ]
 else:
     DEFINES['ANDROID'] = True
 
@@ -129,7 +135,8 @@ for var in ('ANDROID_PACKAGE_NAME',
 for var in ('MOZ_TOOLKIT_SEARCH',
             'MOZ_SYSTEM_NSS',
             'MOZ_UPDATER',
-            'MOZ_SWITCHBOARD'):
+            'MOZ_SWITCHBOARD',
+            'MOZ_SERVICES_CLOUDSYNC'):
     if CONFIG[var]:
         DEFINES[var] = True
 

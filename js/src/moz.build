@@ -155,12 +155,18 @@ EXPORTS.js += [
 UNIFIED_SOURCES += [
     'asmjs/AsmJS.cpp',
     'asmjs/Wasm.cpp',
+    'asmjs/WasmBaselineCompile.cpp',
     'asmjs/WasmBinary.cpp',
     'asmjs/WasmBinaryIterator.cpp',
+    'asmjs/WasmBinaryToAST.cpp',
+    'asmjs/WasmBinaryToExperimentalText.cpp',
     'asmjs/WasmBinaryToText.cpp',
+    'asmjs/WasmCode.cpp',
     'asmjs/WasmFrameIterator.cpp',
     'asmjs/WasmGenerator.cpp',
+    'asmjs/WasmInstance.cpp',
     'asmjs/WasmIonCompile.cpp',
+    'asmjs/WasmJS.cpp',
     'asmjs/WasmModule.cpp',
     'asmjs/WasmSignalHandlers.cpp',
     'asmjs/WasmStubs.cpp',
@@ -601,6 +607,13 @@ HostSimplePrograms([
     'host_jskwgen',
 ])
 
+GENERATED_FILES += ['jsautokw.h']
+jsautokw = GENERATED_FILES['jsautokw.h']
+jsautokw.script = 'jsautokw.py'
+jsautokw.inputs += [
+    '!host_jskwgen%s' % CONFIG['HOST_BIN_SUFFIX'],
+]
+
 # JavaScript must be built shared, even for static builds, as it is used by
 # other modules which are always built shared. Failure to do so results in
 # the js code getting copied into xpinstall and jsd as well as mozilla-bin,
@@ -764,6 +777,9 @@ if CONFIG['JS_HAS_CTYPES']:
     else:
         # Windows needs this to be linked with a static library.
         DEFINES['FFI_BUILDING'] = True
+
+if CONFIG['GNU_CXX']:
+    CXXFLAGS += ['-Wno-shadow']
 
 # Suppress warnings in third-party code.
 if CONFIG['CLANG_CXX']:

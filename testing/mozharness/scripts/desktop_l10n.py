@@ -173,6 +173,7 @@ class DesktopSingleLocale(LocalesMixin, ReleaseMixin, MockMixin, BuildbotMixin,
             'all_actions': [
                 "clobber",
                 "pull",
+                "clone-locales",
                 "list-locales",
                 "setup",
                 "repack",
@@ -356,8 +357,16 @@ class DesktopSingleLocale(LocalesMixin, ReleaseMixin, MockMixin, BuildbotMixin,
         replace_dict = self.query_abs_dirs()
 
         replace_dict['en_us_binary_url'] = config.get('en_us_binary_url')
-        # Override en_us_binary_url if passed as a buildbot property
         self.read_buildbot_config()
+        # Override en_us_binary_url if packageUrl is passed as a property from
+        # the en-US build
+        if self.buildbot_config["properties"].get("packageUrl"):
+            packageUrl = self.buildbot_config["properties"]["packageUrl"]
+            # trim off the filename, the build system wants a directory
+            packageUrl = packageUrl.rsplit('/', 1)[0]
+            self.info("Overriding en_us_binary_url with %s" % packageUrl)
+            replace_dict['en_us_binary_url'] = str(packageUrl)
+        # Override en_us_binary_url if passed as a buildbot property
         if self.buildbot_config["properties"].get("en_us_binary_url"):
             self.info("Overriding en_us_binary_url with %s" %
                       self.buildbot_config["properties"]["en_us_binary_url"])
@@ -457,7 +466,7 @@ class DesktopSingleLocale(LocalesMixin, ReleaseMixin, MockMixin, BuildbotMixin,
     def _query_revision(self):
         """ Get the gecko revision in this order of precedence
               * cached value
-              * command line arg --revision   (development)
+              * command line arg --revision   (development, taskcluster)
               * buildbot properties           (try with buildbot forced build)
               * buildbot change               (try with buildbot scheduler)
               * from the en-US build          (m-c & m-a)
@@ -594,8 +603,7 @@ class DesktopSingleLocale(LocalesMixin, ReleaseMixin, MockMixin, BuildbotMixin,
     def clobber(self):
         """clobber"""
         dirs = self.query_abs_dirs()
-        clobber_dirs = (dirs['abs_objdir'], dirs['abs_compare_locales_dir'],
-                        dirs['abs_upload_dir'])
+        clobber_dirs = (dirs['abs_objdir'], dirs['abs_upload_dir'])
         PurgeMixin.clobber(self, always_clobber_dirs=clobber_dirs)
 
     def pull(self):
@@ -629,6 +637,8 @@ class DesktopSingleLocale(LocalesMixin, ReleaseMixin, MockMixin, BuildbotMixin,
         self.info("repositories: %s" % repos)
         self.vcs_checkout_repos(repos, parent_dir=dirs['abs_work_dir'],
                                 tag_override=config.get('tag_override'))
+
+    def clone_locales(self):
         self.pull_locale_source()
 
     def setup(self):
@@ -1062,11 +1072,11 @@ class DesktopSingleLocale(LocalesMixin, ReleaseMixin, MockMixin, BuildbotMixin,
         repo = self.query_l10n_repo()
         if not repo:
             self.fatal("Unable to determine repository for querying the push info.")
-        pushinfo = self.vcs_query_pushinfo(repo, revision, vcs='hgtool')
+        pushinfo = self.vcs_query_pushinfo(repo, revision, vcs='hg')
         pushdate = time.strftime('%Y%m%d%H%M%S', time.gmtime(pushinfo.pushdate))
 
         routes_json = os.path.join(self.query_abs_dirs()['abs_mozilla_dir'],
-                                   'testing/taskcluster/routes.json')
+                                   'taskcluster/ci/legacy/routes.json')
         with open(routes_json) as f:
             contents = json.load(f)
             templates = contents['l10n']

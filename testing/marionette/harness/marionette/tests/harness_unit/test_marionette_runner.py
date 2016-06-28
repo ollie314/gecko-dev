@@ -2,7 +2,7 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 import pytest
-from mock import patch, Mock, DEFAULT
+from mock import patch, Mock, DEFAULT, mock_open
 
 from marionette.runtests import (
     MarionetteTestRunner,
@@ -67,8 +67,6 @@ def mach_parsed_kwargs(logger):
     call to mach marionette-test
     """
     return {
-         'adb_host': None,
-         'adb_port': None,
          'addon': None,
          'address': None,
          'app': None,
@@ -76,10 +74,6 @@ def mach_parsed_kwargs(logger):
          'binary': u'/path/to/firefox',
          'device_serial': None,
          'e10s': False,
-         'emulator': None,
-         'emulator_binary': None,
-         'emulator_img': None,
-         'emulator_res': None,
          'gecko_log': None,
          'homedir': None,
          'jsdebugger': False,
@@ -96,7 +90,6 @@ def mach_parsed_kwargs(logger):
          'log_tbpl_level': None,
          'log_unittest': None,
          'log_xunit': None,
-         'logcat_stdout': False,
          'logdir': None,
          'logger_name': 'Marionette-based Tests',
          'no_window': False,
@@ -242,6 +235,20 @@ def test_parsing_testvars(mach_parsed_kwargs):
         assert load.call_count == 1
 
 
+def test_load_testvars_throws_expected_errors(mach_parsed_kwargs):
+    mach_parsed_kwargs['testvars'] = ['some_bad_path.json']
+    runner = MarionetteTestRunner(**mach_parsed_kwargs)
+    with pytest.raises(IOError) as io_exc:
+        runner._load_testvars()
+    assert 'does not exist' in io_exc.value.message
+    with patch('os.path.exists') as exists:
+        exists.return_value = True
+        with patch('__builtin__.open', mock_open(read_data='[not {valid JSON]')):
+            with pytest.raises(Exception) as json_exc:
+                runner._load_testvars()
+    assert 'not properly formatted' in json_exc.value.message
+
+
 @pytest.mark.parametrize("has_crashed", [True, False])
 def test_crash_is_recorded_as_error(empty_marionette_test,
                                     logger,
@@ -250,7 +257,7 @@ def test_crash_is_recorded_as_error(empty_marionette_test,
     # collect results from the empty test
     result = MarionetteTestResult(
         marionette=empty_marionette_test._marionette_weakref(),
-        b2g_pid=0, logcat_stdout=False, logger=logger, verbosity=None,
+        logger=logger, verbosity=None,
         stream=None, descriptions=None,
     )
     result.startTest(empty_marionette_test)
@@ -285,6 +292,70 @@ def test_record_crash(runner, has_crashed, mock_marionette):
     with patch.object(runner, 'marionette', mock_marionette):
         assert runner.record_crash() == has_crashed
         _check_crash_counts(has_crashed, runner, runner.marionette)
+
+
+def test_add_test_module(runner):
+    tests = ['test_something.py', 'testSomething.js', 'bad_test.py']
+    assert len(runner.tests) == 0
+    for test in tests:
+        with patch ('os.path.abspath') as abspath:
+            abspath.return_value = test
+            runner.add_test(test)
+        assert abspath.called
+        assert {'filepath': test,
+                'expected': 'pass',
+                'test_container': None} in runner.tests
+    # add_test doesn't validate module names; 'bad_test.py' gets through
+    assert len(runner.tests) == 3
+
+def test_add_test_directory(runner):
+    test_dir = 'path/to/tests'
+    dir_contents = [
+        (test_dir, ('subdir',), ('test_a.py', 'test_a.js', 'bad_test_a.py', 'bad_test_a.js')),
+        (test_dir + '/subdir', (), ('test_b.py', 'test_b.js', 'bad_test_a.py', 'bad_test_b.js')),
+    ]
+    tests = list(dir_contents[0][2] + dir_contents[1][2])
+    assert len(runner.tests) == 0
+    with patch('os.path.isdir') as isdir:
+        # Need to use side effect to make isdir return True for test_dir and False for tests
+        isdir.side_effect = [True] + [False for i in tests]
+        with patch('os.walk') as walk:
+            walk.return_value = dir_contents
+            runner.add_test(test_dir)
+    assert isdir.called and walk.called
+    for test in runner.tests:
+        assert test_dir in test['filepath']
+    assert len(runner.tests) == 4
+
+def test_add_test_manifest(runner):
+    runner._device, runner._appName = 'fake_device', 'fake_app'
+    manifest = "/path/to/fake/manifest.ini"
+    active_tests = [{'expected': 'pass',
+                     'path': u'/path/to/fake/test_expected_pass.py'},
+                    {'expected': 'fail',
+                     'path': u'/path/to/fake/test_expected_fail.py'},
+                    {'disabled': 'skip-if: true # "testing disabled test"',
+                     'expected': 'pass',
+                     'path': u'/path/to/fake/test_disabled.py'}]
+    with patch.multiple('marionette.runner.base.TestManifest',
+                        read=DEFAULT, active_tests=DEFAULT) as mocks:
+            mocks['active_tests'].return_value = active_tests
+            with pytest.raises(IOError) as err:
+                runner.add_test(manifest)
+            assert "does not exist" in err.value.message
+            assert mocks['read'].call_count == mocks['active_tests'].call_count == 1
+            runner.tests, runner.manifest_skipped_tests = [], []
+            with patch('marionette.runner.base.os.path.exists', return_value=True):
+                runner.add_test(manifest)
+            assert mocks['read'].call_count == mocks['active_tests'].call_count == 2
+    assert len(runner.tests) == 2
+    assert len(runner.manifest_skipped_tests) == 1
+    for test in runner.tests:
+        assert test['filepath'].endswith(('test_expected_pass.py', 'test_expected_fail.py'))
+        if test['filepath'].endswith('test_expected_fail.py'):
+            assert test['expected'] == 'fail'
+        else:
+            assert test['expected'] == 'pass'
 
 
 if __name__ == '__main__':

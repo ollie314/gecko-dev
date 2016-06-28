@@ -10,6 +10,7 @@
 #include "nsIFileStreams.h"       // New Necko file streams
 #include <algorithm>
 
+#include "nsAutoPtr.h"
 #include "nsNetCID.h"
 #include "nsNetUtil.h"
 #include "nsIInterfaceRequestorUtils.h"
@@ -2124,7 +2125,7 @@ nsWebBrowserPersist::MakeFilenameFromURI(nsIURI *aURI, nsString &aFilename)
         url->GetFileName(nameFromURL);
         if (mPersistFlags & PERSIST_FLAGS_DONT_CHANGE_FILENAMES)
         {
-            fileName.AssignWithConversion(NS_UnescapeURL(nameFromURL).get());
+            fileName.AssignWithConversion(NS_UnescapeURL(nameFromURL).BeginReading());
             aFilename = fileName;
             return NS_OK;
         }

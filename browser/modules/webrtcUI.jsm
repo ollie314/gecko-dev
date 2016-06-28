@@ -526,14 +526,6 @@ function prompt(aBrowser, aRequest) {
       if (!sharingAudio)
         listDevices(micMenupopup, audioDevices);
 
-      if (requestTypes.length == 2) {
-        let stringBundle = chromeDoc.defaultView.gNavigatorBundle;
-        if (!sharingScreen)
-          addDeviceToList(camMenupopup, stringBundle.getString("getUserMedia.noVideo.label"), "-1");
-        if (!sharingAudio)
-          addDeviceToList(micMenupopup, stringBundle.getString("getUserMedia.noAudio.label"), "-1");
-      }
-
       this.mainAction.callback = function(aRemember) {
         let allowedDevices = [];
         let perms = Services.perms;
@@ -883,6 +875,21 @@ function updateIndicators(data, target) {
 }
 
 function updateBrowserSpecificIndicator(aBrowser, aState) {
+  let chromeWin = aBrowser.ownerDocument.defaultView;
+  let tabbrowser = chromeWin.gBrowser;
+  if (tabbrowser) {
+    let sharing;
+    if (aState.screen) {
+      sharing = "screen";
+    } else if (aState.camera) {
+      sharing = "camera";
+    } else if (aState.microphone) {
+      sharing = "microphone";
+    }
+
+    tabbrowser.setBrowserSharing(aBrowser, sharing);
+  }
+
   let captureState;
   if (aState.camera && aState.microphone) {
     captureState = "CameraAndMicrophone";
@@ -892,7 +899,6 @@ function updateBrowserSpecificIndicator(aBrowser, aState) {
     captureState = "Microphone";
   }
 
-  let chromeWin = aBrowser.ownerDocument.defaultView;
   let stringBundle = chromeWin.gNavigatorBundle;
 
   let windowId = aState.windowId;

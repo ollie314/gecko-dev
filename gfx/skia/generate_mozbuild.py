@@ -73,6 +73,9 @@ if CONFIG['MOZ_WIDGET_TOOLKIT'] in {
 if CONFIG['MOZ_WIDGET_TOOLKIT'] == 'windows':
     DEFINES['UNICODE'] = True
     DEFINES['_UNICODE'] = True
+    # These are the usual dwrite default rendering param values
+    DEFINES['SK_GAMMA_EXPONENT'] = 1.8
+    DEFINES['SK_GAMMA_CONTRAST'] = 0.5
     UNIFIED_SOURCES += [
         'skia/src/fonts/SkFontMgr_indirect.cpp',
         'skia/src/fonts/SkRemotableFontMgr.cpp',
@@ -118,6 +121,7 @@ if CONFIG['GNU_CXX'] or CONFIG['CLANG_CL']:
     CXXFLAGS += [
         '-Wno-deprecated-declarations',
         '-Wno-overloaded-virtual',
+        '-Wno-shadow',
         '-Wno-sign-compare',
         '-Wno-unused-function',
     ]

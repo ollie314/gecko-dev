@@ -6,7 +6,7 @@ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 
 XPCOMUtils.defineLazyModuleGetter(this, "ExtensionManagement",
                                   "resource://gre/modules/ExtensionManagement.jsm");
-XPCOMUtils.defineLazyModuleGetter(this, "MatchPattern",
+XPCOMUtils.defineLazyModuleGetter(this, "MatchURLFilters",
                                   "resource://gre/modules/MatchPattern.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "WebNavigation",
                                   "resource://gre/modules/WebNavigation.jsm");
@@ -32,6 +32,16 @@ const frameTransitions = {
   },
 };
 
+const tabTransitions = {
+  topFrame: {
+    qualifiers: ["from_address_bar"],
+    types: ["auto_bookmark", "typed", "keyword", "generated", "link"],
+  },
+  subFrame: {
+    types: ["manual_subframe"],
+  },
+};
+
 function isTopLevelFrame({frameId, parentFrameId}) {
   return frameId == 0 && parentFrameId == -1;
 }
@@ -39,6 +49,7 @@ function isTopLevelFrame({frameId, parentFrameId}) {
 function fillTransitionProperties(eventName, src, dst) {
   if (eventName == "onCommitted" || eventName == "onHistoryStateUpdated") {
     let frameTransitionData = src.frameTransitionData || {};
+    let tabTransitionData = src.tabTransitionData || {};
 
     let transitionType, transitionQualifiers = [];
 
@@ -56,6 +67,18 @@ function fillTransitionProperties(eventName, src, dst) {
         }
       }
 
+      for (let qualifier of tabTransitions.topFrame.qualifiers) {
+        if (tabTransitionData[qualifier]) {
+          transitionQualifiers.push(qualifier);
+        }
+      }
+
+      for (let type of tabTransitions.topFrame.types) {
+        if (tabTransitionData[type]) {
+          transitionType = type;
+        }
+      }
+
       // If transitionType is not defined, defaults it to "link".
       if (!transitionType) {
         transitionType = defaultTransitionTypes.topFrame;
@@ -63,7 +86,8 @@ function fillTransitionProperties(eventName, src, dst) {
     } else {
       // If it is sub-frame, transitionType defaults it to "auto_subframe",
       // "manual_subframe" is set only in case of a recent user interaction.
-      transitionType = defaultTransitionTypes.subFrame;
+      transitionType = tabTransitionData.link ?
+        "manual_subframe" : defaultTransitionTypes.subFrame;
     }
 
     // Fill the transition properties in the webNavigation event object.
@@ -75,7 +99,11 @@ function fillTransitionProperties(eventName, src, dst) {
 // Similar to WebRequestEventManager but for WebNavigation.
 function WebNavigationEventManager(context, eventName) {
   let name = `webNavigation.${eventName}`;
-  let register = callback => {
+  let register = (callback, urlFilters) => {
+    // Don't create a MatchURLFilters instance if the listener does not include any filter.
+    let filters = urlFilters ?
+          new MatchURLFilters(urlFilters.url) : null;
+
     let listener = data => {
       if (!data.browser) {
         return;
@@ -93,6 +121,10 @@ function WebNavigationEventManager(context, eventName) {
         parentFrameId: ExtensionManagement.getParentFrameId(data.parentWindowId, data.windowId),
       };
 
+      if (eventName == "onErrorOccurred") {
+        data2.error = data.error;
+      }
+
       // Fills in tabId typically.
       let result = {};
       extensions.emit("fill-browser-data", data.browser, data2, result);
@@ -105,7 +137,7 @@ function WebNavigationEventManager(context, eventName) {
       runSafe(context, callback, data2);
     };
 
-    WebNavigation[eventName].addListener(listener);
+    WebNavigation[eventName].addListener(listener, filters);
     return () => {
       WebNavigation[eventName].removeListener(listener);
     };
@@ -126,7 +158,7 @@ function convertGetFrameResult(tabId, data) {
   };
 }
 
-extensions.registerSchemaAPI("webNavigation", "webNavigation", (extension, context) => {
+extensions.registerSchemaAPI("webNavigation", (extension, context) => {
   return {
     webNavigation: {
       onBeforeNavigate: new WebNavigationEventManager(context, "onBeforeNavigate").api(),

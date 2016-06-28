@@ -10,14 +10,14 @@ const { getStr } = require("../utils/l10n");
 const Types = require("../types");
 
 module.exports = createClass({
+  displayName: "DeviceModal",
+
   propTypes: {
     devices: PropTypes.shape(Types.devices).isRequired,
     onDeviceListUpdate: PropTypes.func.isRequired,
     onUpdateDeviceDisplayed: PropTypes.func.isRequired,
     onUpdateDeviceModalOpen: PropTypes.func.isRequired,
   },
-
-  displayName: "DeviceModal",
 
   mixins: [ addons.PureRenderMixin ],
 
@@ -53,21 +53,28 @@ module.exports = createClass({
       onUpdateDeviceModalOpen,
     } = this.props;
 
-    let displayedDeviceList = [];
+    let preferredDevices = {
+      "added": new Set(),
+      "removed": new Set(),
+    };
 
     for (let type of devices.types) {
       for (let device of devices[type]) {
-        if (this.state[device.name] != device.displayed) {
-          onUpdateDeviceDisplayed(device, type, this.state[device.name]);
+        let newState = this.state[device.name];
+
+        if (device.featured && !newState) {
+          preferredDevices.removed.add(device.name);
+        } else if (!device.featured && newState) {
+          preferredDevices.added.add(device.name);
         }
 
-        if (this.state[device.name]) {
-          displayedDeviceList.push(device.name);
+        if (this.state[device.name] != device.displayed) {
+          onUpdateDeviceDisplayed(device, type, this.state[device.name]);
         }
       }
     }
 
-    onDeviceListUpdate(displayedDeviceList);
+    onDeviceListUpdate(preferredDevices);
     onUpdateDeviceModalOpen(false);
   },
 
@@ -81,6 +88,12 @@ module.exports = createClass({
 
     if (!devices.isModalOpen) {
       modalClass += " hidden";
+    }
+
+    const sortedDevices = {};
+    for (let type of devices.types) {
+      sortedDevices[type] = Object.assign([], devices[type])
+        .sort((a, b) => a.name.localeCompare(b.name));
     }
 
     return dom.div(
@@ -108,7 +121,7 @@ module.exports = createClass({
               },
               type
             ),
-            devices[type].map(device => {
+            sortedDevices[type].map(device => {
               return dom.label(
                 {
                   className: "device-label",

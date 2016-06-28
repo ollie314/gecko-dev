@@ -97,6 +97,7 @@
 #include "nsIDOMWindowUtils.h"
 #include "Units.h"
 #include "UnitTransforms.h"
+#include "mozilla/UniquePtrExtensions.h"
 
 using namespace mozilla;
 using namespace mozilla::layers;
@@ -486,13 +487,11 @@ nsresult nsChildView::Create(nsIWidget* aParent,
     nsToolkit::SwizzleMethods([NSView class], @selector(mouseDownCanMoveWindow),
                               @selector(nsChildView_NSView_mouseDownCanMoveWindow));
 #ifdef __LP64__
-    if (nsCocoaFeatures::OnLionOrLater()) {
-      nsToolkit::SwizzleMethods([NSEvent class], @selector(addLocalMonitorForEventsMatchingMask:handler:),
-                                @selector(nsChildView_NSEvent_addLocalMonitorForEventsMatchingMask:handler:),
-                                true);
-      nsToolkit::SwizzleMethods([NSEvent class], @selector(removeMonitor:),
-                                @selector(nsChildView_NSEvent_removeMonitor:), true);
-    }
+    nsToolkit::SwizzleMethods([NSEvent class], @selector(addLocalMonitorForEventsMatchingMask:handler:),
+                              @selector(nsChildView_NSEvent_addLocalMonitorForEventsMatchingMask:handler:),
+                              true);
+    nsToolkit::SwizzleMethods([NSEvent class], @selector(removeMonitor:),
+                              @selector(nsChildView_NSEvent_removeMonitor:), true);
 #endif
     gChildViewMethodsSwizzled = true;
   }
@@ -1171,7 +1170,8 @@ nsresult nsChildView::SynthesizeNativeMouseEvent(LayoutDeviceIntPoint aPoint,
   // aPoint is given with the origin on the top left, but convertScreenToBase
   // expects a point in a coordinate system that has its origin on the bottom left.
   NSPoint screenPoint = NSMakePoint(pt.x, nsCocoaUtils::FlippedScreenY(pt.y));
-  NSPoint windowPoint = [[mView window] convertScreenToBase:screenPoint];
+  NSPoint windowPoint =
+    nsCocoaUtils::ConvertPointFromScreen([mView window], screenPoint);
 
   NSEvent* event = [NSEvent mouseEventWithType:(NSEventType)aNativeMessage
                                       location:windowPoint
@@ -1532,6 +1532,71 @@ bool nsChildView::PaintWindow(LayoutDeviceIntRegion aRegion)
   return returnValue;
 }
 
+bool
+nsChildView::PaintWindowInContext(CGContextRef aContext, const LayoutDeviceIntRegion& aRegion, gfx::IntSize aSurfaceSize)
+{
+  if (!mBackingSurface || mBackingSurface->GetSize() != aSurfaceSize) {
+    mBackingSurface =
+      gfxPlatform::GetPlatform()->CreateOffscreenContentDrawTarget(aSurfaceSize,
+                                                                   gfx::SurfaceFormat::B8G8R8A8);
+    if (!mBackingSurface) {
+      return false;
+    }
+  }
+
+  RefPtr<gfxContext> targetContext = gfxContext::CreateOrNull(mBackingSurface);
+  MOZ_ASSERT(targetContext); // already checked the draw target above
+
+  // Set up the clip region and clear existing contents in the backing surface.
+  targetContext->NewPath();
+  for (auto iter = aRegion.RectIter(); !iter.Done(); iter.Next()) {
+    const LayoutDeviceIntRect& r = iter.Get();
+    targetContext->Rectangle(gfxRect(r.x, r.y, r.width, r.height));
+    mBackingSurface->ClearRect(gfx::Rect(r.ToUnknownRect()));
+  }
+  targetContext->Clip();
+
+  nsAutoRetainCocoaObject kungFuDeathGrip(mView);
+  bool painted = false;
+  if (GetLayerManager()->GetBackendType() == LayersBackend::LAYERS_BASIC) {
+    nsBaseWidget::AutoLayerManagerSetup
+      setupLayerManager(this, targetContext, BufferMode::BUFFER_NONE);
+    painted = PaintWindow(aRegion);
+  } else if (GetLayerManager()->GetBackendType() == LayersBackend::LAYERS_CLIENT) {
+    // We only need this so that we actually get DidPaintWindow fired
+    painted = PaintWindow(aRegion);
+  }
+
+  uint8_t* data;
+  gfx::IntSize size;
+  int32_t stride;
+  gfx::SurfaceFormat format;
+
+  if (!mBackingSurface->LockBits(&data, &size, &stride, &format)) {
+    return false;
+  }
+
+  // Draw the backing surface onto the window.
+  CGDataProviderRef provider = CGDataProviderCreateWithData(NULL, data, stride * size.height, NULL);
+  NSColorSpace* colorSpace = [[mView window] colorSpace];
+  CGImageRef image = CGImageCreate(size.width, size.height, 8, 32, stride,
+                                   [colorSpace CGColorSpace],
+                                   kCGBitmapByteOrder32Host | kCGImageAlphaPremultipliedFirst,
+                                   provider, NULL, false, kCGRenderingIntentDefault);
+  CGContextSaveGState(aContext);
+  CGContextTranslateCTM(aContext, 0, size.height);
+  CGContextScaleCTM(aContext, 1, -1);
+  CGContextSetBlendMode(aContext, kCGBlendModeCopy);
+  CGContextDrawImage(aContext, CGRectMake(0, 0, size.width, size.height), image);
+  CGImageRelease(image);
+  CGDataProviderRelease(provider);
+  CGContextRestoreGState(aContext);
+
+  mBackingSurface->ReleaseBits(data);
+
+  return painted;
+}
+
 #pragma mark -
 
 void nsChildView::ReportMoveEvent()
@@ -1571,7 +1636,7 @@ LayoutDeviceIntPoint nsChildView::WidgetToScreenOffset()
   origin = [mView convertPoint:origin toView:nil];
 
   // 2. We turn the window-coord rect's origin into screen (still bottom-left) coords.
-  origin = [[mView window] convertBaseToScreen:origin];
+  origin = nsCocoaUtils::ConvertPointToScreen([mView window], origin);
 
   // 3. Since we're dealing in bottom-left coords, we need to make it top-left coords
   //    before we pass it back to Gecko.
@@ -1784,7 +1849,7 @@ nsChildView::ExecuteNativeKeyBindingRemapped(NativeKeyBindingsType aType,
   NSEvent *originalEvent = reinterpret_cast<NSEvent*>(aEvent.mNativeKeyEvent);
 
   WidgetKeyboardEvent modifiedEvent(aEvent);
-  modifiedEvent.keyCode = aGeckoKeyCode;
+  modifiedEvent.mKeyCode = aGeckoKeyCode;
 
   unichar ch = nsCocoaUtils::ConvertGeckoKeyCodeToMacCharCode(aGeckoKeyCode);
   NSString *chars =
@@ -1816,8 +1881,7 @@ nsChildView::ExecuteNativeKeyBinding(NativeKeyBindingsType aType,
   // vertical writing-mode, we'll remap so that the movement command
   // generated (in terms of characters/lines) will be appropriate for
   // the physical direction of the arrow.
-  if (aEvent.keyCode >= nsIDOMKeyEvent::DOM_VK_LEFT &&
-      aEvent.keyCode <= nsIDOMKeyEvent::DOM_VK_DOWN) {
+  if (aEvent.mKeyCode >= NS_VK_LEFT && aEvent.mKeyCode <= NS_VK_DOWN) {
     WidgetQueryContentEvent query(true, eQuerySelectedText, this);
     DispatchWindowEvent(query);
 
@@ -1825,34 +1889,34 @@ nsChildView::ExecuteNativeKeyBinding(NativeKeyBindingsType aType,
       uint32_t geckoKey = 0;
       uint32_t cocoaKey = 0;
 
-      switch (aEvent.keyCode) {
-      case nsIDOMKeyEvent::DOM_VK_LEFT:
+      switch (aEvent.mKeyCode) {
+      case NS_VK_LEFT:
         if (query.mReply.mWritingMode.IsVerticalLR()) {
-          geckoKey = nsIDOMKeyEvent::DOM_VK_UP;
+          geckoKey = NS_VK_UP;
           cocoaKey = kVK_UpArrow;
         } else {
-          geckoKey = nsIDOMKeyEvent::DOM_VK_DOWN;
+          geckoKey = NS_VK_DOWN;
           cocoaKey = kVK_DownArrow;
         }
         break;
 
-      case nsIDOMKeyEvent::DOM_VK_RIGHT:
+      case NS_VK_RIGHT:
         if (query.mReply.mWritingMode.IsVerticalLR()) {
-          geckoKey = nsIDOMKeyEvent::DOM_VK_DOWN;
+          geckoKey = NS_VK_DOWN;
           cocoaKey = kVK_DownArrow;
         } else {
-          geckoKey = nsIDOMKeyEvent::DOM_VK_UP;
+          geckoKey = NS_VK_UP;
           cocoaKey = kVK_UpArrow;
         }
         break;
 
-      case nsIDOMKeyEvent::DOM_VK_UP:
-        geckoKey = nsIDOMKeyEvent::DOM_VK_LEFT;
+      case NS_VK_UP:
+        geckoKey = NS_VK_LEFT;
         cocoaKey = kVK_LeftArrow;
         break;
 
-      case nsIDOMKeyEvent::DOM_VK_DOWN:
-        geckoKey = nsIDOMKeyEvent::DOM_VK_RIGHT;
+      case NS_VK_DOWN:
+        geckoKey = NS_VK_RIGHT;
         cocoaKey = kVK_RightArrow;
         break;
       }
@@ -1938,8 +2002,18 @@ nsChildView::RectContainingTitlebarControls()
   NSRect rect = NSMakeRect(0, 0, [mView bounds].size.width,
                            [(ChildView*)mView cornerRadius]);
 
+  // If we draw the titlebar title string, increase the height to the default
+  // titlebar height. This height does not necessarily include all the titlebar
+  // controls because we may have moved them further down, but at least it will
+  // include the whole title text.
+  BaseWindow* window = (BaseWindow*)[mView window];
+  if ([window wantsTitleDrawn] && [window isKindOfClass:[ToolbarWindow class]]) {
+    CGFloat defaultTitlebarHeight = [(ToolbarWindow*)window titlebarHeight];
+    rect.size.height = std::max(rect.size.height, defaultTitlebarHeight);
+  }
+
   // Add the rects of the titlebar controls.
-  for (id view in [(BaseWindow*)[mView window] titlebarControls]) {
+  for (id view in [window titlebarControls]) {
     rect = NSUnionRect(rect, [mView convertRect:[view bounds] fromView:view]);
   }
   return CocoaPointsToDevPixels(rect);
@@ -1948,6 +2022,8 @@ nsChildView::RectContainingTitlebarControls()
 void
 nsChildView::PrepareWindowEffects()
 {
+  NS_OBJC_BEGIN_TRY_ABORT_BLOCK;
+
   MutexAutoLock lock(mEffectsLock);
   mShowsResizeIndicator = ShowsResizeIndicator(&mResizeIndicatorRect);
   mHasRoundedBottomCorners = [(ChildView*)mView hasRoundedBottomCorners];
@@ -1960,6 +2036,8 @@ nsChildView::PrepareWindowEffects()
     mTitlebarRect = RectContainingTitlebarControls();
     UpdateTitlebarCGContext();
   }
+
+  NS_OBJC_END_TRY_ABORT_BLOCK;
 }
 
 void
@@ -2488,9 +2566,12 @@ nsChildView::UpdateVibrancy(const nsTArray<ThemeGeometry>& aThemeGeometries)
     GatherThemeGeometryRegion(aThemeGeometries, nsNativeThemeCocoa::eThemeGeometryTypeTooltip);
   LayoutDeviceIntRegion highlightedMenuItemRegion =
     GatherThemeGeometryRegion(aThemeGeometries, nsNativeThemeCocoa::eThemeGeometryTypeHighlightedMenuItem);
+  LayoutDeviceIntRegion sourceListRegion =
+    GatherThemeGeometryRegion(aThemeGeometries, nsNativeThemeCocoa::eThemeGeometryTypeSourceList);
 
   MakeRegionsNonOverlapping(sheetRegion, vibrantLightRegion, vibrantDarkRegion,
-                            menuRegion, tooltipRegion, highlightedMenuItemRegion);
+                            menuRegion, tooltipRegion, highlightedMenuItemRegion,
+                            sourceListRegion);
 
   auto& vm = EnsureVibrancyManager();
   vm.UpdateVibrantRegion(VibrancyType::LIGHT, vibrantLightRegion);
@@ -2498,6 +2579,7 @@ nsChildView::UpdateVibrancy(const nsTArray<ThemeGeometry>& aThemeGeometries)
   vm.UpdateVibrantRegion(VibrancyType::MENU, menuRegion);
   vm.UpdateVibrantRegion(VibrancyType::HIGHLIGHTED_MENUITEM, highlightedMenuItemRegion);
   vm.UpdateVibrantRegion(VibrancyType::SHEET, sheetRegion);
+  vm.UpdateVibrantRegion(VibrancyType::SOURCE_LIST, sourceListRegion);
   vm.UpdateVibrantRegion(VibrancyType::DARK, vibrantDarkRegion);
 }
 
@@ -2525,6 +2607,8 @@ ThemeGeometryTypeToVibrancyType(nsITheme::ThemeGeometryType aThemeGeometryType)
       return VibrancyType::HIGHLIGHTED_MENUITEM;
     case nsNativeThemeCocoa::eThemeGeometryTypeSheet:
       return VibrancyType::SHEET;
+    case nsNativeThemeCocoa::eThemeGeometryTypeSourceList:
+      return VibrancyType::SOURCE_LIST;
     default:
       MOZ_CRASH();
   }
@@ -2858,6 +2942,67 @@ nsChildView::DispatchAPZWheelInputEvent(InputData& aEvent, bool aCanTriggerSwipe
       (event.mDeltaX != 0 || event.mDeltaY != 0)) {
     DispatchEvent(&event, status);
   }
+}
+
+// When using 10.11, calling showDefinitionForAttributedString causes the
+// following exception on LookupViewService. (rdar://26476091)
+//
+// Exception: decodeObjectForKey: class "TitlebarAndBackgroundColor" not
+// loaded or does not exist
+//
+// So we set temporary color that is NSColor before calling it.
+
+class MOZ_RAII AutoBackgroundSetter final {
+public:
+  explicit AutoBackgroundSetter(NSView* aView) {
+    if (nsCocoaFeatures::OnElCapitanOrLater() &&
+        [[aView window] isKindOfClass:[ToolbarWindow class]]) {
+      mWindow = (ToolbarWindow*)[aView window];
+      [mWindow setTemporaryBackgroundColor];
+    } else {
+      mWindow = nullptr;
+    }
+  }
+
+  ~AutoBackgroundSetter() {
+    if (mWindow) {
+      [mWindow restoreBackgroundColor];
+    }
+  }
+
+private:
+  ToolbarWindow* mWindow;
+};
+
+void
+nsChildView::LookUpDictionary(
+               const nsAString& aText,
+               const nsTArray<mozilla::FontRange>& aFontRangeArray,
+               const bool aIsVertical,
+               const LayoutDeviceIntPoint& aPoint)
+{
+  NS_OBJC_BEGIN_TRY_ABORT_BLOCK;
+
+  NSMutableAttributedString* attrStr =
+    nsCocoaUtils::GetNSMutableAttributedString(aText, aFontRangeArray,
+                                               aIsVertical,
+                                               BackingScaleFactor());
+  NSPoint pt =
+    nsCocoaUtils::DevPixelsToCocoaPoints(aPoint, BackingScaleFactor());
+  NSDictionary* attributes = [attrStr attributesAtIndex:0 effectiveRange:nil];
+  NSFont* font = [attributes objectForKey:NSFontAttributeName];
+  if (font) {
+    if (aIsVertical) {
+      pt.x -= [font descender];
+    } else {
+      pt.y += [font ascender];
+    }
+  }
+
+  AutoBackgroundSetter setter(mView);
+  [mView showDefinitionForAttributedString:attrStr atPoint:pt];
+
+  NS_OBJC_END_TRY_ABORT_BLOCK;
 }
 
 #ifdef ACCESSIBILITY
@@ -3219,6 +3364,8 @@ NSEvent* gLastDragMouseDownEvent = nil;
     // progress.
     mDidForceRefreshOpenGL = NO;
 
+    mNeedsGLUpdate = NO;
+
     [self setFocusRingType:NSFocusRingTypeNone];
 
 #ifdef __LP64__
@@ -3275,6 +3422,15 @@ NSEvent* gLastDragMouseDownEvent = nil;
   if (pluginContext) {
     return pluginContext;
   } else {
+    if (!mGeckoChild) {
+      // -[ChildView widgetDestroyed] has been called, but
+      // -[ChildView delayedTearDown] has not yet completed.  Accessing
+      // [super inputContext] now would uselessly recreate a text input context
+      // for us, under which -[ChildView validAttributesForMarkedText] would
+      // be called and the assertion checking for mTextInputHandler would fail.
+      // We return nil to avoid that.
+      return nil;
+    }
     return [super inputContext];
   }
 }
@@ -3301,17 +3457,9 @@ NSEvent* gLastDragMouseDownEvent = nil;
   NS_OBJC_BEGIN_TRY_ABORT_BLOCK;
 
   [mGLContext clearDrawable];
+  CGLLockContext((CGLContextObj)[mGLContext CGLContextObj]);
   [self updateGLContext];
-
-  NS_OBJC_END_TRY_ABORT_BLOCK;
-}
-
-- (void)setGLContext:(NSOpenGLContext *)aGLContext
-{
-  NS_OBJC_BEGIN_TRY_ABORT_BLOCK;
-
-  mGLContext = aGLContext;
-  [mGLContext retain];
+  CGLUnlockContext((CGLContextObj)[mGLContext CGLContextObj]);
 
   NS_OBJC_END_TRY_ABORT_BLOCK;
 }
@@ -3329,11 +3477,17 @@ NSEvent* gLastDragMouseDownEvent = nil;
   }
 
   if (!mGLContext) {
-    [self setGLContext:aGLContext];
-    [self updateGLContext];
+    mGLContext = aGLContext;
+    [mGLContext retain];
+    mNeedsGLUpdate = true;
   }
 
   CGLLockContext((CGLContextObj)[aGLContext CGLContextObj]);
+
+  if (mNeedsGLUpdate) {
+    [self updateGLContext];
+    mNeedsGLUpdate = NO;
+  }
 
   return true;
 
@@ -3566,17 +3720,17 @@ NSEvent* gLastDragMouseDownEvent = nil;
 
 -(void)updateGLContext
 {
-  if (mGLContext) {
-    CGLLockContext((CGLContextObj)[mGLContext CGLContextObj]);
-    [mGLContext setView:self];
-    [mGLContext update];
-    CGLUnlockContext((CGLContextObj)[mGLContext CGLContextObj]);
-  }
+  [mGLContext setView:self];
+  [mGLContext update];
 }
 
 - (void)_surfaceNeedsUpdate:(NSNotification*)notification
 {
-   [self updateGLContext];
+  if (mGLContext) {
+    CGLLockContext((CGLContextObj)[mGLContext CGLContextObj]);
+    mNeedsGLUpdate = YES;
+    CGLUnlockContext((CGLContextObj)[mGLContext CGLContextObj]);
+  }
 }
 
 - (BOOL)wantsBestResolutionOpenGLSurface
@@ -3725,50 +3879,9 @@ NSEvent* gLastDragMouseDownEvent = nil;
 
   NSSize viewSize = [self bounds].size;
   nsIntSize backingSize(viewSize.width * scale, viewSize.height * scale);
-
-  CGContextSaveGState(aContext);
-
   LayoutDeviceIntRegion region = [self nativeDirtyRegionWithBoundingRect:aRect];
 
-  // Create Cairo objects.
-  RefPtr<gfxQuartzSurface> targetSurface;
-
-  RefPtr<gfx::DrawTarget> dt =
-    gfx::Factory::CreateDrawTargetForCairoCGContext(aContext,
-                                                    gfx::IntSize(backingSize.width,
-                                                                 backingSize.height));
-  if (!dt || !dt->IsValid()) {
-    // This used to be an assertion, so keep crashing in nightly+aurora
-    gfxDevCrash(mozilla::gfx::LogReason::InvalidContext) << "Cannot create target with CreateDrawTargetForCairoCGContext " << backingSize;
-    return;
-  }
-  dt->AddUserData(&gfxContext::sDontUseAsSourceKey, dt, nullptr);
-  RefPtr<gfxContext> targetContext = gfxContext::ForDrawTarget(dt);
-  MOZ_ASSERT(targetContext); // already checked the draw target above
-
-  // Set up the clip region.
-  targetContext->NewPath();
-  for (auto iter = region.RectIter(); !iter.Done(); iter.Next()) {
-    const LayoutDeviceIntRect& r = iter.Get();
-    targetContext->Rectangle(gfxRect(r.x, r.y, r.width, r.height));
-  }
-  targetContext->Clip();
-
-  nsAutoRetainCocoaObject kungFuDeathGrip(self);
-  bool painted = false;
-  if (mGeckoChild->GetLayerManager()->GetBackendType() == LayersBackend::LAYERS_BASIC) {
-    nsBaseWidget::AutoLayerManagerSetup
-      setupLayerManager(mGeckoChild, targetContext, BufferMode::BUFFER_NONE);
-    painted = mGeckoChild->PaintWindow(region);
-  } else if (mGeckoChild->GetLayerManager()->GetBackendType() == LayersBackend::LAYERS_CLIENT) {
-    // We only need this so that we actually get DidPaintWindow fired
-    painted = mGeckoChild->PaintWindow(region);
-  }
-
-  targetContext = nullptr;
-  targetSurface = nullptr;
-
-  CGContextRestoreGState(aContext);
+  bool painted = mGeckoChild->PaintWindowInContext(aContext, region, backingSize);
 
   // Undo the scale transform so that from now on the context is in
   // CocoaPoints again.
@@ -3986,6 +4099,8 @@ NSEvent* gLastDragMouseDownEvent = nil;
 
 - (void)viewWillDraw
 {
+  nsAutoRetainCocoaObject kungFuDeathGrip(self);
+
   if (mGeckoChild) {
     // The OS normally *will* draw our NSWindow, no matter what we do here.
     // But Gecko can delete our parent widget(s) (along with mGeckoChild)
@@ -4221,15 +4336,6 @@ NSEvent* gLastDragMouseDownEvent = nil;
   if (!anEvent || !mGeckoChild)
     return;
 
-  /*
-   * In OS X 10.7.* (Lion), smart zoom events come through magnifyWithEvent,
-   * instead of smartMagnifyWithEvent. See bug 863841.
-   */
-  if ([ChildView isLionSmartMagnifyEvent: anEvent]) {
-    [self smartMagnifyWithEvent: anEvent];
-    return;
-  }
-
   nsAutoRetainCocoaObject kungFuDeathGrip(self);
 
   float deltaZ = [anEvent deltaZ];
@@ -4394,28 +4500,8 @@ NSEvent* gLastDragMouseDownEvent = nil;
   NS_OBJC_END_TRY_ABORT_BLOCK;
 }
 
-+ (BOOL)isLionSmartMagnifyEvent:(NSEvent*)anEvent
-{
-  /*
-   * On Lion, smart zoom events have type NSEventTypeGesture, subtype 0x16,
-   * whereas pinch zoom events have type NSEventTypeMagnify. So, use that to
-   * discriminate between the two. Smart zoom gestures do not call
-   * beginGestureWithEvent or endGestureWithEvent, so mGestureState is not
-   * changed. Documentation couldn't be found for the meaning of the subtype
-   * 0x16, but it will probably never change. See bug 863841.
-   */
-  return nsCocoaFeatures::OnLionOrLater() &&
-         !nsCocoaFeatures::OnMountainLionOrLater() &&
-         [anEvent type] == NSEventTypeGesture &&
-         [anEvent subtype] == 0x16;
-}
-
 - (bool)shouldConsiderStartingSwipeFromEvent:(NSEvent*)anEvent
 {
-  if (!nsCocoaFeatures::OnLionOrLater()) {
-    return false;
-  }
-
   // This method checks whether the AppleEnableSwipeNavigateWithScrolls global
   // preference is set.  If it isn't, fluid swipe tracking is disabled, and a
   // horizontal two-finger gesture is always a scroll (even in Safari).  This
@@ -4528,7 +4614,7 @@ NSEvent* gLastDragMouseDownEvent = nil;
     // blocked.
     clickCount--;
   }
-  geckoEvent.clickCount = clickCount;
+  geckoEvent.mClickCount = clickCount;
 
   if (modifierFlags & NSControlKeyMask)
     geckoEvent.button = WidgetMouseEvent::eRightButton;
@@ -4588,7 +4674,7 @@ NSEvent* gLastDragMouseDownEvent = nil;
 
 - (void)sendMouseEnterOrExitEvent:(NSEvent*)aEvent
                             enter:(BOOL)aEnter
-                             type:(WidgetMouseEvent::exitType)aType
+                         exitFrom:(WidgetMouseEvent::ExitFrom)aExitFrom
 {
   if (!mGeckoChild)
     return;
@@ -4600,7 +4686,7 @@ NSEvent* gLastDragMouseDownEvent = nil;
   WidgetMouseEvent event(true, msg, mGeckoChild, WidgetMouseEvent::eReal);
   event.mRefPoint = mGeckoChild->CocoaPointsToDevPixels(localEventLocation);
 
-  event.exit = aType;
+  event.mExitFrom = aExitFrom;
 
   nsEventStatus status; // ignored
   mGeckoChild->DispatchEvent(&event, status);
@@ -4739,7 +4825,7 @@ NewCGSRegionFromRegion(const LayoutDeviceIntRegion& aRegion,
                               WidgetMouseEvent::eReal);
   [self convertCocoaMouseEvent:theEvent toGeckoEvent:&geckoEvent];
   geckoEvent.button = WidgetMouseEvent::eRightButton;
-  geckoEvent.clickCount = [theEvent clickCount];
+  geckoEvent.mClickCount = [theEvent clickCount];
 
   mGeckoChild->DispatchInputEvent(&geckoEvent);
   if (!mGeckoChild)
@@ -4765,7 +4851,7 @@ NewCGSRegionFromRegion(const LayoutDeviceIntRegion& aRegion,
                               WidgetMouseEvent::eReal);
   [self convertCocoaMouseEvent:theEvent toGeckoEvent:&geckoEvent];
   geckoEvent.button = WidgetMouseEvent::eRightButton;
-  geckoEvent.clickCount = [theEvent clickCount];
+  geckoEvent.mClickCount = [theEvent clickCount];
 
   nsAutoRetainCocoaObject kungFuDeathGrip(self);
   mGeckoChild->DispatchInputEvent(&geckoEvent);
@@ -4811,7 +4897,7 @@ NewCGSRegionFromRegion(const LayoutDeviceIntRegion& aRegion,
                               WidgetMouseEvent::eReal);
   [self convertCocoaMouseEvent:theEvent toGeckoEvent:&geckoEvent];
   geckoEvent.button = WidgetMouseEvent::eMiddleButton;
-  geckoEvent.clickCount = [theEvent clickCount];
+  geckoEvent.mClickCount = [theEvent clickCount];
 
   mGeckoChild->DispatchInputEvent(&geckoEvent);
 
@@ -5040,7 +5126,8 @@ PanGestureTypeForEvent(NSEvent* aEvent)
 
   CGPoint loc = CGEventGetLocation(cgEvent);
   loc.y = nsCocoaUtils::FlippedScreenY(loc.y);
-  NSPoint locationInWindow = [[self window] convertScreenToBase:NSPointFromCGPoint(loc)];
+  NSPoint locationInWindow =
+    nsCocoaUtils::ConvertPointFromScreen([self window], NSPointFromCGPoint(loc));
   ScreenIntPoint location = ViewAs<ScreenPixel>(
     [self convertWindowCoordinates:locationInWindow],
     PixelCastJustification::LayoutDeviceIsScreenForUntransformedEvent);
@@ -5404,6 +5491,17 @@ PanGestureTypeForEvent(NSEvent* aEvent)
 {
   NS_ENSURE_TRUE(mTextInputHandler, NSMakeRect(0.0, 0.0, 0.0, 0.0));
   return mTextInputHandler->FirstRectForCharacterRange(aRange, actualRange);
+}
+
+- (void)quickLookWithEvent:(NSEvent*)event
+{
+  // Show dictionary by current point
+  WidgetContentCommandEvent
+    contentCommandEvent(true, eContentCommandLookUpDictionary, mGeckoChild);
+  NSPoint point = [self convertPoint:[event locationInWindow] fromView:nil];
+  contentCommandEvent.mRefPoint = mGeckoChild->CocoaPointsToDevPixels(point);
+  mGeckoChild->DispatchWindowEvent(contentCommandEvent);
+  // The widget might have been destroyed.
 }
 
 - (NSInteger)windowLevel
@@ -6324,15 +6422,19 @@ ChildViewMouseTracker::ReEvaluateMouseEnterState(NSEvent* aEvent, ChildView* aOl
   sLastMouseEventView = ViewForEvent(aEvent);
   if (sLastMouseEventView != oldView) {
     // Send enter and / or exit events.
-    WidgetMouseEvent::exitType type =
+    WidgetMouseEvent::ExitFrom exitFrom =
       [sLastMouseEventView window] == [oldView window] ?
         WidgetMouseEvent::eChild : WidgetMouseEvent::eTopLevel;
-    [oldView sendMouseEnterOrExitEvent:aEvent enter:NO type:type];
+    [oldView sendMouseEnterOrExitEvent:aEvent
+                                 enter:NO
+                              exitFrom:exitFrom];
     // After the cursor exits the window set it to a visible regular arrow cursor.
-    if (type == WidgetMouseEvent::eTopLevel) {
+    if (exitFrom == WidgetMouseEvent::eTopLevel) {
       [[nsCursorManager sharedInstance] setCursor:eCursor_standard];
     }
-    [sLastMouseEventView sendMouseEnterOrExitEvent:aEvent enter:YES type:type];
+    [sLastMouseEventView sendMouseEnterOrExitEvent:aEvent
+                                             enter:YES
+                                          exitFrom:exitFrom];
   }
 }
 

@@ -44,6 +44,20 @@
   line-height: 2.6em;
 }
 
+@media print {
+  p,
+  code,
+  pre,
+  blockquote,
+  ul,
+  ol,
+  li,
+  figure,
+  .wp-caption {
+    margin: 0 0 10px 0 !important;
+  }
+}
+
 h1,
 h2,
 h3 {
@@ -123,7 +137,7 @@ pre {
 
 blockquote {
   padding: 0;
-  -moz-padding-start: 16px;
+  padding-inline-start: 16px;
 }
 
 ul,
@@ -132,12 +146,12 @@ ol {
 }
 
 ul {
-  -moz-padding-start: 30px;
+  padding-inline-start: 30px;
   list-style: disc;
 }
 
 ol {
-  -moz-padding-start: 30px;
+  padding-inline-start: 30px;
   list-style: decimal;
 }
 

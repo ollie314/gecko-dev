@@ -31,6 +31,7 @@
 #include "mozilla/dom/BlobBinding.h"
 #include "mozilla/dom/cache/CacheStorage.h"
 #include "mozilla/dom/CSSBinding.h"
+#include "mozilla/dom/DirectoryBinding.h"
 #include "mozilla/dom/IndexedDatabaseManager.h"
 #include "mozilla/dom/Fetch.h"
 #include "mozilla/dom/FileBinding.h"
@@ -909,6 +910,8 @@ xpc::GlobalProperties::Parse(JSContext* cx, JS::HandleObject obj)
             btoa = true;
         } else if (!strcmp(name.ptr(), "Blob")) {
             Blob = true;
+        } else if (!strcmp(name.ptr(), "Directory")) {
+            Directory = true;
         } else if (!strcmp(name.ptr(), "File")) {
             File = true;
         } else if (!strcmp(name.ptr(), "crypto")) {
@@ -972,6 +975,10 @@ xpc::GlobalProperties::Define(JSContext* cx, JS::HandleObject obj)
 
     if (Blob &&
         !dom::BlobBinding::GetConstructorObject(cx, obj))
+        return false;
+
+    if (Directory &&
+        !dom::DirectoryBinding::GetConstructorObject(cx, obj))
         return false;
 
     if (File &&
@@ -1041,6 +1048,10 @@ xpc::CreateSandboxObject(JSContext* cx, MutableHandleValue vp, nsISupports* prin
     JS::CompartmentOptions compartmentOptions;
 
     auto& creationOptions = compartmentOptions.creationOptions();
+
+    // XXXjwatt: Consider whether/when sandboxes should be able to see
+    // [SecureContext] API (bug 1273687).  In that case we'd call
+    // creationOptions.setSecureContext(true).
 
     if (xpc::SharedMemoryEnabled())
         creationOptions.setSharedMemoryAndAtomicsEnabled(true);
@@ -1762,8 +1773,6 @@ xpc::EvalInSandbox(JSContext* cx, HandleObject sandboxArg, const nsAString& sour
         // This is clearly Gecko-specific and not in any spec.
         mozilla::dom::AutoEntryScript aes(priv, "XPConnect sandbox evaluation");
         JSContext* sandcx = aes.cx();
-        AutoSaveContextOptions savedOptions(sandcx);
-        JS::ContextOptionsRef(sandcx).setDontReportUncaught(true);
         JSAutoCompartment ac(sandcx, sandbox);
 
         JS::CompileOptions options(sandcx);

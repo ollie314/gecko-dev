@@ -8,18 +8,13 @@ import org.mozilla.gecko.R;
  */
 @SuppressWarnings("unused")
 final class UnusedResourcesUtil {
-    /**
-     * Bug 1269001 prelands some strings for localisation for Aurora (before landing the commits
-     * actually making use of these strings), hence we need to reference them here temporarily.
-     */
-    public static final int[] TEMPORARY_PRELANDED_BOOKMARK_ITEMS = {
-        R.string.bookmark_folder_items,
-        R.string.bookmark_folder_one_item,
-    };
-
     public static final int[] CONSTANTS = {
             R.dimen.match_parent,
             R.dimen.wrap_content,
+    };
+
+    public static final int[] USED_IN_BRANDING = {
+            R.drawable.large_icon
     };
 
     public static final int[] USED_IN_COLOR_PALETTE = {
@@ -96,6 +91,7 @@ final class UnusedResourcesUtil {
             R.xml.preferences_home,
             R.xml.preferences_privacy,
             R.xml.preferences_privacy_clear_tablet,
+            R.xml.preferences_default_browser_tablet
     };
 
     // We are migrating to Gradle 2.10 and the Android Gradle plugin 2.0. The new plugin does find
@@ -107,7 +103,6 @@ final class UnusedResourcesUtil {
 
             R.drawable.remote_tabs_setup_button_background,
 
-            R.style.ActionBarThemeGeckoPreferences,
             R.style.TabsPanelSectionBase,
             R.style.TabsPanelSection,
             R.style.TabsPanelItemBase,

@@ -109,7 +109,6 @@ using namespace mozilla::system;
 #include "nsJSEnvironment.h"
 #include "nsContentSink.h"
 #include "nsFrameMessageManager.h"
-#include "nsRefreshDriver.h"
 #include "nsDOMMutationObserver.h"
 #include "nsHyphenationManager.h"
 #include "nsEditorSpellCheck.h"
@@ -127,6 +126,7 @@ using namespace mozilla::system;
 #include "CameraPreferences.h"
 #include "TouchManager.h"
 #include "MediaDecoder.h"
+#include "MediaPrefs.h"
 #include "mozilla/layers/CompositorLRU.h"
 #include "mozilla/dom/devicestorage/DeviceStorageStatics.h"
 #include "mozilla/ServoBindings.h"
@@ -270,7 +270,6 @@ nsLayoutStatics::Initialize()
   nsLayoutUtils::Initialize();
   nsIPresShell::InitializeStatics();
   TouchManager::InitializeStatics();
-  nsRefreshDriver::InitializeStatics();
   nsPrincipal::InitializeStatics();
 
   nsCORSListenerProxy::Startup();
@@ -321,6 +320,11 @@ nsLayoutStatics::Initialize()
 
 #ifdef MOZ_STYLO
   Servo_Initialize();
+#endif
+
+#ifndef MOZ_WIDGET_ANDROID
+  // On Android, we instantiate it when constructing AndroidBridge.
+  MediaPrefs::GetSingleton();
 #endif
 
   return NS_OK;
@@ -431,8 +435,6 @@ nsLayoutStatics::Shutdown()
   nsDOMMutationObserver::Shutdown();
 
   ContentParent::ShutDown();
-
-  nsRefreshDriver::Shutdown();
 
   DisplayItemClip::Shutdown();
 

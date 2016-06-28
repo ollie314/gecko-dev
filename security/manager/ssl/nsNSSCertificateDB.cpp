@@ -9,6 +9,7 @@
 #include "NSSCertDBTrustDomain.h"
 #include "SharedSSLState.h"
 #include "mozilla/Base64.h"
+#include "mozilla/Casting.h"
 #include "mozilla/unused.h"
 #include "nsArray.h"
 #include "nsArrayUtils.h"
@@ -179,24 +180,28 @@ nsNSSCertificateDB::FindCertByDBKey(const char* aDBKey,
     return NS_ERROR_ILLEGAL_INPUT;
   }
   const char* reader = decoded.BeginReading();
-  uint64_t zeroes = *reinterpret_cast<const uint64_t*>(reader);
+  uint64_t zeroes = *BitwiseCast<const uint64_t*, const char*>(reader);
   if (zeroes != 0) {
     return NS_ERROR_ILLEGAL_INPUT;
   }
   reader += sizeof(uint64_t);
-  uint32_t serialNumberLen = ntohl(*reinterpret_cast<const uint32_t*>(reader));
+  // Note: We surround the ntohl() argument with parentheses to stop the macro
+  //       from thinking two arguments were passed.
+  uint32_t serialNumberLen = ntohl(
+    (*BitwiseCast<const uint32_t*, const char*>(reader)));
   reader += sizeof(uint32_t);
-  uint32_t issuerLen = ntohl(*reinterpret_cast<const uint32_t*>(reader));
+  uint32_t issuerLen = ntohl(
+    (*BitwiseCast<const uint32_t*, const char*>(reader)));
   reader += sizeof(uint32_t);
   if (decoded.Length() != 16ULL + serialNumberLen + issuerLen) {
     return NS_ERROR_ILLEGAL_INPUT;
   }
   CERTIssuerAndSN issuerSN;
   issuerSN.serialNumber.len = serialNumberLen;
-  issuerSN.serialNumber.data = (unsigned char*)reader;
+  issuerSN.serialNumber.data = BitwiseCast<unsigned char*, const char*>(reader);
   reader += serialNumberLen;
   issuerSN.derIssuer.len = issuerLen;
-  issuerSN.derIssuer.data = (unsigned char*)reader;
+  issuerSN.derIssuer.data = BitwiseCast<unsigned char*, const char*>(reader);
   reader += issuerLen;
   MOZ_ASSERT(reader == decoded.EndReading());
 
@@ -237,8 +242,7 @@ nsNSSCertificateDB::getCertsFromPackage(const UniquePLArenaPool& arena,
                                         uint8_t* data, uint32_t length,
                                         const nsNSSShutDownPreventionLock& /*proofOfLock*/)
 {
-  CERTDERCerts* collectArgs =
-    (CERTDERCerts*)PORT_ArenaZAlloc(arena.get(), sizeof(CERTDERCerts));
+  CERTDERCerts* collectArgs = PORT_ArenaZNew(arena.get(), CERTDERCerts);
   if (!collectArgs) {
     return nullptr;
   }
@@ -465,9 +469,8 @@ nsNSSCertificateDB::ImportCertificates(uint8_t* data, uint32_t length,
   // Now let's create some certs to work with
   for (int i = 0; i < certCollection->numcerts; i++) {
     SECItem* currItem = &certCollection->rawCerts[i];
-    nsCOMPtr<nsIX509Cert> cert =
-      nsNSSCertificate::ConstructFromDER(reinterpret_cast<char*>(currItem->data),
-                                         currItem->len);
+    nsCOMPtr<nsIX509Cert> cert = nsNSSCertificate::ConstructFromDER(
+      BitwiseCast<char*, unsigned char*>(currItem->data), currItem->len);
     if (!cert) {
       return NS_ERROR_FAILURE;
     }
@@ -1289,13 +1292,9 @@ nsNSSCertificateDB::get_default_nickname(CERTCertificate *cert,
   NS_ConvertUTF16toUTF8 nickFmt(tmpNickFmt);
 
   nsAutoCString baseName;
-  char *temp_nn = PR_smprintf(nickFmt.get(), username.get(), caname.get());
-  if (!temp_nn) {
+  baseName.AppendPrintf(nickFmt.get(), username.get(), caname.get());
+  if (baseName.IsEmpty()) {
     return;
-  } else {
-    baseName = temp_nn;
-    PR_smprintf_free(temp_nn);
-    temp_nn = nullptr;
   }
 
   nickname = baseName;
@@ -1310,28 +1309,26 @@ nsNSSCertificateDB::get_default_nickname(CERTCertificate *cert,
     return;
 
   if (!PK11_IsInternal(slot.get())) {
-    char* tmp = PR_smprintf("%s:%s", PK11_GetTokenName(slot.get()),
-                            baseName.get());
-    if (!tmp) {
+    nsAutoCString tmp;
+    tmp.AppendPrintf("%s:%s", PK11_GetTokenName(slot.get()), baseName.get());
+    if (tmp.IsEmpty()) {
       nickname.Truncate();
       return;
     }
     baseName = tmp;
-    PR_smprintf_free(tmp);
-
     nickname = baseName;
   }
 
   int count = 1;
   while (true) {
     if ( count > 1 ) {
-      char *tmp = PR_smprintf("%s #%d", baseName.get(), count);
-      if (!tmp) {
+      nsAutoCString tmp;
+      tmp.AppendPrintf("%s #%d", baseName.get(), count);
+      if (tmp.IsEmpty()) {
         nickname.Truncate();
         return;
       }
       nickname = tmp;
-      PR_smprintf_free(tmp);
     }
 
     UniqueCERTCertificate dummycert;
@@ -1477,6 +1474,32 @@ nsNSSCertificateDB::GetCerts(nsIX509CertList **_retval)
 
   nssCertList.forget(_retval);
   return NS_OK;
+}
+
+NS_IMETHODIMP
+nsNSSCertificateDB::GetEnterpriseRoots(nsIX509CertList** enterpriseRoots)
+{
+  MOZ_ASSERT(NS_IsMainThread());
+  if (!NS_IsMainThread()) {
+    return NS_ERROR_NOT_SAME_THREAD;
+  }
+
+  NS_ENSURE_ARG_POINTER(enterpriseRoots);
+
+  nsNSSShutDownPreventionLock locker;
+  if (isAlreadyShutDown()) {
+    return NS_ERROR_NOT_AVAILABLE;
+  }
+
+#ifdef XP_WIN
+  nsCOMPtr<nsINSSComponent> psm(do_GetService(PSM_COMPONENT_CONTRACTID));
+  if (!psm) {
+    return NS_ERROR_FAILURE;
+  }
+  return psm->GetEnterpriseRoots(enterpriseRoots);
+#else
+  return NS_ERROR_NOT_IMPLEMENTED;
+#endif
 }
 
 nsresult

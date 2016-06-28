@@ -32,8 +32,7 @@
 #include <android/log.h>
 #define GVDM_LOG(...) __android_log_print(ANDROID_LOG_DEBUG, "GonkVideoDecoderManager", __VA_ARGS__)
 
-extern mozilla::LogModule* GetPDMLog();
-#define LOG(...) MOZ_LOG(GetPDMLog(), mozilla::LogLevel::Debug, (__VA_ARGS__))
+#define LOG(...) MOZ_LOG(sPDMLog, mozilla::LogLevel::Debug, (__VA_ARGS__))
 using namespace mozilla::layers;
 using namespace android;
 typedef android::MediaCodecProxy MediaCodecProxy;
@@ -53,7 +52,7 @@ public:
     , mGrallocFormat(aGrallocFormat)
   {}
 
-  already_AddRefed<TextureClient> Allocate(CompositableForwarder* aAllocator) override
+  already_AddRefed<TextureClient> Allocate(TextureForwarder* aAllocator) override
   {
     uint32_t usage = android::GraphicBuffer::USAGE_SW_READ_OFTEN |
                      android::GraphicBuffer::USAGE_SW_WRITE_OFTEN |

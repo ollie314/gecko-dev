@@ -5,13 +5,12 @@
 
 var {utils: Cu, classes: Cc, interfaces: Ci} = Components;
 
-Cu.import("resource://gre/modules/FileUtils.jsm");
-
 const {require} = Cu.import("resource://devtools/shared/Loader.jsm", {});
+const {FileUtils} = require("resource://gre/modules/FileUtils.jsm");
 const {gDevTools} = require("devtools/client/framework/devtools");
 const promise = require("promise");
 const Services = require("Services");
-const {Task} = require("resource://gre/modules/Task.jsm");
+const {Task} = require("devtools/shared/task");
 const {AppProjects} = require("devtools/client/webide/modules/app-projects");
 const DevToolsUtils = require("devtools/shared/DevToolsUtils");
 DevToolsUtils.testing = true;

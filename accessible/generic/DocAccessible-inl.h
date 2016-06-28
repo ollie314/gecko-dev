@@ -91,19 +91,6 @@ DocAccessible::UpdateText(nsIContent* aTextNode)
 }
 
 inline void
-DocAccessible::UpdateRootElIfNeeded()
-{
-  dom::Element* rootEl = mDocumentNode->GetBodyElement();
-  if (!rootEl) {
-    rootEl = mDocumentNode->GetRootElement();
-  }
-  if (rootEl != mContent) {
-    mContent = rootEl;
-    SetRoleMapEntry(aria::GetRoleMap(rootEl));
-  }
-}
-
-inline void
 DocAccessible::AddScrollListener()
 {
   // Delay scroll initializing until the document has a root frame.
@@ -169,6 +156,17 @@ DocAccessible::CreateSubtree(Accessible* aChild)
   // this node already then it will be suppressed by this one.
   Accessible* focusedAcc = nullptr;
   CacheChildrenInSubtree(aChild, &focusedAcc);
+
+  // Fire events for ARIA elements.
+  if (aChild->HasARIARole()) {
+    roles::Role role = aChild->ARIARole();
+    if (role == roles::MENUPOPUP) {
+      FireDelayedEvent(nsIAccessibleEvent::EVENT_MENUPOPUP_START, aChild);
+    }
+    else if (role == roles::ALERT) {
+      FireDelayedEvent(nsIAccessibleEvent::EVENT_ALERT, aChild);
+    }
+  }
 
   // XXX: do we really want to send focus to focused DOM node not taking into
   // account active item?

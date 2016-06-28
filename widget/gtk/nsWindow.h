@@ -60,7 +60,6 @@ extern PRLogModuleInfo *gWidgetDrawLog;
 
 #endif /* MOZ_LOGGING */
 
-class gfxASurface;
 class gfxPattern;
 class nsPluginNativeWindowGtk;
 
@@ -72,6 +71,7 @@ class CurrentX11TimeGetter;
 class nsWindow : public nsBaseWidget
 {
 public:
+    typedef mozilla::gfx::DrawTarget DrawTarget;
     typedef mozilla::WidgetEventTime WidgetEventTime;
 
     nsWindow();
@@ -320,8 +320,8 @@ public:
                                                              mozilla::layers::BufferMode* aBufferMode);
 
 #if (MOZ_WIDGET_GTK == 2)
-    static already_AddRefed<gfxASurface> GetSurfaceForGdkDrawable(GdkDrawable* aDrawable,
-                                                                  const nsIntSize& aSize);
+    static already_AddRefed<DrawTarget> GetDrawTargetForGdkDrawable(GdkDrawable* aDrawable,
+                                                                    const mozilla::gfx::IntSize& aSize);
 #endif
     NS_IMETHOD         ReparentNativeWidget(nsIWidget* aNewParent) override;
 
@@ -407,6 +407,8 @@ protected:
 #endif
     // true if this is a drag and drop feedback popup
     bool               mIsDragPopup;
+    // Can we access X?
+    bool               mIsX11Display;
 
 private:
     void               DestroyChildWindows();
@@ -430,6 +432,7 @@ private:
                                    GdkWindow** aWindow, gint* aButton,
                                    gint* aRootX, gint* aRootY);
     void               ClearCachedResources();
+    nsIWidgetListener* GetListener();
 
     GtkWidget          *mShell;
     MozContainer       *mContainer;
@@ -466,6 +469,9 @@ private:
     RefPtr<nsShmImage>  mFrontShmImage;
     RefPtr<nsShmImage>  mBackShmImage;
 #endif
+
+    // A fallback image surface when a SHM surface is unavailable.
+    cairo_surface_t* mFallbackSurface;
 
 #ifdef ACCESSIBILITY
     RefPtr<mozilla::a11y::Accessible> mRootAccessible;

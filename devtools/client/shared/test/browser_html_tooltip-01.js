@@ -9,9 +9,9 @@
  */
 
 const HTML_NS = "http://www.w3.org/1999/xhtml";
-const TEST_URI = `data:text/xml;charset=UTF-8,<?xml version="1.0"?>
+const TEST_WINDOW_URI = `data:text/xml;charset=UTF-8,<?xml version="1.0"?>
   <?xml-stylesheet href="chrome://global/skin/global.css"?>
-  <?xml-stylesheet href="chrome://devtools/skin/common.css"?>
+  <?xml-stylesheet href="chrome://devtools/skin/tooltips.css"?>
   <window xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
    title="Tooltip test">
     <vbox flex="1">
@@ -22,7 +22,18 @@ const TEST_URI = `data:text/xml;charset=UTF-8,<?xml version="1.0"?>
     </vbox>
   </window>`;
 
+const TEST_PAGE_URI = `data:text/xml;charset=UTF-8,<?xml version="1.0"?>
+  <?xml-stylesheet href="chrome://global/skin/global.css"?>
+  <?xml-stylesheet href="chrome://devtools/skin/tooltips.css"?>
+  <page xmlns="http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul"
+   title="Tooltip test with document using a Page element">
+    <vbox flex="1">
+      <hbox id="box1" flex="1">test1</hbox>
+    </vbox>
+  </page>`;
+
 const {HTMLTooltip} = require("devtools/client/shared/widgets/HTMLTooltip");
+loadHelperScript("helper_html_tooltip.js");
 
 function getTooltipContent(doc) {
   let div = doc.createElementNS(HTML_NS, "div");
@@ -33,13 +44,21 @@ function getTooltipContent(doc) {
 }
 
 add_task(function* () {
-  yield addTab("about:blank");
-  let [,, doc] = yield createHost("bottom", TEST_URI);
+  info("Test showing a basic tooltip in XUL document using <window>");
+  yield testTooltipForUri(TEST_WINDOW_URI);
+
+  info("Test showing a basic tooltip in XUL document using <page>");
+  yield testTooltipForUri(TEST_PAGE_URI);
+});
+
+function* testTooltipForUri(uri) {
+  let tab = yield addTab("about:blank");
+  let [,, doc] = yield createHost("bottom", uri);
 
   let tooltip = new HTMLTooltip({doc}, {});
 
   info("Set tooltip content");
-  yield tooltip.setContent(getTooltipContent(doc), 100, 50);
+  tooltip.setContent(getTooltipContent(doc), {width: 100, height: 50});
 
   is(tooltip.isVisible(), false, "Tooltip is not visible");
 
@@ -54,6 +73,7 @@ add_task(function* () {
   yield onShown;
   is(shown, 1, "Event shown was fired once");
 
+  yield waitForReflow(tooltip);
   is(tooltip.isVisible(), true, "Tooltip is visible");
 
   info("Hide the tooltip and check the expected events are fired.");
@@ -67,5 +87,8 @@ add_task(function* () {
   yield onPopupHidden;
   is(hidden, 1, "Event hidden was fired once");
 
+  yield waitForReflow(tooltip);
   is(tooltip.isVisible(), false, "Tooltip is not visible");
-});
+
+  yield removeTab(tab);
+}

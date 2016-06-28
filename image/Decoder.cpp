@@ -429,7 +429,8 @@ Decoder::PostFrameStop(Opacity aFrameOpacity
                        DisposalMethod aDisposalMethod
                          /* = DisposalMethod::KEEP */,
                        int32_t aTimeout         /* = 0 */,
-                       BlendMethod aBlendMethod /* = BlendMethod::OVER */)
+                       BlendMethod aBlendMethod /* = BlendMethod::OVER */,
+                       const Maybe<nsIntRect>& aBlendRect /* = Nothing() */)
 {
   // We should be mid-frame
   MOZ_ASSERT(!IsMetadataDecode(), "Stopping frame during metadata decode");
@@ -439,7 +440,8 @@ Decoder::PostFrameStop(Opacity aFrameOpacity
   // Update our state
   mInFrame = false;
 
-  mCurrentFrame->Finish(aFrameOpacity, aDisposalMethod, aTimeout, aBlendMethod);
+  mCurrentFrame->Finish(aFrameOpacity, aDisposalMethod, aTimeout,
+                        aBlendMethod, aBlendRect);
 
   mProgress |= FLAG_FRAME_COMPLETE;
 
@@ -448,6 +450,12 @@ Decoder::PostFrameStop(Opacity aFrameOpacity
   if (!ShouldSendPartialInvalidations() && mFrameCount == 1) {
     mInvalidRect.UnionRect(mInvalidRect,
                            gfx::IntRect(gfx::IntPoint(0, 0), GetSize()));
+  }
+
+  // If we are going to keep decoding we should notify now about the first frame being done.
+  if (mImage && mFrameCount == 1 && HasAnimation()) {
+    MOZ_ASSERT(HasProgress());
+    DecodePool::Singleton()->NotifyProgress(this);
   }
 }
 

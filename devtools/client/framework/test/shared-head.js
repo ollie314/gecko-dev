@@ -20,14 +20,16 @@ function scopedCuImport(path) {
 
 const {console} = scopedCuImport("resource://gre/modules/Console.jsm");
 const {ScratchpadManager} = scopedCuImport("resource://devtools/client/scratchpad/scratchpad-manager.jsm");
-const {require} = scopedCuImport("resource://devtools/shared/Loader.jsm");
+const {loader, require} = scopedCuImport("resource://devtools/shared/Loader.jsm");
 
 const {gDevTools} = require("devtools/client/framework/devtools");
 const {TargetFactory} = require("devtools/client/framework/target");
 const DevToolsUtils = require("devtools/shared/DevToolsUtils");
 let promise = require("promise");
+let defer = require("devtools/shared/defer");
 const Services = require("Services");
-const {Task} = require("resource://gre/modules/Task.jsm");
+const {Task} = require("devtools/shared/task");
+const {KeyShortcuts} = require("devtools/client/shared/key-shortcuts");
 
 const TEST_DIR = gTestPath.substr(0, gTestPath.lastIndexOf("/"));
 const CHROME_URL_ROOT = TEST_DIR + "/";
@@ -41,7 +43,7 @@ waitForExplicitFinish();
 
 var EXPECTED_DTU_ASSERT_FAILURE_COUNT = 0;
 
-registerCleanupFunction(function() {
+registerCleanupFunction(function () {
   if (DevToolsUtils.assertionFailureCount !==
       EXPECTED_DTU_ASSERT_FAILURE_COUNT) {
     ok(false,
@@ -60,7 +62,7 @@ registerCleanupFunction(function() {
 const ConsoleObserver = {
   QueryInterface: XPCOMUtils.generateQI([Ci.nsIObserver]),
 
-  observe: function(subject, topic, data) {
+  observe: function (subject, topic, data) {
     let message = subject.wrappedJSObject.arguments[0];
 
     if (/Failed propType/.test(message)) {
@@ -95,11 +97,8 @@ registerCleanupFunction(() => {
 });
 
 registerCleanupFunction(function* cleanup() {
-  let target = TargetFactory.forTab(gBrowser.selectedTab);
-  yield gDevTools.closeToolbox(target);
-
   while (gBrowser.tabs.length > 1) {
-    gBrowser.removeCurrentTab();
+    yield closeTabAndToolbox(gBrowser.selectedTab);
   }
 });
 
@@ -166,6 +165,29 @@ function synthesizeKeyFromKeyTag(key) {
 }
 
 /**
+ * Simulate a key event from an electron key shortcut string:
+ * https://github.com/electron/electron/blob/master/docs/api/accelerator.md
+ *
+ * @param {String} key
+ * @param {DOMWindow} target
+ *        Optional window where to fire the key event
+ */
+function synthesizeKeyShortcut(key, target) {
+  // parseElectronKey requires any window, just to access `KeyboardEvent`
+  let window = Services.appShell.hiddenDOMWindow;
+  let shortcut = KeyShortcuts.parseElectronKey(window, key);
+
+  info("Synthesizing key shortcut: " + key);
+  EventUtils.synthesizeKey(shortcut.key || "", {
+    keyCode: shortcut.keyCode,
+    altKey: shortcut.alt,
+    ctrlKey: shortcut.ctrl,
+    metaKey: shortcut.meta,
+    shiftKey: shortcut.shift
+  }, target);
+}
+
+/**
  * Wait for eventName on target to be delivered a number of times.
  *
  * @param {Object} target
@@ -181,7 +203,7 @@ function synthesizeKeyFromKeyTag(key) {
 function waitForNEvents(target, eventName, numTimes, useCapture = false) {
   info("Waiting for event: '" + eventName + "' on " + target + ".");
 
-  let deferred = promise.defer();
+  let deferred = defer();
   let count = 0;
 
   for (let [add, remove] of [
@@ -240,7 +262,7 @@ function loadHelperScript(filePath) {
  * @return {Promise}
  */
 function waitForTick() {
-  let deferred = promise.defer();
+  let deferred = defer();
   executeSoon(deferred.resolve);
   return deferred.promise;
 }
@@ -254,7 +276,7 @@ function waitForTick() {
  * @return A promise that resolves when the time is passed
  */
 function wait(ms) {
-  let def = promise.defer();
+  let def = defer();
   content.setTimeout(def.resolve, ms);
   return def.promise;
 }
@@ -312,7 +334,7 @@ var openNewTabAndToolbox = Task.async(function* (url, toolId, hostType) {
  * @return {Promise} Resolves when the toolbox and tab have been destroyed and
  * closed.
  */
-var closeTabAndToolbox = Task.async(function*(tab = gBrowser.selectedTab) {
+var closeTabAndToolbox = Task.async(function* (tab = gBrowser.selectedTab) {
   let target = TargetFactory.forTab(gBrowser.selectedTab);
   if (target) {
     yield gDevTools.closeToolbox(target);
@@ -327,7 +349,7 @@ var closeTabAndToolbox = Task.async(function*(tab = gBrowser.selectedTab) {
  * @return {Promise} Resolves when the toolbox and tab have been destroyed and
  * closed.
  */
-var closeToolboxAndTab = Task.async(function*(toolbox) {
+var closeToolboxAndTab = Task.async(function* (toolbox) {
   yield toolbox.destroy();
   yield removeTab(gBrowser.selectedTab);
 });
@@ -345,7 +367,7 @@ function waitUntil(predicate, interval = 10) {
     return Promise.resolve(true);
   }
   return new Promise(resolve => {
-    setTimeout(function() {
+    setTimeout(function () {
       waitUntil(predicate, interval).then(() => resolve(true));
     }, interval);
   });
@@ -357,7 +379,7 @@ function waitUntil(predicate, interval = 10) {
  */
 let MM_INC_ID = 0;
 function evalInDebuggee(mm, script) {
-  return new Promise(function(resolve, reject) {
+  return new Promise(function (resolve, reject) {
     let id = MM_INC_ID++;
     mm.sendAsyncMessage("devtools:test:eval", { script, id });
     mm.addMessageListener("devtools:test:eval:response", handler);
@@ -391,7 +413,7 @@ function evalInDebuggee(mm, script) {
  *         callback is invoked.
  */
 function waitForContextMenu(popup, button, onShown, onHidden) {
-  let deferred = promise.defer();
+  let deferred = defer();
 
   function onPopupShown() {
     info("onPopupShown");

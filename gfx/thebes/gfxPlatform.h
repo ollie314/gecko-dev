@@ -68,8 +68,6 @@ BackendTypeBit(BackendType b)
     } \
   } while (0)
 
-extern cairo_user_data_key_t kDrawTarget;
-
 enum eCMSMode {
     eCMSMode_Off          = 0,     // No color management
     eCMSMode_All          = 1,     // Color manage everything
@@ -136,7 +134,8 @@ enum class DeviceResetReason
 
 enum class ForcedDeviceResetReason
 {
-  OPENSHAREDHANDLE = 0
+  OPENSHAREDHANDLE = 0,
+  COMPOSITOR_UPDATED,
 };
 
 class gfxPlatform {
@@ -521,6 +520,12 @@ public:
      * for measuring text etc as if they will be rendered to the screen
      */
     gfxASurface* ScreenReferenceSurface() { return mScreenReferenceSurface; }
+
+    /**
+     * Returns a 1x1 DrawTarget that can be used for measuring text etc. as
+     * it would measure if rendered on-screen.  Guaranteed to return a
+     * non-null and valid DrawTarget.
+     */
     mozilla::gfx::DrawTarget* ScreenReferenceDrawTarget() { return mScreenReferenceDrawTarget; }
 
     virtual mozilla::gfx::SurfaceFormat Optimal2DFormatForContent(gfxContentType aContent);
@@ -608,11 +613,6 @@ public:
     // widget. This should only be used within nsRefreshDriver.
     virtual void SchedulePaintIfDeviceReset() {}
 
-    // Immediately update all platform bits if a device reset has occurred.
-    // This should only be used at the top of the callstack (i.e. within
-    // a task, OS event, or IPDL message).
-    virtual void UpdateRenderModeIfDeviceReset() {}
-
     /**
      * Helper method, creates a draw target for a specific Azure backend.
      * Used by CreateOffscreenDrawTarget.
@@ -632,6 +632,8 @@ public:
     mozilla::layers::LayersBackend GetCompositorBackend() const {
       return mCompositorBackend;
     }
+
+    virtual void CompositorUpdated() {}
 
     // Return information on how child processes should initialize graphics
     // devices. Currently this is only used on Windows.

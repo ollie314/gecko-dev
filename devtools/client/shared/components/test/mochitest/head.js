@@ -4,17 +4,17 @@
 
 var { classes: Cc, interfaces: Ci, utils: Cu, results: Cr } = Components;
 
-Cu.import("resource://testing-common/Assert.jsm");
-
 var { require } = Cu.import("resource://devtools/shared/Loader.jsm", {});
+var { Assert } = require("resource://testing-common/Assert.jsm");
 var { gDevTools } = require("devtools/client/framework/devtools");
 var { BrowserLoader } = Cu.import("resource://devtools/client/shared/browser-loader.js", {});
 var promise = require("promise");
+var defer = require("devtools/shared/defer");
 var Services = require("Services");
 var { DebuggerServer } = require("devtools/server/main");
 var { DebuggerClient } = require("devtools/shared/client/main");
 var DevToolsUtils = require("devtools/shared/DevToolsUtils");
-var { Task } = require("resource://gre/modules/Task.jsm");
+var { Task } = require("devtools/shared/task");
 var { TargetFactory } = require("devtools/client/framework/target");
 var { Toolbox } = require("devtools/client/framework/toolbox");
 
@@ -45,13 +45,13 @@ function onNextAnimationFrame(fn) {
 }
 
 function setState(component, newState) {
-  var deferred = promise.defer();
+  var deferred = defer();
   component.setState(newState, onNextAnimationFrame(deferred.resolve));
   return deferred.promise;
 }
 
 function setProps(component, newState) {
-  var deferred = promise.defer();
+  var deferred = defer();
   component.setProps(newState, onNextAnimationFrame(deferred.resolve));
   return deferred.promise;
 }
@@ -141,7 +141,7 @@ var TEST_TREE = {
 /**
  * Frame
  */
-function checkFrameString({ frame, file, line, column, shouldLink, tooltip }) {
+function checkFrameString({ frame, file, line, column, source, shouldLink, tooltip }) {
   let el = frame.getDOMNode();
   let $ = selector => el.querySelector(selector);
 
@@ -155,6 +155,9 @@ function checkFrameString({ frame, file, line, column, shouldLink, tooltip }) {
   is(el.getAttribute("data-column"), column ? `${column}` : null, "Expected `data-column` found");
   is($source.getAttribute("title"), tooltip, "Correct tooltip");
   is($source.tagName, shouldLink ? "A" : "SPAN", "Correct linkable status");
+  if (shouldLink) {
+    is($source.getAttribute("href"), source, "Correct source");
+  }
 
   if (line != null) {
     is(+$line.textContent, +line);

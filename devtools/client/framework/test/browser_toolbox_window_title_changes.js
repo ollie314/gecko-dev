@@ -37,7 +37,7 @@ function test() {
 
     // navigate to different local url and check title
       .then(function () {
-        let deferred = promise.defer();
+        let deferred = defer();
         target.once("navigate", () => deferred.resolve());
         gBrowser.loadURI(URL_2);
         return deferred.promise;
@@ -46,7 +46,7 @@ function test() {
 
     // navigate to a real url and check title
       .then(() => {
-        let deferred = promise.defer();
+        let deferred = defer();
         target.once("navigate", () => deferred.resolve());
         gBrowser.loadURI(URL_3);
         return deferred.promise;
@@ -58,7 +58,7 @@ function test() {
       .then(function () {
         // Give the tools a chance to handle the navigation event before
         // destroying the toolbox.
-        executeSoon(function() {
+        executeSoon(function () {
           toolbox.destroy()
             .then(function () {
               // After destroying the toolbox, a fresh target is required.

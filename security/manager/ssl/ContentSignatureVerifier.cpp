@@ -7,18 +7,19 @@
 #include "ContentSignatureVerifier.h"
 
 #include "BRNameMatchingPolicy.h"
+#include "SharedCertVerifier.h"
 #include "cryptohi.h"
 #include "keyhi.h"
+#include "mozilla/Casting.h"
 #include "nsCOMPtr.h"
 #include "nsNSSComponent.h"
-#include "nssb64.h"
+#include "nsSecurityHeaderParser.h"
 #include "nsWhitespaceTokenizer.h"
 #include "nsXPCOMStrings.h"
+#include "nssb64.h"
 #include "pkix/pkix.h"
 #include "pkix/pkixtypes.h"
 #include "secerr.h"
-#include "SharedCertVerifier.h"
-#include "nsSecurityHeaderParser.h"
 
 NS_IMPL_ISUPPORTS(ContentSignatureVerifier, nsIContentSignatureVerifier)
 
@@ -165,7 +166,7 @@ ContentSignatureVerifier::CreateContext(const nsACString& aData,
 
   Input certDER;
   Result result =
-    certDER.Init(reinterpret_cast<const uint8_t*>(certSecItem->data),
+    certDER.Init(BitwiseCast<uint8_t*, unsigned char*>(certSecItem->data),
                  certSecItem->len);
   if (result != Success) {
     return NS_ERROR_FAILURE;
@@ -181,7 +182,11 @@ ContentSignatureVerifier::CreateContext(const nsACString& aData,
                           CertPolicyId::anyPolicy,
                           nullptr/*stapledOCSPResponse*/);
   if (result != Success) {
-    // the chain is bad
+    // if there was a library error, return an appropriate error
+    if (IsFatalError(result)) {
+      return NS_ERROR_FAILURE;
+    }
+    // otherwise, assume the signature was invalid
     CSVerifier_LOG(("CSVerifier: The supplied chain is bad\n"));
     return NS_ERROR_INVALID_SIGNATURE;
   }

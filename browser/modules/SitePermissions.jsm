@@ -16,6 +16,63 @@ this.SitePermissions = {
   BLOCK: Services.perms.DENY_ACTION,
   SESSION: Components.interfaces.nsICookiePermission.ACCESS_SESSION,
 
+  /* Returns a list of objects representing all permissions that are currently
+   * set for the given URI. Each object contains the following keys:
+   * - id: the permissionID of the permission
+   * - label: the localized label
+   * - state: a constant representing the current permission state
+   *   (e.g. SitePermissions.ALLOW)
+   * - availableStates: an array of all available states for that permission,
+   *   represented as objects with the keys:
+   *   - id: the state constant
+   *   - label: the translated label of that state
+   */
+  getPermissionsByURI: function (aURI) {
+    if (!this.isSupportedURI(aURI)) {
+      return [];
+    }
+
+    let permissions = [];
+    for (let permission of kPermissionIDs) {
+      let state = this.get(aURI, permission);
+      if (state === this.UNKNOWN) {
+        continue;
+      }
+
+      let availableStates = this.getAvailableStates(permission).map( state => {
+        return { id: state, label: this.getStateLabel(permission, state) };
+      });
+      let label = this.getPermissionLabel(permission);
+
+      permissions.push({
+        id: permission,
+        label: label,
+        state: state,
+        availableStates: availableStates,
+      });
+    }
+
+    return permissions;
+  },
+
+  /* Returns a boolean indicating whether there are any granted
+   * (meaning allowed or session-allowed) permissions for the given URI.
+   * Will return false for invalid URIs (such as file:// URLs).
+   */
+  hasGrantedPermissions: function (aURI) {
+    if (!this.isSupportedURI(aURI)) {
+      return false;
+    }
+
+    for (let permission of kPermissionIDs) {
+      let state = this.get(aURI, permission);
+      if (state === this.ALLOW || state === this.SESSION) {
+        return true;
+      }
+    }
+    return false;
+  },
+
   /* Checks whether a UI for managing permissions should be exposed for a given
    * URI. This excludes file URIs, for instance, as they don't have a host,
    * even though nsIPermissionManager can still handle them.
@@ -27,11 +84,7 @@ this.SitePermissions = {
   /* Returns an array of all permission IDs.
    */
   listPermissions: function () {
-    let array = Object.keys(gPermissionObject);
-    array.sort((a, b) => {
-      return this.getPermissionLabel(a).localeCompare(this.getPermissionLabel(b));
-    });
-    return array;
+    return kPermissionIDs;
   },
 
   /* Returns an array of permission states to be exposed to the user for a
@@ -198,3 +251,5 @@ var gPermissionObject = {
     exactHostMatch: true
   }
 };
+
+const kPermissionIDs = Object.keys(gPermissionObject);

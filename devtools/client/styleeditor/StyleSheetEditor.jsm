@@ -14,17 +14,19 @@ const Cu = Components.utils;
 const {require} = Cu.import("resource://devtools/shared/Loader.jsm", {});
 const Editor = require("devtools/client/sourceeditor/editor");
 const promise = require("promise");
+const defer = require("devtools/shared/defer");
 const {CssLogic} = require("devtools/shared/inspector/css-logic");
 const {console} = require("resource://gre/modules/Console.jsm");
 const Services = require("Services");
 const EventEmitter = require("devtools/shared/event-emitter");
-
-Cu.import("resource://gre/modules/FileUtils.jsm");
-Cu.import("resource://gre/modules/NetUtil.jsm");
-const { TextDecoder, OS } = Cu.import("resource://gre/modules/osfile.jsm", {});
-Cu.import("resource://gre/modules/Task.jsm");
-/* import-globals-from StyleEditorUtil.jsm */
-Cu.import("resource://devtools/client/styleeditor/StyleEditorUtil.jsm");
+const {Task} = require("devtools/shared/task");
+const {FileUtils} = require("resource://gre/modules/FileUtils.jsm");
+const {NetUtil} = require("resource://gre/modules/NetUtil.jsm");
+const {TextDecoder, OS} = Cu.import("resource://gre/modules/osfile.jsm", {});
+const {
+  getString,
+  showFilePicker,
+} = require("resource://devtools/client/styleeditor/StyleEditorUtil.jsm");
 
 const LOAD_ERROR = "error-load";
 const SAVE_ERROR = "error-save";
@@ -475,7 +477,7 @@ StyleSheetEditor.prototype = {
    *         Promise that will resolve with the editor.
    */
   getSourceEditor: function () {
-    let deferred = promise.defer();
+    let deferred = defer();
 
     if (this.sourceEditor) {
       return promise.resolve(this);

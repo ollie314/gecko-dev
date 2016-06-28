@@ -16,6 +16,8 @@
 namespace mozilla {
 namespace dom {
 
+class HTMLFormSubmission;
+
 class HTMLObjectElement final : public nsGenericHTMLFormElement
                               , public nsObjectLoadingContent
                               , public nsIDOMHTMLObjectElement
@@ -70,7 +72,7 @@ public:
   }
 
   NS_IMETHOD Reset() override;
-  NS_IMETHOD SubmitNamesValues(nsFormSubmission *aFormSubmission) override;
+  NS_IMETHOD SubmitNamesValues(HTMLFormSubmission *aFormSubmission) override;
 
   virtual bool IsDisabled() const override { return false; }
 
@@ -156,6 +158,7 @@ public:
   using nsObjectLoadingContent::GetContentDocument;
   nsPIDOMWindowOuter* GetContentWindow();
   using nsIConstraintValidation::CheckValidity;
+  using nsIConstraintValidation::ReportValidity;
   using nsIConstraintValidation::GetValidationMessage;
   void GetAlign(DOMString& aValue)
   {
@@ -252,9 +255,6 @@ private:
   {
     return nsIContentPolicy::TYPE_INTERNAL_OBJECT;
   }
-
-  virtual void GetItemValueText(DOMString& text) override;
-  virtual void SetItemValueText(const nsAString& text) override;
 
   virtual ~HTMLObjectElement();
 

@@ -49,6 +49,10 @@ class SandboxBroker;
 class SandboxBrokerPolicyFactory;
 #endif
 
+namespace embedding {
+class PrintingParent;
+}
+
 namespace ipc {
 class OptionalURIParams;
 class PFileDescriptorSetParent;
@@ -161,6 +165,61 @@ public:
   static void GetAll(nsTArray<ContentParent*>& aArray);
 
   static void GetAllEvenIfDead(nsTArray<ContentParent*>& aArray);
+
+  enum CPIteratorPolicy {
+    eLive,
+    eAll
+  };
+
+  class ContentParentIterator {
+  private:
+    ContentParent* mCurrent;
+    CPIteratorPolicy mPolicy;
+
+  public:
+    ContentParentIterator(CPIteratorPolicy aPolicy, ContentParent* aCurrent)
+      : mCurrent(aCurrent),
+        mPolicy(aPolicy)
+    {
+    }
+
+    ContentParentIterator begin()
+    {
+      return *this;
+    }
+    ContentParentIterator end()
+    {
+      return ContentParentIterator(mPolicy, nullptr);
+    }
+
+    const ContentParentIterator& operator++()
+    {
+      MOZ_ASSERT(mCurrent);
+      do {
+        mCurrent = mCurrent->LinkedListElement<ContentParent>::getNext();
+      } while (mPolicy != eAll && mCurrent && !mCurrent->mIsAlive);
+
+      return *this;
+    }
+
+    bool operator!=(const ContentParentIterator& aOther)
+    {
+      MOZ_ASSERT(mPolicy == aOther.mPolicy);
+      return mCurrent != aOther.mCurrent;
+    }
+
+    ContentParent* operator*()
+    {
+      return mCurrent;
+    }
+  };
+
+  static ContentParentIterator AllProcesses(CPIteratorPolicy aPolicy)
+  {
+    ContentParent* first =
+      sContentParents ? sContentParents->getFirst() : nullptr;
+    return ContentParentIterator(aPolicy, first);
+  }
 
   static bool IgnoreIPCPrincipal();
 
@@ -380,9 +439,17 @@ public:
 
   virtual PPrintingParent* AllocPPrintingParent() override;
 
-  virtual bool RecvPPrintingConstructor(PPrintingParent* aActor) override;
-
   virtual bool DeallocPPrintingParent(PPrintingParent* aActor) override;
+
+#if defined(NS_PRINTING)
+  /**
+   * @return the PrintingParent for this ContentParent.
+   */
+  already_AddRefed<embedding::PrintingParent> GetPrintingParent();
+#endif
+
+  virtual PSendStreamParent* AllocPSendStreamParent() override;
+  virtual bool DeallocPSendStreamParent(PSendStreamParent* aActor) override;
 
   virtual PScreenManagerParent*
   AllocPScreenManagerParent(uint32_t* aNumberOfScreens,
@@ -552,6 +619,8 @@ private:
       const bool& aIsForBrowser) override;
   using PContentParent::SendPTestShellConstructor;
 
+  FORWARD_SHMEM_ALLOCATOR_TO(PContentParent)
+
   // No more than one of !!aApp, aIsForBrowser, and aIsForPreallocated may be
   // true.
   ContentParent(mozIApplication* aApp,
@@ -695,6 +764,7 @@ private:
   RecvGetXPCOMProcessAttributes(bool* aIsOffline,
                                 bool* aIsConnected,
                                 bool* aIsLangRTL,
+                                bool* aHaveBidiKeyboards,
                                 InfallibleTArray<nsString>* dictionaries,
                                 ClipboardCapabilities* clipboardCaps,
                                 DomainPolicyClone* domainPolicy,
@@ -855,6 +925,12 @@ private:
   virtual bool DeallocPPresentationParent(PPresentationParent* aActor) override;
 
   virtual bool RecvPPresentationConstructor(PPresentationParent* aActor) override;
+
+  virtual PFlyWebPublishedServerParent*
+    AllocPFlyWebPublishedServerParent(const nsString& name,
+                                      const FlyWebPublishOptions& params) override;
+
+  virtual bool DeallocPFlyWebPublishedServerParent(PFlyWebPublishedServerParent* aActor) override;
 
   virtual PSpeechSynthesisParent* AllocPSpeechSynthesisParent() override;
 
@@ -1104,6 +1180,8 @@ private:
   virtual bool RecvNotifyPushSubscriptionModifiedObservers(const nsCString& aScope,
                                                            const IPC::Principal& aPrincipal) override;
 
+  virtual bool RecvNotifyLowMemory() override;
+
   // If you add strong pointers to cycle collected objects here, be sure to
   // release these objects in ShutDownProcess.  See the comment there for more
   // details.
@@ -1149,10 +1227,9 @@ private:
   bool mIsNuwaProcess;
   bool mHasGamepadListener;
 
-  // These variables track whether we've called Close(), CloseWithError()
-  // and KillHard() on our channel.
+  // These variables track whether we've called Close() and KillHard() on our
+  // channel.
   bool mCalledClose;
-  bool mCalledCloseWithError;
   bool mCalledKillHard;
   bool mCreatedPairedMinidumps;
   bool mShutdownPending;
@@ -1196,6 +1273,10 @@ private:
   mozilla::UniquePtr<SandboxBroker> mSandboxBroker;
   static mozilla::UniquePtr<SandboxBrokerPolicyFactory>
       sSandboxBrokerPolicyFactory;
+#endif
+
+#ifdef NS_PRINTING
+  RefPtr<embedding::PrintingParent> mPrintingParent;
 #endif
 };
 

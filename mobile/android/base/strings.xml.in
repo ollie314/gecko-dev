@@ -30,8 +30,6 @@
 #include ../services/strings.xml.in
 
   <string name="firstrun_panel_title_welcome">&firstrun_panel_title_welcome;</string>
-  <string name="firstrun_welcome_message">&onboard_start_message3;</string>
-  <string name="firstrun_welcome_subtext">&onboard_start_subtext3;</string>
 
   <string name="firstrun_urlbar_message">&firstrun_urlbar_message;</string>
   <string name="firstrun_urlbar_subtext">&firstrun_urlbar_subtext;</string>
@@ -47,19 +45,30 @@
   <string name="firstrun_signin_message">&firstrun_signin_message;</string>
   <string name="firstrun_signin_button">&firstrun_signin_button;</string>
   <string name="firstrun_welcome_button_browser">&onboard_start_button_browser;</string>
+  <string name="firstrun_button_notnow">&firstrun_button_notnow;</string>
   <string name="firstrun_button_next">&firstrun_button_next;</string>
+
+  <string name="firstrun_tabqueue_title">&firstrun_tabqueue_title;</string>
+  <string name="firstrun_tabqueue_message_off">&firstrun_tabqueue_message_off;</string>
+  <string name="firstrun_tabqueue_subtext_off">&firstrun_tabqueue_subtext_off;</string>
+  <string name="firstrun_tabqueue_message_on">&firstrun_tabqueue_message_on;</string>
+  <string name="firstrun_tabqueue_subtext_on">&firstrun_tabqueue_subtext_on;</string>
+
+  <string name="firstrun_readerview_title">&firstrun_readerview_title;</string>
+  <string name="firstrun_readerview_message">&firstrun_readerview_message;</string>
+  <string name="firstrun_readerview_subtext">&firstrun_readerview_subtext;</string>
+
+  <string name="firstrun_account_title">&firstrun_account_title;</string>
+  <string name="firstrun_account_message">&firstrun_account_message;</string>
 
   <string name="firstrun_welcome_restricted">&onboard_start_restricted1;</string>
 
   <string name="bookmarks_title">&bookmarks_title;</string>
   <string name="history_title">&history_title;</string>
-  <string name="reading_list_title">&reading_list_title;</string>
-  <string name="recent_tabs_title">&recent_tabs_title;</string>
-
-  <!-- https://support.mozilla.org/1/mobile/%VERSION%/%OS%/%LOCALE%/reading-list -->
-  <string name="migrated_reading_list_url">https://support.mozilla.org/1/mobile/&formatS1;/&formatS2;/&formatS3;/reading-list</string>
 
   <string name="switch_to_tab">&switch_to_tab;</string>
+
+  <string name="tab_offline_version">&tab_offline_version;</string>
 
   <string name="crash_reporter_title">&crash_reporter_title;</string>
   <string name="crash_message2">&crash_message2;</string>
@@ -306,6 +315,7 @@
   <string name="content_notification_updated_on">&content_notification_updated_on;</string>
 
   <string name="pref_default_browser">&pref_default_browser;</string>
+  <string name="pref_default_browser_mozilla_support_tablet">&pref_default_browser_mozilla_support_tablet;</string>
 
   <string name="pref_about_firefox">&pref_about_firefox;</string>
 
@@ -374,11 +384,6 @@
   <string name="site_settings_title">&site_settings_title3;</string>
   <string name="site_settings_cancel">&site_settings_cancel;</string>
   <string name="site_settings_clear">&site_settings_clear;</string>
-
-  <string name="reading_list_migration_title">&reading_list_migration_title;</string>
-  <string name="reading_list_migration_subtext">&reading_list_migration_subtext;</string>
-  <string name="reading_list_migration_goto_bookmarks">&reading_list_migration_goto_bookmarks;</string>
-  <string name="reading_list_migration_bookmarks_hidden">&reading_list_migration_bookmarks_hidden;</string>
 
   <string name="page_action_dropmarker_description">&page_action_dropmarker_description;</string>
 
@@ -449,10 +454,11 @@
   <string name="home_clear_history_button">&home_clear_history_button;</string>
   <string name="home_clear_history_confirm">&home_clear_history_confirm;</string>
   <string name="home_bookmarks_empty">&home_bookmarks_empty;</string>
-  <string name="home_closed_tabs_title">&home_closed_tabs_title;</string>
-  <string name="home_last_tabs_title">&home_last_tabs_title;</string>
+  <string name="home_closed_tabs_title2">&home_closed_tabs_title2;</string>
   <string name="home_last_tabs_empty">&home_last_tabs_empty;</string>
-  <string name="home_open_all">&home_open_all;</string>
+  <string name="home_restore_all">&home_restore_all;</string>
+  <string name="home_closed_tabs_number">&home_closed_tabs_number;</string>
+  <string name="home_closed_tabs_one">&home_closed_tabs_one;</string>
   <string name="home_most_recent_empty">&home_most_recent_empty;</string>
   <string name="home_most_recent_emptyhint">&home_most_recent_emptyhint2;</string>
   <string name="home_default_empty">&home_default_empty;</string>
@@ -491,7 +497,6 @@
   <!-- Site identity popup -->
   <string name="identity_connection_secure">&identity_connection_secure;</string>
   <string name="identity_connection_insecure">&identity_connection_insecure;</string>
-  <string name="identity_login_insecure">&identity_login_insecure;</string>
   <string name="identity_connection_chromeui">&identity_connection_chromeui;</string>
 
   <string name="mixed_content_blocked_all">&mixed_content_blocked_all1;</string>

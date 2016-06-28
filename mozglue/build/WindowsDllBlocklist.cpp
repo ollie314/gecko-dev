@@ -29,6 +29,7 @@
 #include "mozilla/UniquePtr.h"
 #include "mozilla/WindowsVersion.h"
 #include "nsWindowsHelpers.h"
+#include "WindowsDllBlocklist.h"
 
 using namespace mozilla;
 
@@ -204,6 +205,20 @@ static DllBlockInfo sWindowsDllBlocklist[] = {
   // SS2OSD, bug 1262348
   { "ss2osd.dll", ALL_VERSIONS },
   { "ss2devprops.dll", ALL_VERSIONS },
+
+  // NHASUSSTRIXOSD.DLL, bug 1269244
+  { "nhasusstrixosd.dll", ALL_VERSIONS },
+  { "nhasusstrixdevprops.dll", ALL_VERSIONS },
+
+  // Crashes with PremierOpinion/RelevantKnowledge, bug 1277846
+  { "opls.dll", ALL_VERSIONS },
+  { "opls64.dll", ALL_VERSIONS },
+  { "pmls.dll", ALL_VERSIONS },
+  { "pmls64.dll", ALL_VERSIONS },
+  { "prls.dll", ALL_VERSIONS },
+  { "prls64.dll", ALL_VERSIONS },
+  { "rlls.dll", ALL_VERSIONS },
+  { "rlls64.dll", ALL_VERSIONS },
 
   { nullptr, 0 }
 };
@@ -738,7 +753,7 @@ WindowsDllInterceptor NtDllIntercept;
 
 } // namespace
 
-NS_EXPORT void
+MFBT_API void
 DllBlocklist_Initialize()
 {
 #if defined(_MSC_VER) && _MSC_VER < 1900 && defined(_M_X64)
@@ -777,7 +792,7 @@ DllBlocklist_Initialize()
   }
 }
 
-NS_EXPORT void
+MFBT_API void
 DllBlocklist_SetInXPCOMLoadOnMainThread(bool inXPCOMLoadOnMainThread)
 {
   if (inXPCOMLoadOnMainThread) {
@@ -788,7 +803,7 @@ DllBlocklist_SetInXPCOMLoadOnMainThread(bool inXPCOMLoadOnMainThread)
   }
 }
 
-NS_EXPORT void
+MFBT_API void
 DllBlocklist_WriteNotes(HANDLE file)
 {
   DWORD nBytes;

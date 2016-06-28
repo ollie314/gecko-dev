@@ -540,6 +540,32 @@ public:
   void SetNullableTreatAsNullCallback(TestTreatAsNullCallback*);
   already_AddRefed<TestTreatAsNullCallback> GetNullableTreatAsNullCallback();
 
+  void ForceCallbackGeneration(TestIntegerReturn&,
+                               TestNullableIntegerReturn&,
+                               TestBooleanReturn&,
+                               TestFloatReturn&,
+                               TestStringReturn&,
+                               TestEnumReturn&,
+                               TestInterfaceReturn&,
+                               TestNullableInterfaceReturn&,
+                               TestExternalInterfaceReturn&,
+                               TestNullableExternalInterfaceReturn&,
+                               TestCallbackInterfaceReturn&,
+                               TestNullableCallbackInterfaceReturn&,
+                               TestCallbackReturn&,
+                               TestNullableCallbackReturn&,
+                               TestObjectReturn&,
+                               TestNullableObjectReturn&,
+                               TestTypedArrayReturn&,
+                               TestNullableTypedArrayReturn&,
+                               TestSequenceReturn&,
+                               TestNullableSequenceReturn&,
+                               TestIntegerArguments&,
+                               TestInterfaceArguments&,
+                               TestStringEnumArguments&,
+                               TestObjectArguments&,
+                               TestOptionalArguments&);
+
   // Any types
   void PassAny(JSContext*, JS::Handle<JS::Value>);
   void PassVariadicAny(JSContext*, const Sequence<JS::Value>&);
@@ -769,6 +795,7 @@ public:
   static void StaticMethodWithContext(const GlobalObject&, JS::Value);
   static bool StaticAttribute(const GlobalObject&);
   static void SetStaticAttribute(const GlobalObject&, bool);
+  static void Assert(const GlobalObject&, bool);
 
   // Deprecated static methods and attributes
   static int8_t StaticDeprecatedAttribute(const GlobalObject&);
@@ -853,6 +880,16 @@ public:
   void Prefable22();
   void Prefable23();
   void Prefable24();
+
+  // Conditionally exposed methods/attributes involving [SecureContext]
+  bool ConditionalOnSecureContext1();
+  bool ConditionalOnSecureContext2();
+  bool ConditionalOnSecureContext3();
+  bool ConditionalOnSecureContext4();
+  void ConditionalOnSecureContext5();
+  void ConditionalOnSecureContext6();
+  void ConditionalOnSecureContext7();
+  void ConditionalOnSecureContext8();
 
   // Miscellania
   int32_t AttrWithLenientThis();
@@ -1372,6 +1409,33 @@ public:
     Constructor(const GlobalObject&, Promise&, ErrorResult&);
 
   virtual nsISupports* GetParentObject();
+};
+
+class TestSecureContextInterface : public nsISupports, public nsWrapperCache
+{
+public:
+  NS_DECL_ISUPPORTS
+
+  static
+  already_AddRefed<TestSecureContextInterface>
+    Constructor(const GlobalObject&, ErrorResult&);
+
+  static void AlsoSecureContext(const GlobalObject&);
+
+  virtual nsISupports* GetParentObject();
+};
+
+class TestNamespace {
+public:
+  static bool Foo(const GlobalObject&);
+  static int32_t Bar(const GlobalObject&);
+  static void Baz(const GlobalObject&);
+};
+
+class TestRenamedNamespace {
+};
+
+class TestProtoObjectHackedNamespace {
 };
 
 } // namespace dom

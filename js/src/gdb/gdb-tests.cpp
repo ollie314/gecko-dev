@@ -42,8 +42,8 @@ checkBool(bool success)
     abort();
 }
 
-/* The error reporter callback. */
-void reportError(JSContext* cx, const char* message, JSErrorReport* report)
+/* The warning reporter callback. */
+void reportWarning(JSContext* cx, const char* message, JSErrorReport* report)
 {
     fprintf(stderr, "%s:%u: %s\n",
             report->filename ? report->filename : "<no filename>",
@@ -71,8 +71,9 @@ main(int argc, const char** argv)
     JS_SetGCParameter(runtime, JSGC_MAX_BYTES, 0xffffffff);
     JS_SetNativeStackQuota(runtime, 5000000);
 
-    JSContext* cx = checkPtr(JS_NewContext(runtime, 8192));
-    JS_SetErrorReporter(runtime, reportError);
+    JSContext* cx = JS_GetContext(runtime);
+    checkBool(JS::InitSelfHostedCode(cx));
+    JS::SetWarningReporter(runtime, reportWarning);
 
     JSAutoRequest ar(cx);
 

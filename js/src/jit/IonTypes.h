@@ -104,9 +104,7 @@ enum BailoutKind
     Bailout_NonSymbolInput,
 
     // SIMD Unbox expects a given type, bails out if it doesn't match.
-    Bailout_NonSimdBool32x4Input,
-    Bailout_NonSimdInt32x4Input,
-    Bailout_NonSimdFloat32x4Input,
+    Bailout_UnexpectedSimdInput,
 
     // Atomic operations require shared memory, bail out if the typed array
     // maps unshared memory.
@@ -213,12 +211,8 @@ BailoutKindString(BailoutKind kind)
         return "Bailout_NonStringInput";
       case Bailout_NonSymbolInput:
         return "Bailout_NonSymbolInput";
-      case Bailout_NonSimdBool32x4Input:
-        return "Bailout_NonSimdBool32x4Input";
-      case Bailout_NonSimdInt32x4Input:
-        return "Bailout_NonSimdInt32x4Input";
-      case Bailout_NonSimdFloat32x4Input:
-        return "Bailout_NonSimdFloat32x4Input";
+      case Bailout_UnexpectedSimdInput:
+        return "Bailout_UnexpectedSimdInput";
       case Bailout_NonSharedTypedArrayInput:
         return "Bailout_NonSharedTypedArrayInput";
       case Bailout_Debugger:
@@ -624,6 +618,13 @@ StringFromMIRType(MIRType type)
 }
 
 static inline bool
+IsIntType(MIRType type)
+{
+    return type == MIRType::Int32 ||
+           type == MIRType::Int64;
+}
+
+static inline bool
 IsNumberType(MIRType type)
 {
     return type == MIRType::Int32 ||
@@ -704,6 +705,10 @@ ScalarTypeToMIRType(Scalar::Type type)
         return MIRType::Double;
       case Scalar::Float32x4:
         return MIRType::Float32x4;
+      case Scalar::Int8x16:
+        return MIRType::Int8x16;
+      case Scalar::Int16x8:
+        return MIRType::Int16x8;
       case Scalar::Int32x4:
         return MIRType::Int32x4;
       case Scalar::MaxTypedArrayViewType:
@@ -729,6 +734,10 @@ ScalarTypeToLength(Scalar::Type type)
       case Scalar::Float32x4:
       case Scalar::Int32x4:
         return 4;
+      case Scalar::Int16x8:
+        return 8;
+      case Scalar::Int8x16:
+        return 16;
       case Scalar::MaxTypedArrayViewType:
         break;
     }

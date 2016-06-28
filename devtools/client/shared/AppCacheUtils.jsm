@@ -28,11 +28,12 @@
 const { classes: Cc, interfaces: Ci, utils: Cu } = Components;
 
 var { XPCOMUtils } = Cu.import("resource://gre/modules/XPCOMUtils.jsm", {});
-var { NetUtil }    = Cu.import("resource://gre/modules/NetUtil.jsm", {});
+var { NetUtil } = Cu.import("resource://gre/modules/NetUtil.jsm", {});
 var { LoadContextInfo } = Cu.import("resource://gre/modules/LoadContextInfo.jsm", {});
 var { require } = Cu.import("resource://devtools/shared/Loader.jsm", {});
 var Services = require("Services");
 var promise = require("promise");
+var defer = require("devtools/shared/defer");
 
 this.EXPORTED_SYMBOLS = ["AppCacheUtils"];
 
@@ -55,7 +56,7 @@ AppCacheUtils.prototype = {
   },
 
   validateManifest: function ACU_validateManifest() {
-    let deferred = promise.defer();
+    let deferred = defer();
     this.errors = [];
     // Check for missing manifest.
     this._getManifestURI().then(manifestURI => {
@@ -69,7 +70,7 @@ AppCacheUtils.prototype = {
       this._getURIInfo(this.manifestURI).then(uriInfo => {
         this._parseManifest(uriInfo).then(() => {
           // Sort errors by line number.
-          this.errors.sort(function(a, b) {
+          this.errors.sort(function (a, b) {
             return a.line - b.line;
           });
           deferred.resolve(this.errors);
@@ -81,7 +82,7 @@ AppCacheUtils.prototype = {
   },
 
   _parseManifest: function ACU__parseManifest(uriInfo) {
-    let deferred = promise.defer();
+    let deferred = defer();
     let manifestName = uriInfo.name;
     let manifestLastModified = new Date(uriInfo.responseHeaders["Last-Modified"]);
 
@@ -185,13 +186,13 @@ AppCacheUtils.prototype = {
   _getURIInfo: function ACU__getURIInfo(uri) {
     let inputStream = Cc["@mozilla.org/scriptableinputstream;1"]
                         .createInstance(Ci.nsIScriptableInputStream);
-    let deferred = promise.defer();
+    let deferred = defer();
     let buffer = "";
     var channel = NetUtil.newChannel({
-                    uri: uri,
-                    loadUsingSystemPrincipal: true,
-                    securityFlags: Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL
-                  });
+      uri: uri,
+      loadUsingSystemPrincipal: true,
+      securityFlags: Ci.nsILoadInfo.SEC_ALLOW_CROSS_ORIGIN_DATA_IS_NULL
+    });
 
     // Avoid the cache:
     channel.loadFlags |= Ci.nsIRequest.LOAD_BYPASS_CACHE;
@@ -226,12 +227,12 @@ AppCacheUtils.prototype = {
           };
 
           result.requestHeaders = {};
-          request.visitRequestHeaders(function(header, value) {
+          request.visitRequestHeaders(function (header, value) {
             result.requestHeaders[header] = value;
           });
 
           result.responseHeaders = {};
-          request.visitResponseHeaders(function(header, value) {
+          request.visitResponseHeaders(function (header, value) {
             result.responseHeaders[header] = value;
           });
 
@@ -256,9 +257,9 @@ AppCacheUtils.prototype = {
 
     let appCacheStorage = Services.cache2.appCacheStorage(LoadContextInfo.default, null);
     appCacheStorage.asyncVisitStorage({
-      onCacheStorageInfo: function() {},
+      onCacheStorageInfo: function () {},
 
-      onCacheEntryInfo: function(aURI, aIdEnhance, aDataSize, aFetchCount, aLastModifiedTime, aExpirationTime) {
+      onCacheEntryInfo: function (aURI, aIdEnhance, aDataSize, aFetchCount, aLastModifiedTime, aExpirationTime) {
         let lowerKey = aURI.asciiSpec.toLowerCase();
 
         if (searchTerm && lowerKey.indexOf(searchTerm.toLowerCase()) == -1) {
@@ -305,12 +306,12 @@ AppCacheUtils.prototype = {
 
     let appCacheStorage = Services.cache2.appCacheStorage(LoadContextInfo.default, null);
     appCacheStorage.asyncEvictStorage({
-      onCacheEntryDoomed: function(result) {}
+      onCacheEntryDoomed: function (result) {}
     });
   },
 
   _getManifestURI: function ACU__getManifestURI() {
-    let deferred = promise.defer();
+    let deferred = defer();
 
     let getURI = () => {
       let htmlNode = this.doc.querySelector("html[manifest]");
@@ -617,12 +618,12 @@ ManifestParser.prototype = {
 XPCOMUtils.defineLazyGetter(this, "l10n", () => Services.strings
   .createBundle("chrome://devtools/locale/appcacheutils.properties"));
 
-XPCOMUtils.defineLazyGetter(this, "appcacheservice", function() {
+XPCOMUtils.defineLazyGetter(this, "appcacheservice", function () {
   return Cc["@mozilla.org/network/application-cache-service;1"]
            .getService(Ci.nsIApplicationCacheService);
 
 });
 
-XPCOMUtils.defineLazyGetter(this, "_DOMParser", function() {
+XPCOMUtils.defineLazyGetter(this, "_DOMParser", function () {
   return Cc["@mozilla.org/xmlextras/domparser;1"].createInstance(Ci.nsIDOMParser);
 });

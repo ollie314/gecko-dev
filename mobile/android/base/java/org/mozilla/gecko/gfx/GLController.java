@@ -64,10 +64,8 @@ public class GLController extends JNIObject {
     public GLController() {
     }
 
-    synchronized void serverSurfaceDestroyed() {
+    void serverSurfaceDestroyed() {
         ThreadUtils.assertOnUiThread();
-
-        mServerSurfaceValid = false;
 
         // We need to coordinate with Gecko when pausing composition, to ensure
         // that Gecko never executes a draw event while the compositor is paused.
@@ -80,26 +78,22 @@ public class GLController extends JNIObject {
         if (mCompositorCreated) {
             pauseCompositor();
         }
+
+        synchronized (this) {
+            mServerSurfaceValid = false;
+        }
     }
 
-    synchronized void serverSurfaceChanged(int newWidth, int newHeight) {
+    void serverSurfaceChanged(int newWidth, int newHeight) {
         ThreadUtils.assertOnUiThread();
 
-        mWidth = newWidth;
-        mHeight = newHeight;
-        mServerSurfaceValid = true;
+        synchronized (this) {
+            mWidth = newWidth;
+            mHeight = newHeight;
+            mServerSurfaceValid = true;
+        }
 
-        // we defer to a runnable the task of updating the compositor, because this is going to
-        // call back into createEGLSurface, which will try to create an EGLSurface
-        // against mView, which we suspect might fail if called too early. By posting this to
-        // mView, we hope to ensure that it is deferred until mView is actually "ready" for some
-        // sense of "ready".
-        mView.post(new Runnable() {
-            @Override
-            public void run() {
-                updateCompositor();
-            }
-        });
+        updateCompositor();
     }
 
     void updateCompositor() {
@@ -121,8 +115,9 @@ public class GLController extends JNIObject {
         // two conditions are satisfied, we can be relatively sure that the compositor creation will
         // happen without needing to block anywhere. Do it with a synchronous Gecko event so that the
         // Android doesn't have a chance to destroy our surface in between.
-        if (mView.getLayerClient().isGeckoReady()) {
+        if (isServerSurfaceValid() && mView.getLayerClient().isGeckoReady()) {
             createCompositor(mWidth, mHeight);
+            compositorCreated();
         }
     }
 
@@ -138,8 +133,7 @@ public class GLController extends JNIObject {
 
     @WrapForJNI(allowMultithread = true)
     private synchronized Object getSurface() {
-        compositorCreated();
-        if (mView != null) {
+        if (mView != null && isServerSurfaceValid()) {
             return mView.getSurface();
         } else {
             return null;
@@ -153,7 +147,7 @@ public class GLController extends JNIObject {
         // the compositor resuming, so that Gecko knows that it can now draw.
         // It is important to not notify Gecko until after the compositor has
         // been resumed, otherwise Gecko may send updates that get dropped.
-        if (mCompositorCreated) {
+        if (isServerSurfaceValid() && mCompositorCreated) {
             syncResumeResizeCompositor(width, height);
             mView.requestRender();
         }

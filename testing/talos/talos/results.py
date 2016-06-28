@@ -21,32 +21,13 @@ class TalosResults(object):
 
     def __init__(self):
         self.results = []
+        self.extra_options = []
 
     def add(self, test_results):
         self.results.append(test_results)
 
-    def check_output_formats(self, output_formats):
-        """check output formats"""
-
-        # ensure formats are available
-        formats = output_formats.keys()
-        missing = self.check_formats_exist(formats)
-        if missing:
-            raise utils.TalosError("Output format(s) unknown: %s"
-                                   % ','.join(missing))
-
-        # perform per-format check
-        for format, urls in output_formats.items():
-            cls = output.formats[format]
-            cls.check(urls)
-
-    @classmethod
-    def check_formats_exist(cls, formats):
-        """
-        ensure that all formats are registered
-        return missing formats
-        """
-        return [i for i in formats if i not in output.formats]
+    def add_extra_option(self, extra_option):
+        self.extra_options.append(extra_option)
 
     def output(self, output_formats):
         """
@@ -58,7 +39,7 @@ class TalosResults(object):
         try:
 
             for key, urls in output_formats.items():
-                _output = output.formats[key](self)
+                _output = output.Output(self)
                 results = _output()
                 for url in urls:
                     _output.output(results, url, tbpl_output)
@@ -95,9 +76,6 @@ class TestResults(object):
 
     def name(self):
         return self.test_config['name']
-
-    def extension(self):
-        return self.test_config['test_name_extension']
 
     def mainthread(self):
         return self.test_config['mainthread']

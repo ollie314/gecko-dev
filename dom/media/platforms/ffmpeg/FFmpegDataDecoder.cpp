@@ -22,7 +22,7 @@ namespace mozilla
 StaticMutex FFmpegDataDecoder<LIBAV_VER>::sMonitor;
 
   FFmpegDataDecoder<LIBAV_VER>::FFmpegDataDecoder(FFmpegLibWrapper* aLib,
-                                                  FlushableTaskQueue* aTaskQueue,
+                                                  TaskQueue* aTaskQueue,
                                                   MediaDataDecoderCallback* aCallback,
                                                   AVCodecID aCodecID)
   : mLib(aLib)
@@ -32,6 +32,7 @@ StaticMutex FFmpegDataDecoder<LIBAV_VER>::sMonitor;
   , mExtraData(nullptr)
   , mCodecID(aCodecID)
   , mTaskQueue(aTaskQueue)
+  , mIsFlushing(false)
 {
   MOZ_ASSERT(aLib);
   MOZ_COUNT_CTOR(FFmpegDataDecoder);
@@ -115,9 +116,15 @@ void
 FFmpegDataDecoder<LIBAV_VER>::ProcessDecode(MediaRawData* aSample)
 {
   MOZ_ASSERT(mTaskQueue->IsCurrentThreadIn());
+  if (mIsFlushing) {
+    return;
+  }
   switch (DoDecode(aSample)) {
     case DecodeResult::DECODE_ERROR:
-      mCallback->Error();
+      mCallback->Error(MediaDataDecoderError::DECODE_ERROR);
+      break;
+    case DecodeResult::FATAL_ERROR:
+      mCallback->Error(MediaDataDecoderError::FATAL_ERROR);
       break;
     default:
       if (mTaskQueue->IsEmpty()) {
@@ -138,10 +145,11 @@ nsresult
 FFmpegDataDecoder<LIBAV_VER>::Flush()
 {
   MOZ_ASSERT(mCallback->OnReaderTaskQueue());
-  mTaskQueue->Flush();
+  mIsFlushing = true;
   nsCOMPtr<nsIRunnable> runnable =
     NewRunnableMethod(this, &FFmpegDataDecoder<LIBAV_VER>::ProcessFlush);
   SyncRunnable::DispatchToThread(mTaskQueue, runnable);
+  mIsFlushing = false;
   return NS_OK;
 }
 
@@ -177,8 +185,7 @@ FFmpegDataDecoder<LIBAV_VER>::ProcessShutdown()
 #elif LIBAVCODEC_VERSION_MAJOR == 54
     mLib->avcodec_free_frame(&mFrame);
 #else
-    delete mFrame;
-    mFrame = nullptr;
+    mLib->av_freep(&mFrame);
 #endif
   }
 }
@@ -200,9 +207,8 @@ FFmpegDataDecoder<LIBAV_VER>::PrepareFrame()
     mFrame = mLib->avcodec_alloc_frame();
   }
 #else
-  delete mFrame;
-  mFrame = new AVFrame;
-  mLib->avcodec_get_frame_defaults(mFrame);
+  mLib->av_freep(&mFrame);
+  mFrame = mLib->avcodec_alloc_frame();
 #endif
   return mFrame;
 }

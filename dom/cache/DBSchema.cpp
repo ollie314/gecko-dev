@@ -7,7 +7,11 @@
 #include "mozilla/dom/cache/DBSchema.h"
 
 #include "ipc/IPCMessageUtils.h"
+#include "mozilla/BasePrincipal.h"
+#include "mozilla/dom/HeadersBinding.h"
 #include "mozilla/dom/InternalHeaders.h"
+#include "mozilla/dom/RequestBinding.h"
+#include "mozilla/dom/ResponseBinding.h"
 #include "mozilla/dom/cache/CacheTypes.h"
 #include "mozilla/dom/cache/SavedTypes.h"
 #include "mozilla/dom/cache/Types.h"
@@ -16,16 +20,13 @@
 #include "mozIStorageStatement.h"
 #include "mozStorageHelper.h"
 #include "nsCOMPtr.h"
-#include "nsTArray.h"
 #include "nsCRT.h"
 #include "nsHttp.h"
+#include "nsIContentPolicy.h"
 #include "nsICryptoHash.h"
 #include "nsNetCID.h"
-#include "mozilla/BasePrincipal.h"
-#include "mozilla/dom/HeadersBinding.h"
-#include "mozilla/dom/RequestBinding.h"
-#include "mozilla/dom/ResponseBinding.h"
-#include "nsIContentPolicy.h"
+#include "nsPrintfCString.h"
+#include "nsTArray.h"
 
 namespace mozilla {
 namespace dom {
@@ -219,7 +220,8 @@ static_assert(int(RequestCache::Default) == 0 &&
               int(RequestCache::Reload) == 2 &&
               int(RequestCache::No_cache) == 3 &&
               int(RequestCache::Force_cache) == 4 &&
-              int(RequestCache::EndGuard_) == 5,
+              int(RequestCache::Only_if_cached) == 5 &&
+              int(RequestCache::EndGuard_) == 6,
               "RequestCache values are as expected");
 static_assert(int(RequestRedirect::Follow) == 0 &&
               int(RequestRedirect::Error) == 1 &&
@@ -909,7 +911,7 @@ StorageMatch(mozIStorageConnection* aConn,
     rv = StorageGetCacheId(aConn, aNamespace, aParams.cacheName(), &foundCache,
                            &cacheId);
     if (NS_WARN_IF(NS_FAILED(rv))) { return rv; }
-    if (!foundCache) { return NS_ERROR_DOM_NOT_FOUND_ERR; }
+    if (!foundCache) { return NS_OK; }
 
     rv = CacheMatch(aConn, cacheId, aRequest, aParams, aFoundResponseOut,
                     aSavedResponseOut);

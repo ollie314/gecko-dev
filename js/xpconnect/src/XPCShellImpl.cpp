@@ -24,7 +24,6 @@
 #include "nsCOMArray.h"
 #include "nsDirectoryServiceUtils.h"
 #include "nsCOMPtr.h"
-#include "nsAutoPtr.h"
 #include "nsJSPrincipals.h"
 #include "xpcpublic.h"
 #include "xpcprivate.h"
@@ -448,7 +447,7 @@ GCZeal(JSContext* cx, unsigned argc, Value* vp)
     if (!ToUint32(cx, args.get(0), &zeal))
         return false;
 
-    JS_SetGCZeal(cx, uint8_t(zeal), JS_DEFAULT_ZEAL_FREQ);
+    JS_SetGCZeal(JS_GetRuntime(cx), uint8_t(zeal), JS_DEFAULT_ZEAL_FREQ);
     args.rval().setUndefined();
     return true;
 }
@@ -542,26 +541,6 @@ Options(JSContext* cx, unsigned argc, Value* vp)
 
     args.rval().setString(str);
     return true;
-}
-
-static bool
-Atob(JSContext* cx, unsigned argc, Value* vp)
-{
-    CallArgs args = CallArgsFromVp(argc, vp);
-    if (!args.length())
-        return true;
-
-    return xpc::Base64Decode(cx, args[0], args.rval());
-}
-
-static bool
-Btoa(JSContext* cx, unsigned argc, Value* vp)
-{
-    CallArgs args = CallArgsFromVp(argc, vp);
-    if (!args.length())
-        return true;
-
-  return xpc::Base64Encode(cx, args[0], args.rval());
 }
 
 static PersistentRootedValue *sScriptedInterruptCallback = nullptr;
@@ -674,8 +653,8 @@ static const JSFunctionSpec glob_functions[] = {
 #endif
     JS_FS("options",         Options,        0,0),
     JS_FS("sendCommand",     SendCommand,    1,0),
-    JS_FS("atob",            Atob,           1,0),
-    JS_FS("btoa",            Btoa,           1,0),
+    JS_FS("atob",            xpc::Atob,      1,0),
+    JS_FS("btoa",            xpc::Btoa,      1,0),
     JS_FS("setInterruptCallback", SetInterruptCallback, 1,0),
     JS_FS("simulateActivityCallback", SimulateActivityCallback, 1,0),
     JS_FS("registerAppManifest", RegisterAppManifest, 1, 0),
@@ -1265,8 +1244,11 @@ GetCurrentWorkingDirectory(nsAString& workingDirectory)
 static JSSecurityCallbacks shellSecurityCallbacks;
 
 int
-XRE_XPCShellMain(int argc, char** argv, char** envp)
+XRE_XPCShellMain(int argc, char** argv, char** envp,
+                 const XREShellData* aShellData)
 {
+    MOZ_ASSERT(aShellData);
+
     JSRuntime* rt;
     JSContext* cx;
     int result = 0;
@@ -1528,7 +1510,9 @@ XRE_XPCShellMain(int argc, char** argv, char** envp)
 
 #if defined(MOZ_SANDBOX)
         // Required for sandboxed child processes.
-        if (!SandboxBroker::Initialize()) {
+        if (aShellData->sandboxBrokerServices) {
+          SandboxBroker::Initialize(aShellData->sandboxBrokerServices);
+        } else {
           NS_WARNING("Failed to initialize broker services, sandboxed "
                      "processes will fail to start.");
         }

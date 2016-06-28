@@ -7,7 +7,6 @@
 #ifndef mozilla_MediaUtils_h
 #define mozilla_MediaUtils_h
 
-#include "nsAutoPtr.h"
 #include "nsThreadUtils.h"
 #include "nsIAsyncShutdown.h"
 #include "mozilla/UniquePtr.h"
@@ -82,8 +81,8 @@ public:
     class Functors : public FunctorsBase
     {
     public:
-      Functors(OnSuccessType&& aOnSuccess, OnFailureType&& aOnFailure)
-        : mOnSuccess(Move(aOnSuccess)), mOnFailure(Move(aOnFailure)) {}
+      Functors(OnSuccessType&& aOnSuccessRef, OnFailureType&& aOnFailureRef)
+        : mOnSuccess(Move(aOnSuccessRef)), mOnFailure(Move(aOnFailureRef)) {}
 
       void Succeed(ValueType& result)
       {

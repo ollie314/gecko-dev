@@ -1491,7 +1491,7 @@ jit::BailoutIonToBaseline(JSContext* cx, JitActivation* activation, JitFrameIter
 
     if (!excInfo)
         iter.ionScript()->incNumBailouts();
-    iter.script()->updateBaselineOrIonRaw(cx);
+    iter.script()->updateBaselineOrIonRaw(cx->runtime());
 
     // Allocate buffer to hold stack replacement data.
     BaselineStackBuilder builder(iter, 1024);
@@ -1888,9 +1888,7 @@ jit::FinishBailoutToBaseline(BaselineBailoutInfo* bailoutInfo)
       case Bailout_NonObjectInput:
       case Bailout_NonStringInput:
       case Bailout_NonSymbolInput:
-      case Bailout_NonSimdBool32x4Input:
-      case Bailout_NonSimdInt32x4Input:
-      case Bailout_NonSimdFloat32x4Input:
+      case Bailout_UnexpectedSimdInput:
       case Bailout_NonSharedTypedArrayInput:
       case Bailout_Debugger:
       case Bailout_UninitializedThis:

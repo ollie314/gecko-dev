@@ -9,6 +9,7 @@
 #include "inDOMUtils.h"
 #include "inLayoutUtils.h"
 
+#include "nsAutoPtr.h"
 #include "nsIServiceManager.h"
 #include "nsISupportsArray.h"
 #include "nsString.h"
@@ -610,8 +611,9 @@ static void GetColorsForProperty(const uint32_t aParserVariant,
     MOZ_ASSERT(aArray.Length() == 0);
     size_t size;
     const char * const *allColorNames = NS_AllColorNames(&size);
+    nsString* utf16Names = aArray.AppendElements(size);
     for (size_t i = 0; i < size; i++) {
-      CopyASCIItoUTF16(allColorNames[i], *aArray.AppendElement());
+      CopyASCIItoUTF16(allColorNames[i], utf16Names[i]);
     }
     InsertNoDuplicates(aArray, NS_LITERAL_STRING("currentColor"));
   }

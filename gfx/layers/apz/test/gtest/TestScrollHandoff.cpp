@@ -59,10 +59,13 @@ protected:
       nsIntRegion(IntRect(0, 50, 100, 50))   // scrolling child 2
     };
     root = CreateLayerTree(layerTreeSyntax, layerVisibleRegion, nullptr, lm, layers);
-    SetScrollableFrameMetrics(layers[1], FrameMetrics::START_SCROLL_ID, CSSRect(0, 0, 100, 100));
-    SetScrollableFrameMetrics(layers[2], FrameMetrics::START_SCROLL_ID + 1, CSSRect(0, 0, 100, 100));
-    SetScrollableFrameMetrics(layers[3], FrameMetrics::START_SCROLL_ID + 2, CSSRect(0, 50, 100, 100));
-    SetScrollableFrameMetrics(layers[4], FrameMetrics::START_SCROLL_ID + 3, CSSRect(0, 50, 100, 100));
+    SetScrollableFrameMetrics(layers[0], FrameMetrics::START_SCROLL_ID, CSSRect(0, 0, 100, 100));
+    SetScrollableFrameMetrics(layers[1], FrameMetrics::START_SCROLL_ID + 1, CSSRect(0, 0, 100, 100));
+    SetScrollableFrameMetrics(layers[2], FrameMetrics::START_SCROLL_ID + 2, CSSRect(0, 0, 100, 100));
+    SetScrollableFrameMetrics(layers[3], FrameMetrics::START_SCROLL_ID + 3, CSSRect(0, 50, 100, 100));
+    SetScrollableFrameMetrics(layers[4], FrameMetrics::START_SCROLL_ID + 4, CSSRect(0, 50, 100, 100));
+    SetScrollHandoff(layers[1], layers[0]);
+    SetScrollHandoff(layers[3], layers[0]);
     SetScrollHandoff(layers[2], layers[1]);
     SetScrollHandoff(layers[4], layers[3]);
     registration = MakeUnique<ScopedLayerTreeRegistration>(manager, 0, root, mcc);
@@ -206,6 +209,7 @@ TEST_F(APZScrollHandoffTester, LayerStructureChangesWhileEventsArePending) {
 TEST_F(APZScrollHandoffTester, StuckInOverscroll_Bug1073250) {
   // Enable overscrolling.
   SCOPED_GFX_PREF(APZOverscrollEnabled, bool, true);
+  SCOPED_GFX_PREF(APZFlingMinVelocityThreshold, float, 0.0f);
 
   CreateScrollHandoffLayerTree1();
 
@@ -243,6 +247,7 @@ TEST_F(APZScrollHandoffTester, StuckInOverscroll_Bug1073250) {
 TEST_F(APZScrollHandoffTester, StuckInOverscroll_Bug1231228) {
   // Enable overscrolling.
   SCOPED_GFX_PREF(APZOverscrollEnabled, bool, true);
+  SCOPED_GFX_PREF(APZFlingMinVelocityThreshold, float, 0.0f);
 
   CreateScrollHandoffLayerTree1();
 
@@ -380,6 +385,8 @@ TEST_F(APZScrollHandoffTester, PartialFlingHandoff) {
 // Here we test that if two flings are happening simultaneously, overscroll
 // is handed off correctly for each.
 TEST_F(APZScrollHandoffTester, SimultaneousFlings) {
+  SCOPED_GFX_PREF(APZFlingMinVelocityThreshold, float, 0.0f);
+
   // Set up an initial APZC tree.
   CreateScrollHandoffLayerTree3();
 
@@ -425,6 +432,7 @@ TEST_F(APZScrollHandoffTester, Scrollgrab) {
 }
 
 TEST_F(APZScrollHandoffTester, ScrollgrabFling) {
+  SCOPED_GFX_PREF(APZFlingMinVelocityThreshold, float, 0.0f);
   // Set up the layer tree
   CreateScrollgrabLayerTree();
 
@@ -439,11 +447,13 @@ TEST_F(APZScrollHandoffTester, ScrollgrabFling) {
 }
 
 TEST_F(APZScrollHandoffTester, ScrollgrabFlingAcceleration1) {
+  SCOPED_GFX_PREF(APZFlingMinVelocityThreshold, float, 0.0f);
   CreateScrollgrabLayerTree(true /* make parent scrollable */);
   TestFlingAcceleration();
 }
 
 TEST_F(APZScrollHandoffTester, ScrollgrabFlingAcceleration2) {
+  SCOPED_GFX_PREF(APZFlingMinVelocityThreshold, float, 0.0f);
   CreateScrollgrabLayerTree(false /* do not make parent scrollable */);
   TestFlingAcceleration();
 }
@@ -475,6 +485,7 @@ TEST_F(APZScrollHandoffTester, ImmediateHandoffDisallowed_Pan) {
 
 TEST_F(APZScrollHandoffTester, ImmediateHandoffDisallowed_Fling) {
   SCOPED_GFX_PREF(APZAllowImmediateHandoff, bool, false);
+  SCOPED_GFX_PREF(APZFlingMinVelocityThreshold, float, 0.0f);
 
   CreateScrollHandoffLayerTree1();
 

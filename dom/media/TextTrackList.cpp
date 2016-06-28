@@ -101,6 +101,9 @@ void
 TextTrackList::AddTextTrack(TextTrack* aTextTrack,
                             const CompareTextTracks& aCompareTT)
 {
+  if (mTextTracks.Contains(aTextTrack)) {
+    return;
+  }
   if (mTextTracks.InsertElementSorted(aTextTrack, aCompareTT)) {
     aTextTrack->SetTextTrackList(this);
     CreateAndDispatchTrackEventRunner(aTextTrack, NS_LITERAL_STRING("addtrack"));
@@ -209,6 +212,14 @@ void
 TextTrackList::SetTextTrackManager(TextTrackManager* aTextTrackManager)
 {
   mTextTrackManager = aTextTrackManager;
+}
+
+void
+TextTrackList::SetCuesInactive()
+{
+  for (uint32_t i = 0; i < Length(); i++) {
+    mTextTracks[i]->SetCuesInactive();
+  }
 }
 
 } // namespace dom
