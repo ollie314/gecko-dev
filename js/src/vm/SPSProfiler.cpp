@@ -30,7 +30,6 @@ SPSProfiler::SPSProfiler(JSRuntime* rt)
     max_(0),
     slowAssertions(false),
     enabled_(false),
-    lock_(nullptr),
     eventMarker_(nullptr)
 {
     MOZ_ASSERT(rt != nullptr);
@@ -39,10 +38,6 @@ SPSProfiler::SPSProfiler(JSRuntime* rt)
 bool
 SPSProfiler::init()
 {
-    lock_ = PR_NewLock();
-    if (lock_ == nullptr)
-        return false;
-
     if (!strings.init())
         return false;
 
@@ -55,14 +50,12 @@ SPSProfiler::~SPSProfiler()
         for (ProfileStringMap::Enum e(strings); !e.empty(); e.popFront())
             js_free(const_cast<char*>(e.front().value()));
     }
-    if (lock_)
-        PR_DestroyLock(lock_);
 }
 
 void
 SPSProfiler::setProfilingStack(ProfileEntry* stack, uint32_t* size, uint32_t max)
 {
-    AutoSPSLock lock(lock_);
+    LockGuard<Mutex> lock(lock_);
     MOZ_ASSERT_IF(size_ && *size_ != 0, !enabled());
     MOZ_ASSERT(strings.initialized());
 
@@ -145,7 +138,7 @@ SPSProfiler::enable(bool enabled)
 const char*
 SPSProfiler::profileString(JSScript* script, JSFunction* maybeFun)
 {
-    AutoSPSLock lock(lock_);
+    LockGuard<Mutex> lock(lock_);
     MOZ_ASSERT(strings.initialized());
     ProfileStringMap::AddPtr s = strings.lookupForAdd(script);
     if (s)
@@ -170,7 +163,7 @@ SPSProfiler::onScriptFinalized(JSScript* script)
      * off, we still want to remove the string, so no check of enabled() is
      * done.
      */
-    AutoSPSLock lock(lock_);
+    LockGuard<Mutex> lock(lock_);
     if (!strings.initialized())
         return;
     if (ProfileStringMap::Ptr entry = strings.lookup(script)) {
@@ -354,9 +347,9 @@ SPSProfiler::allocProfileString(JSScript* script, JSFunction* maybeFun)
             js_free(cstr);
             return nullptr;
         }
-        ret = JS_snprintf(cstr, len + 1, "%s (%s:%" PRIu64 ")", atomStr.get(), filename, lineno);
+        ret = snprintf(cstr, len + 1, "%s (%s:%" PRIu64 ")", atomStr.get(), filename, lineno);
     } else {
-        ret = JS_snprintf(cstr, len + 1, "%s:%" PRIu64, filename, lineno);
+        ret = snprintf(cstr, len + 1, "%s:%" PRIu64, filename, lineno);
     }
 
     MOZ_ASSERT(ret == len, "Computed length should match actual length!");
@@ -515,28 +508,28 @@ ProfileEntry::setPC(jsbytecode* pc) volatile
 }
 
 JS_FRIEND_API(void)
-js::SetRuntimeProfilingStack(JSRuntime* rt, ProfileEntry* stack, uint32_t* size, uint32_t max)
+js::SetContextProfilingStack(JSContext* cx, ProfileEntry* stack, uint32_t* size, uint32_t max)
 {
-    rt->spsProfiler.setProfilingStack(stack, size, max);
+    cx->spsProfiler.setProfilingStack(stack, size, max);
 }
 
 JS_FRIEND_API(void)
-js::EnableRuntimeProfilingStack(JSRuntime* rt, bool enabled)
+js::EnableContextProfilingStack(JSContext* cx, bool enabled)
 {
-    rt->spsProfiler.enable(enabled);
+    cx->spsProfiler.enable(enabled);
 }
 
 JS_FRIEND_API(void)
-js::RegisterRuntimeProfilingEventMarker(JSRuntime* rt, void (*fn)(const char*))
+js::RegisterContextProfilingEventMarker(JSContext* cx, void (*fn)(const char*))
 {
-    MOZ_ASSERT(rt->spsProfiler.enabled());
-    rt->spsProfiler.setEventMarker(fn);
+    MOZ_ASSERT(cx->spsProfiler.enabled());
+    cx->spsProfiler.setEventMarker(fn);
 }
 
 JS_FRIEND_API(jsbytecode*)
-js::ProfilingGetPC(JSRuntime* rt, JSScript* script, void* ip)
+js::ProfilingGetPC(JSContext* cx, JSScript* script, void* ip)
 {
-    return rt->spsProfiler.ipToPC(script, size_t(ip));
+    return cx->spsProfiler.ipToPC(script, size_t(ip));
 }
 
 AutoSuppressProfilerSampling::AutoSuppressProfilerSampling(JSContext* cx

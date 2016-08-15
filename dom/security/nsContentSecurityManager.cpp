@@ -175,6 +175,13 @@ DoContentSecurityChecks(nsIChannel* aChannel, nsILoadInfo* aLoadInfo)
   nsCString mimeTypeGuess;
   nsCOMPtr<nsINode> requestingContext = nullptr;
 
+#ifdef DEBUG
+  // Don't enforce TYPE_DOCUMENT assertions for loads
+  // initiated by javascript tests.
+  bool skipContentTypeCheck = false;
+  skipContentTypeCheck = Preferences::GetBool("network.loadinfo.skip_type_assertion");
+#endif
+
   switch(contentPolicyType) {
     case nsIContentPolicy::TYPE_OTHER: {
       mimeTypeGuess = EmptyCString();
@@ -200,9 +207,14 @@ DoContentSecurityChecks(nsIChannel* aChannel, nsILoadInfo* aLoadInfo)
       break;
     }
 
-    case nsIContentPolicy::TYPE_OBJECT:
+    case nsIContentPolicy::TYPE_OBJECT: {
+      mimeTypeGuess = EmptyCString();
+      requestingContext = aLoadInfo->LoadingNode();
+      break;
+    }
+
     case nsIContentPolicy::TYPE_DOCUMENT: {
-      MOZ_ASSERT(false, "contentPolicyType not supported yet");
+      MOZ_ASSERT(skipContentTypeCheck || false, "contentPolicyType not supported yet");
       break;
     }
 
@@ -633,6 +645,7 @@ nsContentSecurityManager::IsOriginPotentiallyTrustworthy(nsIPrincipal* aPrincipa
       scheme.EqualsLiteral("file") ||
       scheme.EqualsLiteral("resource") ||
       scheme.EqualsLiteral("app") ||
+      scheme.EqualsLiteral("moz-extension") ||
       scheme.EqualsLiteral("wss")) {
     *aIsTrustWorthy = true;
     return NS_OK;

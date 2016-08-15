@@ -426,7 +426,7 @@ nsFrameLoader::ReallyStartLoadingInternal()
   // We'll use our principal, not that of the document loaded inside us.  This
   // is very important; needed to prevent XSS attacks on documents loaded in
   // subframes!
-  loadInfo->SetOwner(mOwnerContent->NodePrincipal());
+  loadInfo->SetTriggeringPrincipal(mOwnerContent->NodePrincipal());
 
   nsCOMPtr<nsIURI> referrer;
 
@@ -481,7 +481,7 @@ nsFrameLoader::ReallyStartLoadingInternal()
   // Flags for browser frame:
   if (OwnerIsMozBrowserFrame()) {
     flags = nsIWebNavigation::LOAD_FLAGS_ALLOW_THIRD_PARTY_FIXUP |
-            nsIWebNavigation::LOAD_FLAGS_DISALLOW_INHERIT_OWNER;
+            nsIWebNavigation::LOAD_FLAGS_DISALLOW_INHERIT_PRINCIPAL;
   }
 
   // Kick off the load...
@@ -1535,7 +1535,7 @@ public:
   explicit nsFrameLoaderDestroyRunnable(nsFrameLoader* aFrameLoader)
    : mFrameLoader(aFrameLoader), mPhase(eDestroyDocShell) {}
 
-  NS_IMETHODIMP Run() override;
+  NS_IMETHOD Run() override;
 };
 
 void
@@ -2093,11 +2093,8 @@ nsFrameLoader::MaybeCreateDocShell()
   }
 
   DocShellOriginAttributes attrs;
-
-  if (!mOwnerContent->IsXULElement(nsGkAtoms::browser)) {
-    nsCOMPtr<nsIPrincipal> parentPrin = doc->NodePrincipal();
-    PrincipalOriginAttributes poa = BasePrincipal::Cast(parentPrin)->OriginAttributesRef();
-    attrs.InheritFromDocToChildDocShell(poa);
+  if (docShell->ItemType() == mDocShell->ItemType()) {
+    attrs = nsDocShell::Cast(docShell)->GetOriginAttributes();
   }
 
   if (OwnerIsAppFrame()) {
@@ -2738,13 +2735,15 @@ class nsAsyncMessageToChild : public nsSameProcessAsyncMessageBase,
                               public Runnable
 {
 public:
-  nsAsyncMessageToChild(JSContext* aCx, JS::Handle<JSObject*> aCpows, nsFrameLoader* aFrameLoader)
-    : nsSameProcessAsyncMessageBase(aCx, aCpows)
+  nsAsyncMessageToChild(JS::RootingContext* aRootingCx,
+                        JS::Handle<JSObject*> aCpows,
+                        nsFrameLoader* aFrameLoader)
+    : nsSameProcessAsyncMessageBase(aRootingCx, aCpows)
     , mFrameLoader(aFrameLoader)
   {
   }
 
-  NS_IMETHOD Run()
+  NS_IMETHOD Run() override
   {
     nsInProcessTabChildGlobal* tabChild =
       static_cast<nsInProcessTabChildGlobal*>(mFrameLoader->mChildMessageManager.get());
@@ -2789,8 +2788,9 @@ nsFrameLoader::DoSendAsyncMessage(JSContext* aCx,
   }
 
   if (mChildMessageManager) {
-    RefPtr<nsAsyncMessageToChild> ev = new nsAsyncMessageToChild(aCx, aCpows, this);
-    nsresult rv = ev->Init(aCx, aMessage, aData, aPrincipal);
+    JS::RootingContext* rcx = JS::RootingContext::get(aCx);
+    RefPtr<nsAsyncMessageToChild> ev = new nsAsyncMessageToChild(rcx, aCpows, this);
+    nsresult rv = ev->Init(aMessage, aData, aPrincipal);
     if (NS_FAILED(rv)) {
       return rv;
     }

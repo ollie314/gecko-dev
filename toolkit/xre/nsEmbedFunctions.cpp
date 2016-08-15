@@ -4,10 +4,6 @@
 
 #include "mozilla/DebugOnly.h"
 
-#if defined(MOZ_WIDGET_QT)
-#include "nsQAppInstance.h"
-#endif
-
 #include "base/basictypes.h"
 
 #include "nsXULAppAPI.h"
@@ -83,17 +79,16 @@
 #include "mozilla/sandboxing/loggingCallbacks.h"
 #endif
 
+#if defined(MOZ_CONTENT_SANDBOX) && !defined(MOZ_WIDGET_GONK)
+#include "mozilla/Preferences.h"
+#endif
+
 #ifdef MOZ_IPDL_TESTS
 #include "mozilla/_ipdltest/IPDLUnitTests.h"
 #include "mozilla/_ipdltest/IPDLUnitTestProcessChild.h"
 
 using mozilla::_ipdltest::IPDLUnitTestProcessChild;
 #endif  // ifdef MOZ_IPDL_TESTS
-
-#ifdef MOZ_B2G_LOADER
-#include "nsLocalFile.h"
-#include "nsXREAppData.h"
-#endif
 
 #ifdef MOZ_JPROF
 #include "jprof.h"
@@ -298,6 +293,22 @@ SetTaskbarGroupId(const nsString& aId)
 }
 #endif
 
+#if defined(MOZ_CRASHREPORTER)
+#if defined(MOZ_CONTENT_SANDBOX) && !defined(MOZ_WIDGET_GONK)
+void
+AddContentSandboxLevelAnnotation()
+{
+  if (XRE_GetProcessType() == GeckoProcessType_Content) {
+    int level = Preferences::GetInt("security.sandbox.content.level");
+    nsAutoCString levelString;
+    levelString.AppendInt(level);
+    CrashReporter::AnnotateCrashReport(
+      NS_LITERAL_CSTRING("ContentSandboxLevel"), levelString);
+  }
+}
+#endif /* MOZ_CONTENT_SANDBOX && !MOZ_WIDGET_GONK */
+#endif /* MOZ_CRASHREPORTER */
+
 nsresult
 XRE_InitChildProcess(int aArgc,
                      char* aArgv[],
@@ -308,17 +319,10 @@ XRE_InitChildProcess(int aArgc,
   NS_ENSURE_ARG_POINTER(aArgv[0]);
   MOZ_ASSERT(aChildData);
 
-#ifdef HAS_DLL_BLOCKLIST
-  DllBlocklist_Initialize();
-#endif
-
 #ifdef MOZ_JPROF
   // Call the code to install our handler
   setupProfilingStuff();
 #endif
-
-  // This is needed by Telemetry to initialize histogram collection.
-  Telemetry::CreateStatisticsRecorder();
 
 #if !defined(MOZ_WIDGET_ANDROID) && !defined(MOZ_WIDGET_GONK)
   // On non-Fennec Gecko, the GMPLoader code resides in plugin-container,
@@ -364,6 +368,14 @@ XRE_InitChildProcess(int aArgc,
 
   // NB: This must be called before profiler_init
   NS_LogInit();
+
+  // This is needed by Telemetry to initialize histogram collection.
+  // NB: This must be called after NS_LogInit().
+  // NS_LogInit must be called before Telemetry::CreateStatisticsRecorder
+  // so as to avoid many log messages of the form
+  //   WARNING: XPCOM objects created/destroyed from static ctor/dtor: [..]
+  // See bug 1279614.
+  Telemetry::CreateStatisticsRecorder();
 
   mozilla::LogModule::Init();
 
@@ -489,10 +501,6 @@ XRE_InitChildProcess(int aArgc,
 #ifdef MOZ_WIDGET_GTK
   // Setting the name here avoids the need to pass this through to gtk_init().
   g_set_prgname(aArgv[0]);
-#endif
-
-#if defined(MOZ_WIDGET_QT)
-  nsQAppInstance::AddRef();
 #endif
 
 #ifdef OS_POSIX
@@ -657,6 +665,12 @@ XRE_InitChildProcess(int aArgc,
 #endif
 
       OverrideDefaultLocaleIfNeeded();
+
+#if defined(MOZ_CRASHREPORTER)
+#if defined(MOZ_CONTENT_SANDBOX) && !defined(MOZ_WIDGET_GONK)
+      AddContentSandboxLevelAnnotation();
+#endif
+#endif
 
       // Run the UI event loop on the main thread.
       uiMessageLoop.MessageLoop::Run();
@@ -930,40 +944,3 @@ XRE_InstallX11ErrorHandler()
 #endif
 }
 #endif
-
-#ifdef MOZ_B2G_LOADER
-extern const nsXREAppData* gAppData;
-
-/**
- * Preload static data of Gecko for B2G loader.
- *
- * This function is supposed to be called before XPCOM is initialized.
- * For now, this function preloads
- *  - XPT interface Information
- */
-void
-XRE_ProcLoaderPreload(const char* aProgramDir, const nsXREAppData* aAppData)
-{
-    void PreloadXPT(nsIFile *);
-
-    nsresult rv;
-    nsCOMPtr<nsIFile> omnijarFile;
-    rv = NS_NewNativeLocalFile(nsCString(aProgramDir),
-			       true,
-			       getter_AddRefs(omnijarFile));
-    MOZ_RELEASE_ASSERT(NS_SUCCEEDED(rv));
-
-    rv = omnijarFile->AppendNative(NS_LITERAL_CSTRING(NS_STRINGIFY(OMNIJAR_NAME)));
-    MOZ_RELEASE_ASSERT(NS_SUCCEEDED(rv));
-
-    /*
-     * gAppData is required by nsXULAppInfo.  The manifest parser
-     * evaluate flags with the information from nsXULAppInfo.
-     */
-    gAppData = aAppData;
-
-    PreloadXPT(omnijarFile);
-
-    gAppData = nullptr;
-}
-#endif /* MOZ_B2G_LOADER */

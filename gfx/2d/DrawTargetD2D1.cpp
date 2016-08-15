@@ -339,7 +339,7 @@ DrawTargetD2D1::MaskSurface(const Pattern &aSource,
     return;
   }
 
-  IntSize size = IntSize(bitmap->GetSize().width, bitmap->GetSize().height);
+  IntSize size = IntSize::Truncate(bitmap->GetSize().width, bitmap->GetSize().height);
 
   Rect maskRect = Rect(0.f, 0.f, Float(size.width), Float(size.height));
 
@@ -937,6 +937,24 @@ DrawTargetD2D1::CreateFilter(FilterType aType)
   return FilterNodeD2D1::Create(mDC, aType);
 }
 
+void
+DrawTargetD2D1::GetGlyphRasterizationMetrics(ScaledFont *aScaledFont, const uint16_t* aGlyphIndices,
+                                             uint32_t aNumGlyphs, GlyphMetrics* aGlyphMetrics)
+{
+  MOZ_ASSERT(aScaledFont->GetType() == FontType::DWRITE);
+
+  aScaledFont->GetGlyphDesignMetrics(aGlyphIndices, aNumGlyphs, aGlyphMetrics);
+
+  // GetDesignGlyphMetrics returns 'ideal' glyph metrics, we need to pad to
+  // account for antialiasing.
+  for (uint32_t i = 0; i < aNumGlyphs; i++) {
+    if (aGlyphMetrics[i].mWidth > 0 && aGlyphMetrics[i].mHeight > 0) {
+      aGlyphMetrics[i].mWidth += 2.0f;
+      aGlyphMetrics[i].mXBearing -= 1.0f;
+    }
+  }
+}
+
 bool
 DrawTargetD2D1::Init(ID3D11Texture2D* aTexture, SurfaceFormat aFormat)
 {
@@ -944,6 +962,7 @@ DrawTargetD2D1::Init(ID3D11Texture2D* aTexture, SurfaceFormat aFormat)
 
   ID2D1Device* device = Factory::GetD2D1Device();
   if (!device) {
+    gfxCriticalNote << "[D2D1.1] Failed to obtain a device for DrawTargetD2D1::Init(ID3D11Texture2D*, SurfaceFormat).";
     return false;
   }
 
@@ -1008,6 +1027,7 @@ DrawTargetD2D1::Init(const IntSize &aSize, SurfaceFormat aFormat)
 
   ID2D1Device* device = Factory::GetD2D1Device();
   if (!device) {
+    gfxCriticalNote << "[D2D1.1] Failed to obtain a device for DrawTargetD2D1::Init(IntSize, SurfaceFormat).";
     return false;
   }
 

@@ -199,15 +199,6 @@ public:
   };
 
   /**
-   * Calculates the 'completeness' of the rendering that intersected with the
-   * screen on the last render. This is only useful when progressive tile
-   * drawing is enabled, otherwise this will always return 1.0.
-   * This function's expense scales with the size of the layer tree and the
-   * complexity of individual layers' valid regions.
-   */
-  float ComputeRenderIntegrity();
-
-  /**
    * returns true if PlatformAllocBuffer will return a buffer that supports
    * direct texturing
    */
@@ -309,6 +300,9 @@ public:
   void UnusedApzTransformWarning() {
     mUnusedApzTransformWarning = true;
   }
+  void DisabledApzWarning() {
+    mDisabledApzWarning = true;
+  }
 
   bool LastFrameMissedHWC() { return mLastFrameMissedHWC; }
 
@@ -346,17 +340,6 @@ private:
   LayerComposite* RootLayer() const;
 
   /**
-   * Recursive helper method for use by ComputeRenderIntegrity. Subtracts
-   * any incomplete rendering on aLayer from aScreenRegion. Any low-precision
-   * rendering is included in aLowPrecisionScreenRegion. aTransform is the
-   * accumulated transform of intermediate surfaces beneath aLayer.
-   */
-  static void ComputeRenderIntegrityInternal(Layer* aLayer,
-                                             nsIntRegion& aScreenRegion,
-                                             nsIntRegion& aLowPrecisionScreenRegion,
-                                             const gfx::Matrix4x4& aTransform);
-
-  /**
    * Update the invalid region and render it.
    */
   void UpdateAndRender();
@@ -392,6 +375,7 @@ private:
   float mWarningLevel;
   mozilla::TimeStamp mWarnTime;
   bool mUnusedApzTransformWarning;
+  bool mDisabledApzWarning;
   RefPtr<Compositor> mCompositor;
   UniquePtr<LayerProperties> mClonedLayerTreeProperties;
 
@@ -555,6 +539,12 @@ public:
    * a subset of the shadow visible region.
    */
   virtual nsIntRegion GetFullyRenderedRegion();
+
+  /**
+   * Return true if a checkerboarding background color needs to be drawn
+   * for this layer.
+   */
+  bool NeedToDrawCheckerboarding(gfx::Color* aOutCheckerboardingColor = nullptr);
 
 protected:
   gfx::Matrix4x4 mShadowTransform;

@@ -128,21 +128,22 @@ add_task(function* testPageActionPopup() {
         browser.tabs.query({active: true, currentWindow: true}, tabs => {
           tabId = tabs[0].id;
 
-          browser.pageAction.show(tabId);
-          browser.test.sendMessage("next-test");
+          browser.pageAction.show(tabId).then(() => {
+            browser.test.sendMessage("next-test");
+          });
         });
       },
     },
   });
 
-  let pageActionId = makeWidgetId(extension.id) + "-page-action";
-  let panelId = makeWidgetId(extension.id) + "-panel";
-
   extension.onMessage("send-click", () => {
     clickPageAction(extension);
   });
 
+  let pageActionId, panelId;
   extension.onMessage("next-test", Task.async(function* (expecting = {}) {
+    pageActionId = `${makeWidgetId(extension.id)}-page-action`;
+    panelId = `${makeWidgetId(extension.id)}-panel`;
     let panel = document.getElementById(panelId);
     if (expecting.expectClosed) {
       ok(panel, "Expect panel to exist");

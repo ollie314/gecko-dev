@@ -48,6 +48,7 @@ class SharedSurface_Gralloc;
 namespace layers {
 
 class AsyncTransactionWaiter;
+class BufferTextureData;
 class CompositableForwarder;
 class GrallocTextureData;
 class ClientIPCAllocator;
@@ -299,6 +300,8 @@ public:
 #endif
 
   virtual GrallocTextureData* AsGrallocTextureData() { return nullptr; }
+
+  virtual BufferTextureData* AsBufferTextureData() { return nullptr; }
 };
 
 /**
@@ -340,9 +343,27 @@ public:
   CreateForDrawing(TextureForwarder* aAllocator,
                    gfx::SurfaceFormat aFormat,
                    gfx::IntSize aSize,
+                   LayersBackend aLayersBackend,
+                   BackendSelector aSelector,
+                   TextureFlags aTextureFlags,
+                   TextureAllocationFlags aAllocFlags = ALLOC_DEFAULT);
+
+  // TODO: remove this one and use the one above instead.
+  static already_AddRefed<TextureClient>
+  CreateForDrawing(CompositableForwarder* aAllocator,
+                   gfx::SurfaceFormat aFormat,
+                   gfx::IntSize aSize,
                    BackendSelector aSelector,
                    TextureFlags aTextureFlags,
                    TextureAllocationFlags flags = ALLOC_DEFAULT);
+
+  static already_AddRefed<TextureClient>
+  CreateFromSurface(TextureForwarder* aAllocator,
+                    gfx::SourceSurface* aSurface,
+                    LayersBackend aLayersBackend,
+                    BackendSelector aSelector,
+                    TextureFlags aTextureFlags,
+                    TextureAllocationFlags aAllocFlags);
 
   // Creates and allocates a TextureClient supporting the YCbCr format.
   static already_AddRefed<TextureClient>
@@ -367,7 +388,6 @@ public:
   // providing format and sizes could let us do more optimization.
   static already_AddRefed<TextureClient>
   CreateForYCbCrWithBufferSize(ClientIPCAllocator* aAllocator,
-                               gfx::SurfaceFormat aFormat,
                                size_t aSize,
                                TextureFlags aTextureFlags);
 
@@ -505,7 +525,7 @@ public:
 
   void RemoveFlags(TextureFlags aFlags);
 
-  // The TextureClient must not be locked when calling this method.
+  // Must not be called when TextureClient is in use by CompositableClient.
   void RecycleTexture(TextureFlags aFlags);
 
   /**
@@ -537,12 +557,22 @@ public:
   bool IsAddedToCompositableClient() const { return mAddedToCompositableClient; }
 
   /**
-   * Create and init the TextureChild/Parent IPDL actor pair.
+  * Create and init the TextureChild/Parent IPDL actor pair
+  * with a CompositableForwarder.
+  *
+  * Should be called only once per TextureClient.
+  * The TextureClient must not be locked when calling this method.
+  */
+  bool InitIPDLActor(CompositableForwarder* aForwarder);
+
+  /**
+   * Create and init the TextureChild/Parent IPDL actor pair
+   * with a TextureForwarder.
    *
    * Should be called only once per TextureClient.
    * The TextureClient must not be locked when calling this method.
    */
-  bool InitIPDLActor(CompositableForwarder* aForwarder);
+  bool InitIPDLActor(TextureForwarder* aForwarder, LayersBackend aBackendType);
 
   /**
    * Return a pointer to the IPDLActor.
@@ -653,7 +683,7 @@ public:
    */
   void SetLastFwdTransactionId(uint64_t aTransactionId)
   {
-    MOZ_ASSERT(mFwdTransactionId < aTransactionId);
+    MOZ_ASSERT(mFwdTransactionId <= aTransactionId);
     mFwdTransactionId = aTransactionId;
   }
 
@@ -722,7 +752,9 @@ protected:
   // behalf of the compositor just before sending the notification.
   bool mUpdated;
 
+  // Used when TextureClient is recycled with TextureFlags::RECYCLE flag.
   bool mAddedToCompositableClient;
+
   bool mWorkaroundAnnoyingSharedSurfaceLifetimeIssues;
   bool mWorkaroundAnnoyingSharedSurfaceOwnershipIssues;
 

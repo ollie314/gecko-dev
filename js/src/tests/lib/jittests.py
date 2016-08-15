@@ -223,7 +223,8 @@ class JitTest:
                             # is translated to wasm
                             test.test_also.append(['--wasm-always-baseline'])
                     elif name == 'test-also-wasm-baseline':
-                        test.test_also.append(['--wasm-always-baseline'])
+                        if options.can_test_also_wasm_baseline:
+                            test.test_also.append(['--wasm-always-baseline'])
                     elif name.startswith('test-also='):
                         test.test_also.append([name[len('test-also='):]])
                     elif name.startswith('test-join='):
@@ -300,7 +301,7 @@ def find_tests(substring=None):
         for filename in filenames:
             if not filename.endswith('.js'):
                 continue
-            if filename in ('shell.js', 'browser.js', 'jsref.js'):
+            if filename in ('shell.js', 'browser.js'):
                 continue
             test = os.path.join(dirpath, filename)
             if substring is None \

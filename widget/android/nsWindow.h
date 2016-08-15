@@ -59,9 +59,8 @@ private:
     // nullptr for nsWindows that were not opened from GeckoView.
     mozilla::UniquePtr<GeckoViewSupport> mGeckoViewSupport;
 
-    class GLControllerSupport;
-    // Object that implements native GLController calls.
-    mozilla::UniquePtr<GLControllerSupport> mGLControllerSupport;
+    class LayerViewSupport;
+    mozilla::UniquePtr<LayerViewSupport> mLayerViewSupport;
 
     class NPZCSupport;
     // Object that implements native NativePanZoomController calls.
@@ -168,8 +167,7 @@ public:
     void SetSelectionDragState(bool aState);
     LayerManager* GetLayerManager(PLayerTransactionChild* aShadowManager = nullptr,
                                   LayersBackend aBackendHint = mozilla::layers::LayersBackend::LAYERS_NONE,
-                                  LayerManagerPersistence aPersistence = LAYER_MANAGER_CURRENT,
-                                  bool* aAllowRetaining = nullptr) override;
+                                  LayerManagerPersistence aPersistence = LAYER_MANAGER_CURRENT) override;
 
     NS_IMETHOD ReparentNativeWidget(nsIWidget* aNewParent) override;
 
@@ -181,7 +179,6 @@ public:
     static void InvalidateAndScheduleComposite();
     static void SchedulePauseComposition();
     static void ScheduleResumeComposition();
-    static float ComputeRenderIntegrity();
 
     virtual bool WidgetPaintsBackground() override;
 
@@ -250,7 +247,7 @@ private:
     void CreateLayerManager(int aCompositorWidth, int aCompositorHeight);
     void RedrawAll();
 
-    mozilla::widget::LayerRenderer::Frame::GlobalRef mLayerRendererFrame;
+    mozilla::java::LayerRenderer::Frame::GlobalRef mLayerRendererFrame;
 };
 
 #endif /* NSWINDOW_H_ */

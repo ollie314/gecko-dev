@@ -271,7 +271,7 @@ public:
     aWebSocketImpl->AssertIsOnTargetThread();
   }
 
-  NS_IMETHOD Run()
+  NS_IMETHOD Run() override
   {
     mWebSocketImpl->AssertIsOnTargetThread();
     mWebSocketImpl->DispatchConnectionCloseEvents();
@@ -550,11 +550,11 @@ WebSocketImpl::ConsoleError()
 
   if (mWebSocket->ReadyState() < WebSocket::OPEN) {
     PrintErrorOnConsole("chrome://global/locale/appstrings.properties",
-                        MOZ_UTF16("connectionFailure"),
+                        u"connectionFailure",
                         formatStrings, ArrayLength(formatStrings));
   } else {
     PrintErrorOnConsole("chrome://global/locale/appstrings.properties",
-                        MOZ_UTF16("netInterrupt"),
+                        u"netInterrupt",
                         formatStrings, ArrayLength(formatStrings));
   }
   /// todo some specific errors - like for message too large
@@ -988,6 +988,18 @@ WebSocket::Constructor(const GlobalObject& aGlobal,
 {
   return WebSocket::ConstructorCommon(aGlobal, aUrl, aProtocols, nullptr,
                                       EmptyCString(), aRv);
+}
+
+already_AddRefed<WebSocket>
+WebSocket::CreateServerWebSocket(const GlobalObject& aGlobal,
+                                 const nsAString& aUrl,
+                                 const Sequence<nsString>& aProtocols,
+                                 nsITransportProvider* aTransportProvider,
+                                 const nsAString& aNegotiatedExtensions,
+                                 ErrorResult& aRv)
+{
+  return WebSocket::ConstructorCommon(aGlobal, aUrl, aProtocols, aTransportProvider,
+                                      NS_ConvertUTF16toUTF8(aNegotiatedExtensions), aRv);
 }
 
 namespace {
@@ -1599,8 +1611,8 @@ WebSocketImpl::Init(JSContext* aCx,
     }
     mSecure = true;
 
-    const char16_t* params[] = { reportSpec.get(), MOZ_UTF16("wss") };
-    CSP_LogLocalizedStr(MOZ_UTF16("upgradeInsecureRequest"),
+    const char16_t* params[] = { reportSpec.get(), u"wss" };
+    CSP_LogLocalizedStr(u"upgradeInsecureRequest",
                         params, ArrayLength(params),
                         EmptyString(), // aSourceFile
                         EmptyString(), // aScriptSample
@@ -1845,6 +1857,12 @@ WebSocketImpl::InitializeConnection(nsIPrincipal* aPrincipal)
   // mOriginDocument has to be release on main-thread because WeakReferences
   // are not thread-safe.
   mOriginDocument = nullptr;
+
+
+  // The TriggeringPrincipal for websockets must always be a script.
+  // Let's make sure that the doc's principal (if a doc exists)
+  // and aPrincipal are same origin.
+  MOZ_ASSERT(!doc || doc->NodePrincipal()->Equals(aPrincipal));
 
   wsChannel->InitLoadInfo(doc ? doc->AsDOMNode() : nullptr,
                           doc ? doc->NodePrincipal() : aPrincipal,
@@ -2627,14 +2645,7 @@ public:
   bool WorkerRun(JSContext* aCx, WorkerPrivate* aWorkerPrivate) override
   {
     aWorkerPrivate->AssertIsOnWorkerThread();
-    aWorkerPrivate->ModifyBusyCountFromWorker(true);
     return !NS_FAILED(mImpl->CancelInternal());
-  }
-
-  void PostRun(JSContext* aCx, WorkerPrivate* aWorkerPrivate,
-               bool aRunResult) override
-  {
-    aWorkerPrivate->ModifyBusyCountFromWorker(false);
   }
 
 private:
@@ -2776,7 +2787,6 @@ public:
   bool WorkerRun(JSContext* aCx, WorkerPrivate* aWorkerPrivate) override
   {
     aWorkerPrivate->AssertIsOnWorkerThread();
-    aWorkerPrivate->ModifyBusyCountFromWorker(true);
 
     // No messages when disconnected.
     if (mWebSocketImpl->mDisconnectingOrDisconnected) {
@@ -2790,7 +2800,6 @@ public:
   void PostRun(JSContext* aCx, WorkerPrivate* aWorkerPrivate,
                bool aRunResult) override
   {
-    aWorkerPrivate->ModifyBusyCountFromWorker(false);
   }
 
   bool

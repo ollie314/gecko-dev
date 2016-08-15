@@ -5,13 +5,17 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "ImageLogging.h" // Must appear first
+#include "nsPNGDecoder.h"
+
+#include <algorithm>
+#include <cstdint>
+
 #include "gfxColor.h"
 #include "gfxPlatform.h"
 #include "imgFrame.h"
 #include "nsColor.h"
 #include "nsIInputStream.h"
 #include "nsMemory.h"
-#include "nsPNGDecoder.h"
 #include "nsRect.h"
 #include "nspr.h"
 #include "png.h"
@@ -20,9 +24,9 @@
 #include "mozilla/DebugOnly.h"
 #include "mozilla/Telemetry.h"
 
-#include <algorithm>
-
 using namespace mozilla::gfx;
+
+using std::min;
 
 namespace mozilla {
 namespace image {
@@ -30,9 +34,12 @@ namespace image {
 static LazyLogModule sPNGLog("PNGDecoder");
 static LazyLogModule sPNGDecoderAccountingLog("PNGDecoderAccounting");
 
-// Limit image dimensions (bug #251381, #591822, and #967656)
-#ifndef MOZ_PNG_MAX_DIMENSION
-#  define MOZ_PNG_MAX_DIMENSION 32767
+// limit image dimensions (bug #251381, #591822, #967656, and #1283961)
+#ifndef MOZ_PNG_MAX_WIDTH
+#  define MOZ_PNG_MAX_WIDTH 0x7fffffff // Unlimited
+#endif
+#ifndef MOZ_PNG_MAX_HEIGHT
+#  define MOZ_PNG_MAX_HEIGHT 0x7fffffff // Unlimited
 #endif
 
 nsPNGDecoder::AnimFrameInfo::AnimFrameInfo()
@@ -94,6 +101,12 @@ nsPNGDecoder::pngSignatureBytes[] = { 137, 80, 78, 71, 13, 10, 26, 10 };
 
 nsPNGDecoder::nsPNGDecoder(RasterImage* aImage)
  : Decoder(aImage)
+ , mLexer(Transition::ToUnbuffered(State::FINISHED_PNG_DATA,
+                                   State::PNG_DATA,
+                                   SIZE_MAX),
+          Transition::TerminateSuccess())
+ , mNextTransition(Transition::ContinueUnbuffered(State::PNG_DATA))
+ , mLastChunkLength(0)
  , mPNG(nullptr)
  , mInfo(nullptr)
  , mCMSLine(nullptr)
@@ -101,13 +114,11 @@ nsPNGDecoder::nsPNGDecoder(RasterImage* aImage)
  , mInProfile(nullptr)
  , mTransform(nullptr)
  , format(gfx::SurfaceFormat::UNKNOWN)
- , mHeaderBytesRead(0)
  , mCMSMode(0)
  , mChannels(0)
  , mPass(0)
  , mFrameIsHidden(false)
  , mDisablePremultipliedAlpha(false)
- , mSuccessfulEarlyFinish(false)
  , mNumFrames(0)
 { }
 
@@ -140,7 +151,7 @@ nsPNGDecoder::GetTransparencyType(SurfaceFormat aFormat,
   if (aFormat == SurfaceFormat::B8G8R8A8) {
     return TransparencyType::eAlpha;
   }
-  if (!IntRect(IntPoint(), GetSize()).IsEqualEdges(aFrameRect)) {
+  if (!aFrameRect.IsEqualEdges(FullFrame())) {
     MOZ_ASSERT(HasAnimation());
     return TransparencyType::eFrameRect;
   }
@@ -173,31 +184,27 @@ nsPNGDecoder::PostHasTransparencyIfNeeded(TransparencyType aTransparencyType)
 
 // CreateFrame() is used for both simple and animated images.
 nsresult
-nsPNGDecoder::CreateFrame(SurfaceFormat aFormat,
-                          const IntRect& aFrameRect,
-                          bool aIsInterlaced)
+nsPNGDecoder::CreateFrame(const FrameInfo& aFrameInfo)
 {
   MOZ_ASSERT(HasSize());
   MOZ_ASSERT(!IsMetadataDecode());
 
   // Check if we have transparency, and send notifications if needed.
-  auto transparency = GetTransparencyType(aFormat, aFrameRect);
+  auto transparency = GetTransparencyType(aFrameInfo.mFormat, aFrameInfo.mFrameRect);
   PostHasTransparencyIfNeeded(transparency);
   SurfaceFormat format = transparency == TransparencyType::eNone
                        ? SurfaceFormat::B8G8R8X8
                        : SurfaceFormat::B8G8R8A8;
 
   // Make sure there's no animation or padding if we're downscaling.
-  MOZ_ASSERT_IF(mDownscaler, mNumFrames == 0);
-  MOZ_ASSERT_IF(mDownscaler, !GetImageMetadata().HasAnimation());
-  MOZ_ASSERT_IF(mDownscaler, transparency != TransparencyType::eFrameRect);
-
-  IntSize targetSize = mDownscaler ? mDownscaler->TargetSize()
-                                   : GetSize();
+  MOZ_ASSERT_IF(Size() != OutputSize(), mNumFrames == 0);
+  MOZ_ASSERT_IF(Size() != OutputSize(), !GetImageMetadata().HasAnimation());
+  MOZ_ASSERT_IF(Size() != OutputSize(),
+                transparency != TransparencyType::eFrameRect);
 
   // If this image is interlaced, we can display better quality intermediate
   // results to the user by post processing them with ADAM7InterpolatingFilter.
-  SurfacePipeFlags pipeFlags = aIsInterlaced
+  SurfacePipeFlags pipeFlags = aFrameInfo.mIsInterlaced
                              ? SurfacePipeFlags::ADAM7_INTERPOLATE
                              : SurfacePipeFlags();
 
@@ -207,8 +214,9 @@ nsPNGDecoder::CreateFrame(SurfaceFormat aFormat,
   }
 
   Maybe<SurfacePipe> pipe =
-    SurfacePipeFactory::CreateSurfacePipe(this, mNumFrames, GetSize(), targetSize,
-                                          aFrameRect, format, pipeFlags);
+    SurfacePipeFactory::CreateSurfacePipe(this, mNumFrames, Size(),
+                                          OutputSize(), aFrameInfo.mFrameRect,
+                                          format, pipeFlags);
 
   if (!pipe) {
     mPipe = SurfacePipe();
@@ -217,13 +225,13 @@ nsPNGDecoder::CreateFrame(SurfaceFormat aFormat,
 
   mPipe = Move(*pipe);
 
-  mFrameRect = aFrameRect;
+  mFrameRect = aFrameInfo.mFrameRect;
   mPass = 0;
 
   MOZ_LOG(sPNGDecoderAccountingLog, LogLevel::Debug,
          ("PNGDecoderAccounting: nsPNGDecoder::CreateFrame -- created "
           "image frame with %dx%d pixels for decoder %p",
-          aFrameRect.width, aFrameRect.height, this));
+          mFrameRect.width, mFrameRect.height, this));
 
 #ifdef PNG_APNG_SUPPORTED
   if (png_get_valid(mPNG, mInfo, PNG_INFO_acTL)) {
@@ -255,11 +263,12 @@ nsPNGDecoder::EndImageFrame()
     opacity = Opacity::FULLY_OPAQUE;
   }
 
-  PostFrameStop(opacity, mAnimInfo.mDispose, mAnimInfo.mTimeout,
+  PostFrameStop(opacity, mAnimInfo.mDispose,
+                FrameTimeout::FromRawMilliseconds(mAnimInfo.mTimeout),
                 mAnimInfo.mBlend, Some(mFrameRect));
 }
 
-void
+nsresult
 nsPNGDecoder::InitInternal()
 {
   mCMSMode = gfxPlatform::GetCMSMode();
@@ -295,15 +304,13 @@ nsPNGDecoder::InitInternal()
                                 nullptr, nsPNGDecoder::error_callback,
                                 nsPNGDecoder::warning_callback);
   if (!mPNG) {
-    PostDecoderError(NS_ERROR_OUT_OF_MEMORY);
-    return;
+    return NS_ERROR_OUT_OF_MEMORY;
   }
 
   mInfo = png_create_info_struct(mPNG);
   if (!mInfo) {
-    PostDecoderError(NS_ERROR_OUT_OF_MEMORY);
     png_destroy_read_struct(&mPNG, nullptr, nullptr);
-    return;
+    return NS_ERROR_OUT_OF_MEMORY;
   }
 
 #ifdef PNG_HANDLE_AS_UNKNOWN_SUPPORTED
@@ -317,6 +324,7 @@ nsPNGDecoder::InitInternal()
 #endif
 
 #ifdef PNG_SET_USER_LIMITS_SUPPORTED
+  png_set_user_limits(mPNG, MOZ_PNG_MAX_WIDTH, MOZ_PNG_MAX_HEIGHT);
   if (mCMSMode != eCMSMode_Off) {
     png_set_chunk_malloc_max(mPNG, 4000000L);
   }
@@ -343,31 +351,69 @@ nsPNGDecoder::InitInternal()
                               nsPNGDecoder::row_callback,
                               nsPNGDecoder::end_callback);
 
+  return NS_OK;
 }
 
-void
-nsPNGDecoder::WriteInternal(const char* aBuffer, uint32_t aCount)
+LexerResult
+nsPNGDecoder::DoDecode(SourceBufferIterator& aIterator, IResumable* aOnResume)
 {
-  MOZ_ASSERT(!HasError(), "Shouldn't call WriteInternal after error!");
+  MOZ_ASSERT(!HasError(), "Shouldn't call DoDecode after error!");
 
-  // libpng uses setjmp/longjmp for error handling. Set it up.
-  if (setjmp(png_jmpbuf(mPNG))) {
+  return mLexer.Lex(aIterator, aOnResume,
+                    [=](State aState, const char* aData, size_t aLength) {
+    switch (aState) {
+      case State::PNG_DATA:
+        return ReadPNGData(aData, aLength);
+      case State::FINISHED_PNG_DATA:
+        return FinishedPNGData();
+    }
+    MOZ_CRASH("Unknown State");
+  });
+}
 
-    // We exited early. If mSuccessfulEarlyFinish isn't true, then we
-    // encountered an error. We might not really know what caused it, but it
-    // makes more sense to blame the data.
-    if (!mSuccessfulEarlyFinish && !HasError()) {
-      PostDataError();
+LexerTransition<nsPNGDecoder::State>
+nsPNGDecoder::ReadPNGData(const char* aData, size_t aLength)
+{
+  // If we were waiting until after returning from a yield to call
+  // CreateFrame(), call it now.
+  if (mNextFrameInfo) {
+    if (NS_FAILED(CreateFrame(*mNextFrameInfo))) {
+      return Transition::TerminateFailure();
     }
 
-    png_destroy_read_struct(&mPNG, &mInfo, nullptr);
-    return;
+    MOZ_ASSERT(mImageData, "Should have a buffer now");
+    mNextFrameInfo = Nothing();
+  }
+
+  // libpng uses setjmp/longjmp for error handling.
+  if (setjmp(png_jmpbuf(mPNG))) {
+    return Transition::TerminateFailure();
   }
 
   // Pass the data off to libpng.
+  mLastChunkLength = aLength;
+  mNextTransition = Transition::ContinueUnbuffered(State::PNG_DATA);
   png_process_data(mPNG, mInfo,
-                   reinterpret_cast<unsigned char*>(const_cast<char*>((aBuffer))),
-                   aCount);
+                   reinterpret_cast<unsigned char*>(const_cast<char*>((aData))),
+                   aLength);
+
+  // Make sure that we've reached a terminal state if decoding is done.
+  MOZ_ASSERT_IF(GetDecodeDone(), mNextTransition.NextStateIsTerminal());
+  MOZ_ASSERT_IF(HasError(), mNextTransition.NextStateIsTerminal());
+
+  // Continue with whatever transition the callback code requested. We
+  // initialized this to Transition::ContinueUnbuffered(State::PNG_DATA) above,
+  // so by default we just continue the unbuffered read.
+  return mNextTransition;
+}
+
+LexerTransition<nsPNGDecoder::State>
+nsPNGDecoder::FinishedPNGData()
+{
+  // Since we set up an unbuffered read for SIZE_MAX bytes, if we actually read
+  // all that data something is really wrong.
+  MOZ_ASSERT_UNREACHABLE("Read the entire address space?");
+  return Transition::TerminateFailure();
 }
 
 // Sets up gamma pre-correction in libpng before our callback gets called.
@@ -513,18 +559,13 @@ nsPNGDecoder::info_callback(png_structp png_ptr, png_infop info_ptr)
   png_get_IHDR(png_ptr, info_ptr, &width, &height, &bit_depth, &color_type,
                &interlace_type, &compression_type, &filter_type);
 
-  // Are we too big?
-  if (width > MOZ_PNG_MAX_DIMENSION || height > MOZ_PNG_MAX_DIMENSION) {
-    png_longjmp(decoder->mPNG, 1);
-  }
-
   const IntRect frameRect(0, 0, width, height);
 
   // Post our size to the superclass
   decoder->PostSize(frameRect.width, frameRect.height);
   if (decoder->HasError()) {
     // Setting the size led to an error.
-    png_longjmp(decoder->mPNG, 1);
+    png_error(decoder->mPNG, "Sizing error");
   }
 
   if (color_type == PNG_COLOR_TYPE_PALETTE) {
@@ -626,18 +667,20 @@ nsPNGDecoder::info_callback(png_structp png_ptr, png_infop info_ptr)
   } else if (channels == 2 || channels == 4) {
     decoder->format = gfx::SurfaceFormat::B8G8R8A8;
   } else {
-    png_longjmp(decoder->mPNG, 1); // invalid number of channels
+    png_error(decoder->mPNG, "Invalid number of channels");
   }
 
 #ifdef PNG_APNG_SUPPORTED
   bool isAnimated = png_get_valid(png_ptr, info_ptr, PNG_INFO_acTL);
   if (isAnimated) {
-    decoder->PostIsAnimated(GetNextFrameDelay(png_ptr, info_ptr));
+    int32_t rawTimeout = GetNextFrameDelay(png_ptr, info_ptr);
+    decoder->PostIsAnimated(FrameTimeout::FromRawMilliseconds(rawTimeout));
 
-    if (decoder->mDownscaler && !decoder->IsFirstFrameDecode()) {
+    if (decoder->Size() != decoder->OutputSize() &&
+        !decoder->IsFirstFrameDecode()) {
       MOZ_ASSERT_UNREACHABLE("Doing downscale-during-decode "
                              "for an animated image?");
-      png_longjmp(decoder->mPNG, 1);  // Abort the decode.
+      png_error(decoder->mPNG, "Invalid downscale attempt"); // Abort decode.
     }
   }
 #endif
@@ -652,10 +695,9 @@ nsPNGDecoder::info_callback(png_structp png_ptr, png_infop info_ptr)
     auto transparency = decoder->GetTransparencyType(decoder->format, frameRect);
     decoder->PostHasTransparencyIfNeeded(transparency);
 
-    // We have the metadata we're looking for, so we don't need to decode any
-    // further.
-    decoder->mSuccessfulEarlyFinish = true;
-    png_longjmp(decoder->mPNG, 1);
+    // We have the metadata we're looking for, so stop here, before we allocate
+    // buffers below.
+    return decoder->DoTerminate(png_ptr, TerminalState::SUCCESS);
   }
 
 #ifdef PNG_APNG_SUPPORTED
@@ -668,9 +710,11 @@ nsPNGDecoder::info_callback(png_structp png_ptr, png_infop info_ptr)
     decoder->mFrameIsHidden = true;
   } else {
 #endif
-    nsresult rv = decoder->CreateFrame(decoder->format, frameRect, isInterlaced);
+    nsresult rv = decoder->CreateFrame(FrameInfo{ decoder->format,
+                                                  frameRect,
+                                                  isInterlaced });
     if (NS_FAILED(rv)) {
-      png_longjmp(decoder->mPNG, 5); // NS_ERROR_OUT_OF_MEMORY
+      png_error(decoder->mPNG, "CreateFrame failed");
     }
     MOZ_ASSERT(decoder->mImageData, "Should have a buffer now");
 #ifdef PNG_APNG_SUPPORTED
@@ -682,7 +726,7 @@ nsPNGDecoder::info_callback(png_structp png_ptr, png_infop info_ptr)
     decoder->mCMSLine =
       static_cast<uint8_t*>(malloc(bpp[channels] * frameRect.width));
     if (!decoder->mCMSLine) {
-      png_longjmp(decoder->mPNG, 5); // NS_ERROR_OUT_OF_MEMORY
+      png_error(decoder->mPNG, "malloc of mCMSLine failed");
     }
   }
 
@@ -692,7 +736,7 @@ nsPNGDecoder::info_callback(png_structp png_ptr, png_infop info_ptr)
       decoder->interlacebuf = static_cast<uint8_t*>(malloc(bufferSize));
     }
     if (!decoder->interlacebuf) {
-      png_longjmp(decoder->mPNG, 5); // NS_ERROR_OUT_OF_MEMORY
+      png_error(decoder->mPNG, "malloc of interlacebuf failed");
     }
   }
 }
@@ -775,6 +819,8 @@ nsPNGDecoder::row_callback(png_structp png_ptr, png_bytep new_row,
   if (decoder->mFrameIsHidden) {
     return;  // Skip this frame.
   }
+
+  MOZ_ASSERT_IF(decoder->IsFirstFrameDecode(), decoder->mNumFrames == 0);
 
   while (pass > decoder->mPass) {
     // Advance to the next pass. We may have to do this multiple times because
@@ -860,12 +906,43 @@ nsPNGDecoder::WriteRow(uint8_t* aRow)
       break;
 
     default:
-      png_longjmp(mPNG, 1);  // Abort the decode.
+      png_error(mPNG, "Invalid SurfaceFormat");
   }
 
   MOZ_ASSERT(WriteState(result) != WriteState::FAILURE);
 
   PostInvalidationIfNeeded();
+}
+
+void
+nsPNGDecoder::DoTerminate(png_structp aPNGStruct, TerminalState aState)
+{
+  // Stop processing data. Note that we intentionally ignore the return value of
+  // png_process_data_pause(), which tells us how many bytes of the data that
+  // was passed to png_process_data() have not been consumed yet, because now
+  // that we've reached a terminal state, we won't do any more decoding or call
+  // back into libpng anymore.
+  png_process_data_pause(aPNGStruct, /* save = */ false);
+
+  mNextTransition = aState == TerminalState::SUCCESS
+                  ? Transition::TerminateSuccess()
+                  : Transition::TerminateFailure();
+}
+
+void
+nsPNGDecoder::DoYield(png_structp aPNGStruct)
+{
+  // Pause data processing. png_process_data_pause() returns how many bytes of
+  // the data that was passed to png_process_data() have not been consumed yet.
+  // We use this information to tell StreamingLexer where to place us in the
+  // input stream when we come back from the yield.
+  png_size_t pendingBytes = png_process_data_pause(aPNGStruct, /* save = */ false);
+
+  MOZ_ASSERT(pendingBytes < mLastChunkLength);
+  size_t consumedBytes = mLastChunkLength - min(pendingBytes, mLastChunkLength);
+
+  mNextTransition =
+    Transition::ContinueUnbufferedAfterYield(State::PNG_DATA, consumedBytes);
 }
 
 #ifdef PNG_APNG_SUPPORTED
@@ -881,15 +958,16 @@ nsPNGDecoder::frame_info_callback(png_structp png_ptr, png_uint_32 frame_num)
 
   if (!decoder->mFrameIsHidden && decoder->IsFirstFrameDecode()) {
     // We're about to get a second non-hidden frame, but we only want the first.
-    // Stop decoding now.
+    // Stop decoding now. (And avoid allocating the unnecessary buffers below.)
     decoder->PostDecodeDone();
-    decoder->mSuccessfulEarlyFinish = true;
-    png_longjmp(decoder->mPNG, 1);
+    return decoder->DoTerminate(png_ptr, TerminalState::SUCCESS);
   }
 
   // Only the first frame can be hidden, so unhide unconditionally here.
   decoder->mFrameIsHidden = false;
 
+  // Save the information necessary to create the frame; we'll actually create
+  // it when we return from the yield.
   const IntRect frameRect(png_get_next_frame_x_offset(png_ptr, decoder->mInfo),
                           png_get_next_frame_y_offset(png_ptr, decoder->mInfo),
                           png_get_next_frame_width(png_ptr, decoder->mInfo),
@@ -897,11 +975,12 @@ nsPNGDecoder::frame_info_callback(png_structp png_ptr, png_uint_32 frame_num)
 
   const bool isInterlaced = bool(decoder->interlacebuf);
 
-  nsresult rv = decoder->CreateFrame(decoder->format, frameRect, isInterlaced);
-  if (NS_FAILED(rv)) {
-    png_longjmp(decoder->mPNG, 5); // NS_ERROR_OUT_OF_MEMORY
-  }
-  MOZ_ASSERT(decoder->mImageData, "Should have a buffer now");
+  decoder->mNextFrameInfo = Some(FrameInfo{ decoder->format,
+                                            frameRect,
+                                            isInterlaced });
+
+  // Yield to the caller to notify them that the previous frame is now complete.
+  return decoder->DoYield(png_ptr);
 }
 #endif
 
@@ -934,9 +1013,10 @@ nsPNGDecoder::end_callback(png_structp png_ptr, png_infop info_ptr)
   }
 #endif
 
-  // Send final notifications
+  // Send final notifications.
   decoder->EndImageFrame();
   decoder->PostDecodeDone(loop_count);
+  return decoder->DoTerminate(png_ptr, TerminalState::SUCCESS);
 }
 
 
@@ -954,12 +1034,44 @@ nsPNGDecoder::warning_callback(png_structp png_ptr, png_const_charp warning_msg)
   MOZ_LOG(sPNGLog, LogLevel::Warning, ("libpng warning: %s\n", warning_msg));
 }
 
-Telemetry::ID
-nsPNGDecoder::SpeedHistogram()
+Maybe<Telemetry::ID>
+nsPNGDecoder::SpeedHistogram() const
 {
-  return Telemetry::IMAGE_DECODE_SPEED_PNG;
+  return Some(Telemetry::IMAGE_DECODE_SPEED_PNG);
 }
 
+bool
+nsPNGDecoder::IsValidICO() const
+{
+  // Only 32-bit RGBA PNGs are valid ICO resources; see here:
+  //   http://blogs.msdn.com/b/oldnewthing/archive/2010/10/22/10079192.aspx
+
+  // If there are errors in the call to png_get_IHDR, the error_callback in
+  // nsPNGDecoder.cpp is called.  In this error callback we do a longjmp, so
+  // we need to save the jump buffer here. Oterwise we'll end up without a
+  // proper callstack.
+  if (setjmp(png_jmpbuf(mPNG))) {
+    // We got here from a longjmp call indirectly from png_get_IHDR
+    return false;
+  }
+
+  png_uint_32
+      png_width,  // Unused
+      png_height; // Unused
+
+  int png_bit_depth,
+      png_color_type;
+
+  if (png_get_IHDR(mPNG, mInfo, &png_width, &png_height, &png_bit_depth,
+                   &png_color_type, nullptr, nullptr, nullptr)) {
+
+    return ((png_color_type == PNG_COLOR_TYPE_RGB_ALPHA ||
+             png_color_type == PNG_COLOR_TYPE_RGB) &&
+            png_bit_depth == 8);
+  } else {
+    return false;
+  }
+}
 
 } // namespace image
 } // namespace mozilla

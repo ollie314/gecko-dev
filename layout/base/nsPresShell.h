@@ -40,6 +40,7 @@
 #include "MobileViewportManager.h"
 #include "ZoomConstraintsClient.h"
 
+class nsIDocShell;
 class nsRange;
 
 struct RangePaintInfo;
@@ -94,7 +95,7 @@ public:
   // nsISupports
   NS_DECL_ISUPPORTS
 
-  static bool AccessibleCaretEnabled();
+  static bool AccessibleCaretEnabled(nsIDocShell* aDocShell);
 
   // BeforeAfterKeyboardEvent preference
   static bool BeforeAfterKeyboardEventEnabled();
@@ -240,7 +241,8 @@ public:
   virtual bool ScaleToResolution() const override;
   virtual float GetCumulativeResolution() override;
   virtual float GetCumulativeNonRootScaleResolution() override;
-  virtual void SetRestoreResolution(float aResolution) override;
+  virtual void SetRestoreResolution(float aResolution,
+                                    mozilla::LayoutDeviceIntSize aDisplaySize) override;
 
   //nsIViewObserver interface
 

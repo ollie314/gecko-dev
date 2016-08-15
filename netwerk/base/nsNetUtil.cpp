@@ -25,6 +25,7 @@
 #include "nsIBufferedStreams.h"
 #include "nsIChannelEventSink.h"
 #include "nsIContentSniffer.h"
+#include "nsIDocument.h"
 #include "nsIDownloader.h"
 #include "nsIFileProtocolHandler.h"
 #include "nsIFileStreams.h"
@@ -36,6 +37,7 @@
 #include "nsILoadContext.h"
 #include "nsIMIMEHeaderParam.h"
 #include "nsIMutable.h"
+#include "nsINode.h"
 #include "nsIOfflineCacheUpdate.h"
 #include "nsIPersistentProperties2.h"
 #include "nsIPrivateBrowsingChannel.h"
@@ -751,13 +753,7 @@ NS_ImplementChannelOpen(nsIChannel      *channel,
                                            getter_AddRefs(stream));
     NS_ENSURE_SUCCESS(rv, rv);
 
-    nsCOMPtr<nsILoadInfo> loadInfo = channel->GetLoadInfo();
-    if (loadInfo && loadInfo->GetEnforceSecurity()) {
-      rv = channel->AsyncOpen2(listener);
-    }
-    else {
-      rv = channel->AsyncOpen(listener, nullptr);
-    }
+    rv = NS_MaybeOpenChannelUsingAsyncOpen2(channel, listener);
     NS_ENSURE_SUCCESS(rv, rv);
 
     uint64_t n;
@@ -1313,7 +1309,16 @@ NS_HasBeenCrossOrigin(nsIChannel* aChannel, bool aReport)
 {
   nsCOMPtr<nsILoadInfo> loadInfo = aChannel->GetLoadInfo();
   MOZ_RELEASE_ASSERT(loadInfo, "Origin tracking only works for channels created with a loadinfo");
-  MOZ_ASSERT(loadInfo->GetExternalContentPolicyType() != nsIContentPolicy::TYPE_DOCUMENT,
+
+#ifdef DEBUG
+  // Don't enforce TYPE_DOCUMENT assertions for loads
+  // initiated by javascript tests.
+  bool skipContentTypeCheck = false;
+  skipContentTypeCheck = Preferences::GetBool("network.loadinfo.skip_type_assertion");
+#endif
+
+  MOZ_ASSERT(skipContentTypeCheck ||
+             loadInfo->GetExternalContentPolicyType() != nsIContentPolicy::TYPE_DOCUMENT,
              "calling NS_HasBeenCrossOrigin on a top level load");
 
   // Always treat tainted channels as cross-origin.
@@ -2003,6 +2008,26 @@ nsresult NS_MakeRandomInvalidURLString(nsCString &result)
 #undef NS_FAKE_SCHEME
 #undef NS_FAKE_TLD
 
+nsresult NS_MaybeOpenChannelUsingOpen2(nsIChannel* aChannel,
+                                       nsIInputStream **aStream)
+{
+  nsCOMPtr<nsILoadInfo> loadInfo = aChannel->GetLoadInfo();
+  if (loadInfo && loadInfo->GetSecurityMode() != 0) {
+    return aChannel->Open2(aStream);
+  }
+  return aChannel->Open(aStream);
+}
+
+nsresult NS_MaybeOpenChannelUsingAsyncOpen2(nsIChannel* aChannel,
+                                            nsIStreamListener *aListener)
+{
+  nsCOMPtr<nsILoadInfo> loadInfo = aChannel->GetLoadInfo();
+  if (loadInfo && loadInfo->GetSecurityMode() != 0) {
+    return aChannel->AsyncOpen2(aListener);
+  }
+  return aChannel->AsyncOpen(aListener, nullptr);
+}
+
 nsresult
 NS_CheckIsJavaCompatibleURLString(nsCString &urlString, bool *result)
 {
@@ -2294,7 +2319,7 @@ NS_ShouldSecureUpgrade(nsIURI* aURI,
 
         const char16_t* params[] = { reportSpec.get(), reportScheme.get() };
         uint32_t innerWindowId = aLoadInfo->GetInnerWindowID();
-        CSP_LogLocalizedStr(MOZ_UTF16("upgradeInsecureRequest"),
+        CSP_LogLocalizedStr(u"upgradeInsecureRequest",
                             params, ArrayLength(params),
                             EmptyString(), // aSourceFile
                             EmptyString(), // aScriptSample
@@ -2389,61 +2414,84 @@ NS_CompareLoadInfoAndLoadContext(nsIChannel *aChannel)
 
   nsCOMPtr<nsILoadContext> loadContext;
   NS_QueryNotificationCallbacks(aChannel, loadContext);
-  if (loadInfo && loadContext) {
-
-    uint32_t loadContextAppId = 0;
-    nsresult rv = loadContext->GetAppId(&loadContextAppId);
-    if (NS_FAILED(rv)) {
-      return NS_ERROR_UNEXPECTED;
-    }
-
-    bool loadContextIsInBE = false;
-    rv = loadContext->GetIsInIsolatedMozBrowserElement(&loadContextIsInBE);
-    if (NS_FAILED(rv)) {
-      return NS_ERROR_UNEXPECTED;
-    }
-
-    OriginAttributes originAttrsLoadInfo = loadInfo->GetOriginAttributes();
-    DocShellOriginAttributes originAttrsLoadContext;
-    loadContext->GetOriginAttributes(originAttrsLoadContext);
-
-    bool loadInfoUsePB = false;
-    rv = loadInfo->GetUsePrivateBrowsing(&loadInfoUsePB);
-    if (NS_FAILED(rv)) {
-      return NS_ERROR_UNEXPECTED;
-    }
-    bool loadContextUsePB = false;
-    rv = loadContext->GetUsePrivateBrowsing(&loadContextUsePB);
-    if (NS_FAILED(rv)) {
-      return NS_ERROR_UNEXPECTED;
-    }
-
-    LOG(("NS_CompareLoadInfoAndLoadContext - loadInfo: %d, %d, %d, %d; "
-         "loadContext: %d %d, %d, %d. [channel=%p]",
-         originAttrsLoadInfo.mAppId, originAttrsLoadInfo.mInIsolatedMozBrowser,
-         originAttrsLoadInfo.mUserContextId, loadInfoUsePB,
-         loadContextAppId, loadContextUsePB,
-         originAttrsLoadContext.mUserContextId, loadContextIsInBE,
-         aChannel));
-
-    MOZ_ASSERT(originAttrsLoadInfo.mAppId == loadContextAppId,
-               "AppId in the loadContext and in the loadInfo are not the "
-               "same!");
-
-    MOZ_ASSERT(originAttrsLoadInfo.mInIsolatedMozBrowser ==
-               loadContextIsInBE,
-               "The value of InIsolatedMozBrowser in the loadContext and in "
-               "the loadInfo are not the same!");
-
-    MOZ_ASSERT(originAttrsLoadInfo.mUserContextId ==
-               originAttrsLoadContext.mUserContextId,
-               "The value of mUserContextId in the loadContext and in the "
-               "loadInfo are not the same!");
-
-    MOZ_ASSERT(loadInfoUsePB == loadContextUsePB,
-               "The value of usePrivateBrowsing in the loadContext and in the loadInfo "
-               "are not the same!");
+  if (!loadInfo || !loadContext) {
+    return NS_OK;
   }
+
+  // We try to skip about:newtab and about:sync-tabs.
+  // about:newtab will use SystemPrincipal to download thumbnails through
+  // https:// and blob URLs.
+  // about:sync-tabs will fetch icons through moz-icon://.
+  bool isAboutPage = false;
+  nsINode* node = loadInfo->LoadingNode();
+  if (node) {
+    nsIDocument* doc = node->OwnerDoc();
+    if (doc) {
+      nsIURI* uri = doc->GetDocumentURI();
+      nsAutoCString spec;
+      uri->GetSpec(spec);
+      isAboutPage = spec.EqualsLiteral("about:newtab") ||
+                    spec.EqualsLiteral("about:sync-tabs");
+    }
+  }
+
+  if (isAboutPage) {
+    return NS_OK;
+  }
+
+  uint32_t loadContextAppId = 0;
+  nsresult rv = loadContext->GetAppId(&loadContextAppId);
+  if (NS_FAILED(rv)) {
+    return NS_ERROR_UNEXPECTED;
+  }
+
+  bool loadContextIsInBE = false;
+  rv = loadContext->GetIsInIsolatedMozBrowserElement(&loadContextIsInBE);
+  if (NS_FAILED(rv)) {
+    return NS_ERROR_UNEXPECTED;
+  }
+
+  OriginAttributes originAttrsLoadInfo = loadInfo->GetOriginAttributes();
+  DocShellOriginAttributes originAttrsLoadContext;
+  loadContext->GetOriginAttributes(originAttrsLoadContext);
+
+  bool loadInfoUsePB = false;
+  rv = loadInfo->GetUsePrivateBrowsing(&loadInfoUsePB);
+  if (NS_FAILED(rv)) {
+    return NS_ERROR_UNEXPECTED;
+  }
+  bool loadContextUsePB = false;
+  rv = loadContext->GetUsePrivateBrowsing(&loadContextUsePB);
+  if (NS_FAILED(rv)) {
+    return NS_ERROR_UNEXPECTED;
+  }
+
+  LOG(("NS_CompareLoadInfoAndLoadContext - loadInfo: %d, %d, %d, %d; "
+       "loadContext: %d %d, %d, %d. [channel=%p]",
+       originAttrsLoadInfo.mAppId, originAttrsLoadInfo.mInIsolatedMozBrowser,
+       originAttrsLoadInfo.mUserContextId, loadInfoUsePB,
+       loadContextAppId, loadContextIsInBE,
+       originAttrsLoadContext.mUserContextId, loadContextUsePB,
+       aChannel));
+
+  MOZ_ASSERT(originAttrsLoadInfo.mAppId == loadContextAppId,
+             "AppId in the loadContext and in the loadInfo are not the "
+             "same!");
+
+  MOZ_ASSERT(originAttrsLoadInfo.mInIsolatedMozBrowser ==
+             loadContextIsInBE,
+             "The value of InIsolatedMozBrowser in the loadContext and in "
+             "the loadInfo are not the same!");
+
+  MOZ_ASSERT(originAttrsLoadInfo.mUserContextId ==
+             originAttrsLoadContext.mUserContextId,
+             "The value of mUserContextId in the loadContext and in the "
+             "loadInfo are not the same!");
+
+  MOZ_ASSERT(loadInfoUsePB == loadContextUsePB,
+             "The value of usePrivateBrowsing in the loadContext and in the loadInfo "
+             "are not the same!");
+
   return NS_OK;
 }
 

@@ -91,12 +91,10 @@ this.Context.fromString = function(s) {
  *
  * @param {string} appName
  *     Description of the product, for example "B2G" or "Firefox".
- * @param {string} device
- *     Device this driver should assume.
  * @param {function()} stopSignal
  *     Signal to stop the Marionette server.
  */
-this.GeckoDriver = function(appName, device, stopSignal) {
+this.GeckoDriver = function(appName, stopSignal) {
   this.appName = appName;
   this.stopSignal_ = stopSignal;
 
@@ -130,9 +128,9 @@ this.GeckoDriver = function(appName, device, stopSignal) {
 
   this.sessionCapabilities = {
     // mandated capabilities
-    "browserName": Services.appinfo.name,
+    "browserName": Services.appinfo.name.toLowerCase(),
     "browserVersion": Services.appinfo.version,
-    "platformName": Services.sysinfo.getProperty("name"),
+    "platformName": Services.sysinfo.getProperty("name").toLowerCase(),
     "platformVersion": Services.sysinfo.getProperty("version"),
     "specificationLevel": 0,
 
@@ -150,7 +148,6 @@ this.GeckoDriver = function(appName, device, stopSignal) {
     // proprietary extensions
     "XULappId" : Services.appinfo.ID,
     "appBuildId" : Services.appinfo.appBuildID,
-    "device": device,
     "processId" : Services.appinfo.processID,
     "version": Services.appinfo.version,
   };
@@ -310,8 +307,7 @@ GeckoDriver.prototype.addBrowser = function(win) {
  * @param {boolean=false} isNewSession
  *     True if this is the first time we're talking to this browser.
  */
-GeckoDriver.prototype.startBrowser = function(win, isNewSession=false) {
-  logger.info(`startBrowser ${this.sessionId}`)
+GeckoDriver.prototype.startBrowser = function(win, isNewSession = false) {
   this.mainFrame = win;
   this.curFrame = null;
   this.addBrowser(win);
@@ -329,8 +325,8 @@ GeckoDriver.prototype.startBrowser = function(win, isNewSession=false) {
  *     True if this is the first time we're talking to this browser.
  */
 GeckoDriver.prototype.whenBrowserStarted = function(win, isNewSession) {
-  try {
-    let mm = win.window.messageManager;
+  let mm = win.window.messageManager;
+  if (mm) {
     if (!isNewSession) {
       // Loading the frame script corresponds to a situation we need to
       // return to the server. If the messageManager is a message broadcaster
@@ -343,13 +339,15 @@ GeckoDriver.prototype.whenBrowserStarted = function(win, isNewSession) {
     }
 
     if (!Preferences.get(CONTENT_LISTENER_PREF) || !isNewSession) {
-      mm.loadFrameScript(FRAME_SCRIPT, true, true);
+      // load listener into the remote frame
+      // and any applicable new frames
+      // opened after this call
+      mm.loadFrameScript(FRAME_SCRIPT, true);
       Preferences.set(CONTENT_LISTENER_PREF, true);
     }
-  } catch (e) {
-    // there may not always be a content process
+  } else {
     logger.error(
-        `Could not load listener into content for page ${win.location.href}: ${e}`);
+        `Could not load listener into content for page ${win.location.href}`);
   }
 };
 
@@ -661,7 +659,7 @@ GeckoDriver.prototype.setUpProxy = function(proxy) {
 
       case "PAC":
         Preferences.set("network.proxy.type", 2);
-        Preferences.set("network.proxy.autoconfig_url", proxy.pacUrl);
+        Preferences.set("network.proxy.autoconfig_url", proxy.proxyAutoconfigUrl);
         break;
 
       case "AUTODETECT":
@@ -1281,14 +1279,13 @@ GeckoDriver.prototype.setWindowPosition = function(cmd, resp) {
  */
 GeckoDriver.prototype.switchToWindow = function*(cmd, resp) {
   let switchTo = cmd.parameters.name;
-  let isB2G = this.appName == "B2G";
+  let isMobile = this.appName == "Fennec";
   let found;
 
   let getOuterWindowId = function(win) {
     let rv = win.QueryInterface(Ci.nsIInterfaceRequestor)
         .getInterface(Ci.nsIDOMWindowUtils)
         .outerWindowID;
-    rv += isB2G ? "-b2g" : "";
     return rv;
   };
 
@@ -1303,7 +1300,7 @@ GeckoDriver.prototype.switchToWindow = function*(cmd, resp) {
     let win = winEn.getNext();
     let outerId = getOuterWindowId(win);
 
-    if (win.gBrowser && !isB2G) {
+    if (win.gBrowser && !isMobile) {
       let tabbrowser = win.gBrowser;
       for (let i = 0; i < tabbrowser.browsers.length; ++i) {
         let browser = tabbrowser.getBrowserAtIndex(i);
@@ -1360,13 +1357,19 @@ GeckoDriver.prototype.getActiveFrame = function(cmd, resp) {
       // no frame means top-level
       resp.body.value = null;
       if (this.curFrame) {
-        resp.body.value = this.curBrowser.seenEls
+        let elRef = this.curBrowser.seenEls
             .add(this.curFrame.frameElement);
+        let el = element.makeWebElement(elRef);
+        resp.body.value = el;
       }
       break;
 
     case Context.CONTENT:
-      resp.body.value = this.currentFrameElement;
+      resp.body.value = null;
+      if (this.currentFrameElement !== null) {
+        let el = element.makeWebElement(this.currentFrameElement);
+        resp.body.value = el;
+      }
       break;
   }
 };
@@ -2269,7 +2272,13 @@ GeckoDriver.prototype.sessionTearDown = function(cmd, resp) {
 
     let winEn = Services.wm.getEnumerator(null);
     while (winEn.hasMoreElements()) {
-      winEn.getNext().messageManager.removeDelayedFrameScript(FRAME_SCRIPT);
+      let win = winEn.getNext();
+      if (win.messageManager){
+        win.messageManager.removeDelayedFrameScript(FRAME_SCRIPT);
+      } else {
+        logger.error(
+            `Could not remove listener from page ${win.location.href}`);
+      }
     }
 
     this.curBrowser.frameManager.removeMessageManagerListeners(
@@ -2491,6 +2500,7 @@ GeckoDriver.prototype.setWindowSize = function(cmd, resp) {
   let {width, height} = cmd.parameters;
   let win = this.getCurrentWindow();
   win.resizeTo(width, height);
+  this.getWindowSize(cmd, resp);
 };
 
 /**

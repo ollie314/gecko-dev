@@ -4,9 +4,10 @@
 
 "use strict";
 
-const {Ci} = require("chrome");
+/* eslint-disable mozilla/reject-some-requires */
 const {XPCOMUtils} = require("resource://gre/modules/XPCOMUtils.jsm");
-const {CssLogic} = require("devtools/shared/inspector/css-logic");
+/* eslint-enable mozilla/reject-some-requires */
+const {l10n} = require("devtools/shared/inspector/css-logic");
 const {ELEMENT_STYLE} = require("devtools/shared/specs/styles");
 const {PREF_ORIG_SOURCES} = require("devtools/client/styleeditor/utils");
 const {Rule} = require("devtools/client/inspector/rules/models/rule");
@@ -148,6 +149,7 @@ RuleEditor.prototype = {
       editableField({
         element: this.selectorText,
         done: this._onSelectorDone,
+        cssProperties: this.rule.cssProperties
       });
     }
 
@@ -159,7 +161,7 @@ RuleEditor.prototype = {
         class: "ruleview-selectorhighlighter" +
                (this.ruleView.highlightedSelector === selector ?
                 " highlighted" : ""),
-        title: CssLogic.l10n("rule.selectorHighlighter.tooltip")
+        title: l10n("rule.selectorHighlighter.tooltip")
       });
       selectorHighlighter.addEventListener("click", () => {
         this.ruleView.toggleSelectorHighlighter(selectorHighlighter, selector);
@@ -448,7 +450,8 @@ RuleEditor.prototype = {
       destroy: this._newPropertyDestroy,
       advanceChars: ":",
       contentType: InplaceEditor.CONTENT_TYPES.CSS_PROPERTY,
-      popup: this.ruleView.popup
+      popup: this.ruleView.popup,
+      cssProperties: this.rule.cssProperties
     });
 
     // Auto-close the input if multiple rules get pasted into new property.
@@ -580,7 +583,7 @@ RuleEditor.prototype = {
    *        The move focus direction number.
    */
   _moveSelectorFocus: function (direction) {
-    if (!direction || direction === Ci.nsIFocusManager.MOVEFOCUS_BACKWARD) {
+    if (!direction || direction === Services.focus.MOVEFOCUS_BACKWARD) {
       return;
     }
 

@@ -395,7 +395,7 @@ mozJSSubScriptLoader::ReadScriptAsync(nsIURI* uri, JSObject* targetObjArg,
                                       nsIIOService* serv, bool reuseGlobal,
                                       bool cache, MutableHandleValue retval)
 {
-    RootedObject target_obj(nsContentUtils::RootingCx(), targetObjArg);
+    RootedObject target_obj(RootingCx(), targetObjArg);
 
     nsCOMPtr<nsIGlobalObject> globalObject = xpc::NativeGlobal(target_obj);
     ErrorResult result;
@@ -776,9 +776,9 @@ NotifyPrecompilationCompleteRunnable::Run(void)
     AutoSendObserverNotification notifier(mPrecompiler);
 
     if (mToken) {
-        JSRuntime* rt = XPCJSRuntime::Get()->Runtime();
-        NS_ENSURE_TRUE(rt, NS_ERROR_FAILURE);
-        JS::FinishOffThreadScript(nullptr, rt, mToken);
+        JSContext* cx = XPCJSRuntime::Get()->Context();
+        NS_ENSURE_TRUE(cx, NS_ERROR_FAILURE);
+        JS::CancelOffThreadScript(cx, mToken);
     }
 
     return NS_OK;

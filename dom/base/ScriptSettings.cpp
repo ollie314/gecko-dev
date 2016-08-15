@@ -7,6 +7,7 @@
 #include "mozilla/dom/ScriptSettings.h"
 #include "mozilla/ThreadLocal.h"
 #include "mozilla/Assertions.h"
+#include "mozilla/CycleCollectedJSRuntime.h"
 
 #include "jsapi.h"
 #include "xpcpublic.h"
@@ -284,6 +285,20 @@ IsJSAPIActive()
   return topEntry && !topEntry->NoJSAPI();
 }
 
+namespace danger {
+JSContext*
+GetJSContext()
+{
+  return CycleCollectedJSRuntime::Get()->Context();
+}
+} // namespace danger
+
+JS::RootingContext*
+RootingCx()
+{
+  return CycleCollectedJSRuntime::Get()->RootingCx();
+}
+
 AutoJSAPI::AutoJSAPI()
   : ScriptSettingsStackEntry(nullptr, eJSAPI)
   , mCx(nullptr)
@@ -305,7 +320,7 @@ AutoJSAPI::~AutoJSAPI()
   ReportException();
 
   if (mOldWarningReporter.isSome()) {
-    JS::SetWarningReporter(JS_GetRuntime(cx()), mOldWarningReporter.value());
+    JS::SetWarningReporter(cx(), mOldWarningReporter.value());
   }
 
   // Leave the request before popping.
@@ -325,6 +340,7 @@ AutoJSAPI::InitInternal(nsIGlobalObject* aGlobalObject, JSObject* aGlobal,
                         JSContext* aCx, bool aIsMainThread)
 {
   MOZ_ASSERT(aCx);
+  MOZ_ASSERT(aCx == danger::GetJSContext());
   MOZ_ASSERT(aIsMainThread == NS_IsMainThread());
   MOZ_ASSERT(bool(aGlobalObject) == bool(aGlobal));
   MOZ_ASSERT_IF(aGlobalObject, aGlobalObject->GetGlobalJSObject() == aGlobal);
@@ -341,14 +357,16 @@ AutoJSAPI::InitInternal(nsIGlobalObject* aGlobalObject, JSObject* aGlobal,
     // too.
     mAutoRequest.emplace(mCx);
   }
+  if (aGlobal) {
+    JS::ExposeObjectToActiveJS(aGlobal);
+  }
   mAutoNullableCompartment.emplace(mCx, aGlobal);
 
   ScriptSettingsStack::Push(this);
 
-  JSRuntime* rt = JS_GetRuntime(aCx);
-  mOldWarningReporter.emplace(JS::GetWarningReporter(rt));
+  mOldWarningReporter.emplace(JS::GetWarningReporter(aCx));
 
-  JS::SetWarningReporter(rt, WarningOnlyErrorReporter);
+  JS::SetWarningReporter(aCx, WarningOnlyErrorReporter);
 
 #ifdef DEBUG
   if (haveException) {
@@ -419,18 +437,16 @@ AutoJSAPI::InitInternal(nsIGlobalObject* aGlobalObject, JSObject* aGlobal,
 
 AutoJSAPI::AutoJSAPI(nsIGlobalObject* aGlobalObject,
                      bool aIsMainThread,
-                     JSContext* aCx,
                      Type aType)
   : ScriptSettingsStackEntry(aGlobalObject, aType)
   , mIsMainThread(aIsMainThread)
 {
   MOZ_ASSERT(aGlobalObject);
   MOZ_ASSERT(aGlobalObject->GetGlobalJSObject(), "Must have a JS global");
-  MOZ_ASSERT(aCx);
   MOZ_ASSERT(aIsMainThread == NS_IsMainThread());
 
-  InitInternal(aGlobalObject, aGlobalObject->GetGlobalJSObject(), aCx,
-               aIsMainThread);
+  InitInternal(aGlobalObject, aGlobalObject->GetGlobalJSObject(),
+               danger::GetJSContext(), aIsMainThread);
 }
 
 void
@@ -439,8 +455,7 @@ AutoJSAPI::Init()
   MOZ_ASSERT(!mCx, "An AutoJSAPI should only be initialised once");
 
   InitInternal(/* aGlobalObject */ nullptr, /* aGlobal */ nullptr,
-               nsContentUtils::GetDefaultJSContextForThread(),
-               NS_IsMainThread());
+               danger::GetJSContext(), NS_IsMainThread());
 }
 
 bool
@@ -465,7 +480,7 @@ AutoJSAPI::Init(nsIGlobalObject* aGlobalObject, JSContext* aCx)
 bool
 AutoJSAPI::Init(nsIGlobalObject* aGlobalObject)
 {
-  return Init(aGlobalObject, nsContentUtils::GetDefaultJSContextForThread());
+  return Init(aGlobalObject, danger::GetJSContext());
 }
 
 bool
@@ -575,7 +590,8 @@ AutoJSAPI::ReportException()
                       nsContentUtils::IsCallerChrome(),
                       inner ? inner->WindowID() : 0);
       if (inner && jsReport.report()->errorNumber != JSMSG_OUT_OF_MEMORY) {
-        DispatchScriptErrorEvent(inner, JS_GetRuntime(cx()), xpcReport, exn);
+        JS::RootingContext* rcx = JS::RootingContext::get(cx());
+        DispatchScriptErrorEvent(inner, rcx, xpcReport, exn);
       } else {
         JS::Rooted<JSObject*> stack(cx(),
           xpc::FindExceptionStackForConsoleReport(inner, exn));
@@ -635,16 +651,11 @@ AutoJSAPI::IsStackTop() const
 
 AutoEntryScript::AutoEntryScript(nsIGlobalObject* aGlobalObject,
                                  const char *aReason,
-                                 bool aIsMainThread,
-                                 JSContext* aCx)
-  : AutoJSAPI(aGlobalObject, aIsMainThread,
-              aCx ? aCx : nsContentUtils::GetSafeJSContext(),
-              eEntryScript)
+                                 bool aIsMainThread)
+  : AutoJSAPI(aGlobalObject, aIsMainThread, eEntryScript)
   , mWebIDLCallerPrincipal(nullptr)
 {
   MOZ_ASSERT(aGlobalObject);
-  MOZ_ASSERT_IF(!aCx, aIsMainThread); // cx is mandatory off-main-thread.
-  MOZ_ASSERT_IF(aCx && aIsMainThread, aCx == nsContentUtils::GetSafeJSContext());
 
   if (aIsMainThread && gRunToCompletionListeners > 0) {
     mDocShellEntryMonitor.emplace(cx(), aReason);
@@ -653,9 +664,8 @@ AutoEntryScript::AutoEntryScript(nsIGlobalObject* aGlobalObject,
 
 AutoEntryScript::AutoEntryScript(JSObject* aObject,
                                  const char *aReason,
-                                 bool aIsMainThread,
-                                 JSContext* aCx)
-  : AutoEntryScript(xpc::NativeGlobal(aObject), aReason, aIsMainThread, aCx)
+                                 bool aIsMainThread)
+  : AutoEntryScript(xpc::NativeGlobal(aObject), aReason, aIsMainThread)
 {
 }
 
@@ -777,7 +787,7 @@ AutoJSContext::AutoJSContext(MOZ_GUARD_OBJECT_NOTIFIER_ONLY_PARAM_IN_IMPL)
   MOZ_GUARD_OBJECT_NOTIFIER_INIT;
 
   if (IsJSAPIActive()) {
-    mCx = nsContentUtils::GetSafeJSContext();
+    mCx = danger::GetJSContext();
   } else {
     mJSAPI.Init();
     mCx = mJSAPI.cx();
@@ -801,6 +811,24 @@ AutoSafeJSContext::AutoSafeJSContext(MOZ_GUARD_OBJECT_NOTIFIER_ONLY_PARAM_IN_IMP
              "This is quite odd.  We should have crashed in the "
              "xpc::NativeGlobal() call if xpc::UnprivilegedJunkScope() "
              "returned null, and inited correctly otherwise!");
+}
+
+AutoSlowOperation::AutoSlowOperation(MOZ_GUARD_OBJECT_NOTIFIER_ONLY_PARAM_IN_IMPL)
+  : AutoJSAPI()
+{
+  MOZ_ASSERT(NS_IsMainThread());
+
+  MOZ_GUARD_OBJECT_NOTIFIER_INIT;
+
+  Init();
+}
+
+void
+AutoSlowOperation::CheckForInterrupt()
+{
+  // JS_CheckForInterrupt expects us to be in a compartment.
+  JSAutoCompartment ac(cx(), xpc::UnprivilegedJunkScope());
+  JS_CheckForInterrupt(cx());
 }
 
 } // namespace mozilla

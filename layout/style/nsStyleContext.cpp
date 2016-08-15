@@ -31,10 +31,6 @@
 #include "mozilla/StyleSetHandle.h"
 #include "mozilla/StyleSetHandleInlines.h"
 
-#ifdef DEBUG
-// #define NOISY_DEBUG
-#endif
-
 using namespace mozilla;
 
 //----------------------------------------------------------------------
@@ -86,11 +82,19 @@ nsStyleContext::nsStyleContext(nsStyleContext* aParent,
   , mCachedResetData(nullptr)
   , mBits(((uint64_t)aPseudoType) << NS_STYLE_CONTEXT_TYPE_SHIFT)
   , mRefCnt(0)
+#ifdef MOZ_STYLO
+  , mStoredChangeHint(nsChangeHint(0))
+#ifdef DEBUG
+  , mConsumedChangeHint(false)
+#endif
+#endif
 #ifdef DEBUG
   , mFrameRefCnt(0)
   , mComputingStruct(nsStyleStructID_None)
 #endif
-{}
+{
+  MOZ_COUNT_CTOR(nsStyleContext);
+}
 
 nsStyleContext::nsStyleContext(nsStyleContext* aParent,
                                nsIAtom* aPseudoTag,
@@ -173,6 +177,7 @@ nsStyleContext::FinishConstruction(bool aSkipParentDisplayBasedStyleFixup)
 
 nsStyleContext::~nsStyleContext()
 {
+  MOZ_COUNT_DTOR(nsStyleContext);
   NS_ASSERTION((nullptr == mChild) && (nullptr == mEmptyChild), "destructing context with children");
 
 #ifdef DEBUG
@@ -331,7 +336,7 @@ void nsStyleContext::RemoveChild(nsStyleContext* aChild)
     if ((*list) == aChild) {
       (*list) = (*list)->mNextSibling;
     }
-  } 
+  }
   else {
     NS_ASSERTION((*list) == aChild, "bad sibling pointers");
     (*list) = nullptr;
@@ -474,7 +479,7 @@ const void* nsStyleContext::StyleData(nsStyleStructID aSID)
 // This is an evil evil function, since it forces you to alloc your own separate copy of
 // style data!  Do not use this function unless you absolutely have to!  You should avoid
 // this at all costs! -dwh
-void* 
+void*
 nsStyleContext::GetUniqueStyleData(const nsStyleStructID& aSID)
 {
   MOZ_ASSERT(!mSource.IsServoComputedValues(),
@@ -559,7 +564,7 @@ nsStyleContext::SetStyle(nsStyleStructID aSID, void* aStruct)
 {
   // This method should only be called from nsRuleNode!  It is not a public
   // method!
-  
+
   NS_ASSERTION(aSID >= 0 && aSID < nsStyleStructID_Length, "out of bounds");
 
   // NOTE:  nsCachedStyleData::GetStyleData works roughly the same way.
@@ -895,11 +900,12 @@ nsStyleContext::ApplyStyleFixups(bool aSkipParentDisplayBasedStyleFixup)
 #undef GET_UNIQUE_STYLE_DATA
 }
 
+template<class StyleContextLike>
 nsChangeHint
-nsStyleContext::CalcStyleDifference(nsStyleContext* aNewContext,
-                                    nsChangeHint aParentHintsNotHandledForDescendants,
-                                    uint32_t* aEqualStructs,
-                                    uint32_t* aSamePointerStructs)
+nsStyleContext::CalcStyleDifferenceInternal(StyleContextLike* aNewContext,
+                                            nsChangeHint aParentHintsNotHandledForDescendants,
+                                            uint32_t* aEqualStructs,
+                                            uint32_t* aSamePointerStructs)
 {
   PROFILER_LABEL("nsStyleContext", "CalcStyleDifference",
     js::ProfileEntry::Category::CSS);
@@ -913,7 +919,7 @@ nsStyleContext::CalcStyleDifference(nsStyleContext* aNewContext,
 
   *aEqualStructs = 0;
 
-  nsChangeHint hint = NS_STYLE_HINT_NONE;
+  nsChangeHint hint = nsChangeHint(0);
   NS_ENSURE_TRUE(aNewContext, hint);
   // We must always ensure that we populate the structs on the new style
   // context that are filled in on the old context, so that if we get
@@ -937,7 +943,7 @@ nsStyleContext::CalcStyleDifference(nsStyleContext* aNewContext,
   // (Things like 'em' units are handled by the change hint produced
   // by font-size changing, so we don't need to worry about them like
   // we worry about 'inherit' values.)
-  bool compare = mSource != aNewContext->mSource;
+  bool compare = StyleSource() != aNewContext->StyleSource();
 
   DebugOnly<uint32_t> structsFound = 0;
 
@@ -1143,9 +1149,9 @@ nsStyleContext::CalcStyleDifference(nsStyleContext* aNewContext,
       const nsStyleOutline *otherVisOutline = otherVis->StyleOutline();
       bool haveColor;
       nscolor thisColor, otherColor;
-      if (thisVisOutline->GetOutlineInitialColor() != 
+      if (thisVisOutline->GetOutlineInitialColor() !=
             otherVisOutline->GetOutlineInitialColor() ||
-          (haveColor = thisVisOutline->GetOutlineColor(thisColor)) != 
+          (haveColor = thisVisOutline->GetOutlineColor(thisColor)) !=
             otherVisOutline->GetOutlineColor(otherColor) ||
           (haveColor && thisColor != otherColor)) {
         change = true;
@@ -1217,6 +1223,54 @@ nsStyleContext::CalcStyleDifference(nsStyleContext* aNewContext,
   return hint & ~nsChangeHint_NeutralChange;
 }
 
+nsChangeHint
+nsStyleContext::CalcStyleDifference(nsStyleContext* aNewContext,
+                                    nsChangeHint aParentHintsNotHandledForDescendants,
+                                    uint32_t* aEqualStructs,
+                                    uint32_t* aSamePointerStructs)
+{
+  return CalcStyleDifferenceInternal(aNewContext, aParentHintsNotHandledForDescendants,
+                                     aEqualStructs, aSamePointerStructs);
+}
+
+class MOZ_STACK_CLASS FakeStyleContext
+{
+public:
+  explicit FakeStyleContext(ServoComputedValues* aComputedValues)
+    : mComputedValues(aComputedValues) {}
+
+  mozilla::NonOwningStyleContextSource StyleSource() const {
+    return mozilla::NonOwningStyleContextSource(mComputedValues);
+  }
+
+  nsStyleContext* GetStyleIfVisited() {
+    // XXXbholley: This is wrong. Need to implement to get visited handling
+    // corrrect!
+    return nullptr;
+  }
+
+  #define STYLE_STRUCT(name_, checkdata_cb_)                                  \
+  const nsStyle##name_ * Style##name_() {                                     \
+    return Servo_GetStyle##name_(mComputedValues);                            \
+  }
+  #include "nsStyleStructList.h"
+  #undef STYLE_STRUCT
+
+private:
+  ServoComputedValues* MOZ_NON_OWNING_REF mComputedValues;
+};
+
+nsChangeHint
+nsStyleContext::CalcStyleDifference(ServoComputedValues* aNewComputedValues,
+                                    nsChangeHint aParentHintsNotHandledForDescendants,
+                                    uint32_t* aEqualStructs,
+                                    uint32_t* aSamePointerStructs)
+{
+  FakeStyleContext newContext(aNewComputedValues);
+  return CalcStyleDifferenceInternal(&newContext, aParentHintsNotHandledForDescendants,
+                                     aEqualStructs, aSamePointerStructs);
+}
+
 #ifdef DEBUG
 void nsStyleContext::List(FILE* out, int32_t aIndent, bool aListDescendants)
 {
@@ -1278,7 +1332,7 @@ void nsStyleContext::List(FILE* out, int32_t aIndent, bool aListDescendants)
 
 // Overloaded new operator. Initializes the memory to 0 and relies on an arena
 // (which comes from the presShell) to perform the allocation.
-void* 
+void*
 nsStyleContext::operator new(size_t sz, nsPresContext* aPresContext) CPP_THROW_NEW
 {
   // Check the recycle list first.
@@ -1288,7 +1342,7 @@ nsStyleContext::operator new(size_t sz, nsPresContext* aPresContext) CPP_THROW_N
 
 // Overridden to prevent the global delete from being called, since the memory
 // came out of an nsIArena instead of the global delete operator's heap.
-void 
+void
 nsStyleContext::Destroy()
 {
   // Get the pres context.

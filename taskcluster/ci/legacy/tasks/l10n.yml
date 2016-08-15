@@ -4,8 +4,10 @@
 taskId: {{build_slugid}}
 
 task:
-  created: '{{now}}'
-  deadline: '{{#from_now}}24 hours{{/from_now}}'
+  created:
+    relative-datestamp: '0 seconds'
+  deadline:
+    relative-datestamp: '24 hours'
   metadata:
     source: '{{source}}'
     owner: mozilla-taskcluster-maintenance@mozilla.com
@@ -33,8 +35,9 @@ task:
     artifacts:
       'public/build':
         type: directory
-        path: '/home/worker/workspace/build/upload/'
-        expires: '{{#from_now}}1 year{{/from_now}}'
+        path: '/home/worker/artifacts/'
+        expires:
+          relative-datestamp: '1 year'
 
 
     env:
@@ -43,7 +46,7 @@ task:
       GECKO_HEAD_REPOSITORY: '{{head_repository}}'
       GECKO_HEAD_REV: '{{head_rev}}'
       GECKO_HEAD_REF: '{{head_ref}}'
-      TOOLTOOL_REPO: 'https://git.mozilla.org/build/tooltool.git'
+      TOOLTOOL_REPO: 'https://github.com/mozilla/build-tooltool'
       TOOLTOOL_REV: 'master'
       MOZ_BUILD_DATE: '{{pushdate}}'
       MOZ_SCM_LEVEL: '{{level}}'
@@ -63,3 +66,4 @@ task:
       groupName: Submitted by taskcluster
       tier: 2
       symbol: L10n
+      jobKind: build

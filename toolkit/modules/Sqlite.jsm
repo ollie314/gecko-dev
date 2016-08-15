@@ -685,7 +685,7 @@ ConnectionData.prototype = Object.freeze({
         let paramsArray = statement.newBindingParamsArray();
         for (let p of params) {
           let bindings = paramsArray.newBindingParams();
-          for (let [key, value] of Iterator(p)) {
+          for (let [key, value] of Object.entries(p)) {
             bindings.bindByName(key, value);
           }
           paramsArray.addParams(bindings);
@@ -931,9 +931,10 @@ function openConnection(options) {
       try {
         resolve(
           new OpenedConnection(connection.QueryInterface(Ci.mozIStorageAsyncConnection),
-                              identifier, openedOptions));
+                               identifier, openedOptions));
       } catch (ex) {
         log.warn("Could not open database", ex);
+        connection.asyncClose();
         reject(ex);
       }
     });
@@ -1012,6 +1013,7 @@ function cloneStorageConnection(options) {
         resolve(new OpenedConnection(conn, identifier, openedOptions));
       } catch (ex) {
         log.warn("Could not clone database", ex);
+        connection.asyncClose();
         reject(ex);
       }
     });

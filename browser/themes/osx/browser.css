@@ -744,6 +744,13 @@ toolbar .toolbarbutton-1 > .toolbarbutton-menubutton-dropmarker > .dropmarker-ic
 %include ../shared/toolbarbuttons.inc.css
 %include ../shared/menupanel.inc.css
 
+:-moz-any(@primaryToolbarButtons@)[cui-areatype="menu-panel"][panel-multiview-anchor=true] > .toolbarbutton-icon,
+:-moz-any(@primaryToolbarButtons@)[cui-areatype="menu-panel"][panel-multiview-anchor=true] > .toolbarbutton-badge-stack > .toolbarbutton-icon,
+:-moz-any(@primaryToolbarButtons@)[cui-areatype="menu-panel"][panel-multiview-anchor=true] > .toolbarbutton-menubutton-button > .toolbarbutton-icon {
+  filter: url(chrome://browser/skin/filters.svg#fill);
+  fill: currentColor;
+}
+
 @media not all and (min-resolution: 1.1dppx) {
   #back-button:hover:active:not([disabled="true"]) {
     -moz-image-region: rect(18px, 36px, 36px, 18px);
@@ -1576,10 +1583,6 @@ toolbar .toolbarbutton-1 > .toolbarbutton-menubutton-button {
     padding-top: 4px;
     padding-bottom: 4px;
   }
-  #identity-box {
-    --identity-box-hover-background-color: rgb(240,237,237);
-    --identity-box-selected-background-color: rgb(220,217,217);
-  }
 }
 
 #identity-box:-moz-locale-dir(ltr) {
@@ -1602,6 +1605,14 @@ toolbar .toolbarbutton-1 > .toolbarbutton-menubutton-button {
 .urlbar-input-box {
   margin-inline-start: 0;
   padding: 3px 0 2px;
+}
+
+.urlbar-input-box,
+#urlbar-display-box {
+  padding-inline-start: 4px;
+  border-inline-start: 1px solid var(--urlbar-separator-color);
+  border-image: linear-gradient(transparent 15%, var(--urlbar-separator-color) 15%, var(--urlbar-separator-color) 85%, transparent 85%);
+  border-image-slice: 1;
 }
 
 .urlbar-history-dropmarker {
@@ -1652,7 +1663,7 @@ toolbar .toolbarbutton-1 > .toolbarbutton-menubutton-button {
 }
 
 #urlbar-search-footer {
-  border-top: 1px solid hsla(210,4%,10%,.14);
+  border-top: 1px solid var(--panel-separator-color);
   background-color: hsla(210,4%,10%,.07);
 }
 
@@ -1687,11 +1698,6 @@ toolbar .toolbarbutton-1 > .toolbarbutton-menubutton-button {
 
 #wrapper-urlbar-container[place="palette"] {
   max-width: 20em;
-}
-
-#urlbar-display-box {
-  border-inline-end: 1px solid #AAA;
-  margin-inline-end: 3px;
 }
 
 .urlbar-display {
@@ -2431,12 +2437,6 @@ toolbarbutton.chevron > .toolbarbutton-menu-dropmarker {
   text-align: center;
 }
 
-@media (min-resolution: 1.1dppx) {
-  .tab-throbber[progress] {
-    list-style-image: url("chrome://global/skin/icons/loading@2x.png");
-  }
-}
-
 @media (-moz-mac-yosemite-theme) {
   /* image preloading hack from shared/tabs.inc.css */
   #tabbrowser-tabs::before {
@@ -2591,16 +2591,6 @@ toolbarbutton.chevron > .toolbarbutton-menu-dropmarker {
 
 .tabs-newtab-button > .toolbarbutton-icon {
   padding: 6px 0 4px;
-}
-
-/* Background tabs:
- *
- * Decrease the height of the hoverable region of background tabs whenever the tabs are at the top
- * of the window (e.g. no menubar, tabs in titlebar, etc.) to make it easier to drag the window by
- * the titlebar. We don't need this in fullscreen since window dragging is not an issue there.
- */
-#main-window[tabsintitlebar]:not([inFullscreen]) .tab-background-middle:not([visuallyselected=true]) {
-  clip-path: url(chrome://browser/content/browser.xul#tab-hover-clip-path);
 }
 
 /**
@@ -2976,10 +2966,6 @@ menuitem:hover > hbox > .alltabs-endimage[soundplaying] {
 
 %include ../shared/notification-icons.inc.css
 
-#notification-popup-box {
-  border-radius: 2px 0 0 2px;
-}
-
 .notification-anchor-icon:-moz-focusring {
   box-shadow: 0 0 2px 1px -moz-mac-focusring inset,
               0 0 3px 2px -moz-mac-focusring;
@@ -3132,26 +3118,16 @@ menulist.translate-infobar-element > .menulist-dropmarker {
   font-weight: bold;
 }
 
-/* ::::: Keyboard UI Panel ::::: */
-
-.KUI-panel {
-  -moz-appearance: none;
-  background: rgba(27%,27%,27%,.9) url(KUI-background.png) repeat-x;
-  color: white;
-  border-style: none;
-  border-radius: 20px;
-}
-
-.KUI-panel[level="top"] {
-  background-color: rgba(27%,27%,27%,.65);
-  -moz-window-shadow: none;
-}
-
 /* Ctrl-Tab */
 
 #ctrlTab-panel {
+  -moz-appearance: none;
+  -moz-window-shadow: none;
+  background: hsla(0,0%,33%,.85);
+  color: white;
+  border-style: none;
   padding: 20px 10px 10px;
-  text-shadow: 0 0 1px rgb(27%,27%,27%), 0 0 2px rgb(27%,27%,27%);
+  text-shadow: 0 0 1px hsl(0,0%,12%), 0 0 2px hsl(0,0%,12%);
 }
 
 .ctrlTab-favicon[src] {
@@ -3162,7 +3138,7 @@ menulist.translate-infobar-element > .menulist-dropmarker {
 }
 
 .ctrlTab-preview-inner > .tabPreview-canvas {
-  box-shadow: 1px 1px 2px rgb(12%,12%,12%);
+  box-shadow: 1px 1px 2px hsl(0,0%,12%);
 }
 
 .ctrlTab-preview:not(#ctrlTab-showAll) > * > .ctrlTab-preview-inner > .tabPreview-canvas {
@@ -3252,34 +3228,6 @@ menulist.translate-infobar-element > .menulist-dropmarker {
   text-shadow: none;
   background-image: linear-gradient(#B4211B, #8A1915);
   border-radius: 1px;
-}
-
-.social-activation-icon {
-  width: auto;
-  height: auto;
-  max-height: 64px;
-  max-width: 64px;
-}
-
-#social-activation-message {
-  max-width: 250px;
-}
-
-#social-activation-message > label {
-  margin: 0;
-}
-
-#social-activation-button {
-  @hudButton@
-  min-height: 0px;
-}
-
-#social-activation-button:focus {
-  @hudButtonFocused@
-}
-
-#social-activation-button:hover:active {
-  @hudButtonPressed@
 }
 
 /* === end of social toolbar button === */
@@ -3520,4 +3468,12 @@ menulist.translate-infobar-element > .menulist-dropmarker {
 .browser-extension-panel > .panel-arrowcontainer > .panel-arrowcontent {
   padding: 0;
   overflow: hidden;
+}
+
+.cui-widget-panelview[id^=PanelUI-webext-] {
+  border-radius: 3.5px;
+}
+
+.webextension-popup-browser {
+  border-radius: inherit;
 }

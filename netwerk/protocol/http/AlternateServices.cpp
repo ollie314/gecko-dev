@@ -67,9 +67,10 @@ AltSvcMapping::ProcessHeader(const nsCString &buf, const nsCString &originScheme
 
   for (uint32_t index = 0; index < parsedAltSvc.mValues.Length(); ++index) {
     uint32_t maxage = 86400; // default
-    nsAutoCString hostname; // Always empty in the header form
+    nsAutoCString hostname;
     nsAutoCString npnToken;
     int32_t portno = originPort;
+    bool clearEntry = false;
 
     for (uint32_t pairIndex = 0;
          pairIndex < parsedAltSvc.mValues[index].mValues.Length();
@@ -80,7 +81,12 @@ AltSvcMapping::ProcessHeader(const nsCString &buf, const nsCString &originScheme
         parsedAltSvc.mValues[index].mValues[pairIndex].mValue;
 
       if (!pairIndex) {
-        // h2=:443
+        if (currentName.Equals(NS_LITERAL_CSTRING("clear"))) {
+          clearEntry = true;
+          break;
+        }
+
+        // h2=[hostname]:443
         npnToken = currentName;
         int32_t colonIndex = currentValue.FindChar(':');
         if (colonIndex >= 0) {
@@ -93,7 +99,15 @@ AltSvcMapping::ProcessHeader(const nsCString &buf, const nsCString &originScheme
       } else if (currentName.Equals(NS_LITERAL_CSTRING("ma"))) {
         maxage = atoi(PromiseFlatCString(currentValue).get());
         break;
+      } else {
+        LOG(("Alt Svc ignoring parameter %s", currentName.BeginReading()));
       }
+    }
+
+    if (clearEntry) {
+      LOG(("Alt Svc clearing mapping for %s:%d", originHost.get(), originPort));
+      gHttpHandler->ConnMgr()->ClearHostMapping(originHost, originPort);
+      continue;
     }
 
     // unescape modifies a c string in place, so afterwards
@@ -304,10 +318,10 @@ public:
       return;
     }
 
-    // insist on spdy/3* or >= http/2
+    // insist on >= http/2
     uint32_t version = mConnection->Version();
     LOG(("AltSvcTransaction::MaybeValidate() %p version %d\n", this, version));
-    if ((version < HTTP_VERSION_2) && (version != SPDY_VERSION_31)) {
+    if (version < HTTP_VERSION_2) {
       LOG(("AltSvcTransaction::MaybeValidate %p Failed due to protocol version", this));
       return;
     }
@@ -470,7 +484,7 @@ public:
     , mPort(port)
     {}
 
-    NS_IMETHOD Run()
+    NS_IMETHOD Run() override
     {
       MOZ_ASSERT(NS_IsMainThread());
       gHttpHandler->ConnMgr()->ClearHostMapping(mHost, mPort);

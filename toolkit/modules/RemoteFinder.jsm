@@ -127,6 +127,11 @@ RemoteFinder.prototype = {
                                                   { caseSensitive: aSensitive });
   },
 
+  set entireWord(aEntireWord) {
+    this._browser.messageManager.sendAsyncMessage("Finder:EntireWord",
+                                                  { entireWord: aEntireWord });
+  },
+
   getInitialSelection: function() {
     this._browser.messageManager.sendAsyncMessage("Finder:GetInitialSelection", {});
   },
@@ -145,9 +150,10 @@ RemoteFinder.prototype = {
                                                     drawOutline: aDrawOutline });
   },
 
-  highlight: function (aHighlight, aWord) {
+  highlight: function (aHighlight, aWord, aLinksOnly) {
     this._browser.messageManager.sendAsyncMessage("Finder:Highlight",
                                                   { highlight: aHighlight,
+                                                    linksOnly: aLinksOnly,
                                                     word: aWord });
   },
 
@@ -179,9 +185,19 @@ RemoteFinder.prototype = {
     this._browser.messageManager.sendAsyncMessage("Finder:FindbarClose");
   },
 
+  onFindbarOpen: function () {
+    this._browser.messageManager.sendAsyncMessage("Finder:FindbarOpen");
+  },
+
   onModalHighlightChange: function(aUseModalHighlight) {
     this._browser.messageManager.sendAsyncMessage("Finder:ModalHighlightChange", {
       useModalHighlight: aUseModalHighlight
+    });
+  },
+
+  onHighlightAllChange: function(aHighlightAll) {
+    this._browser.messageManager.sendAsyncMessage("Finder:HighlightAllChange", {
+      highlightAll: aHighlightAll
     });
   },
 
@@ -217,15 +233,18 @@ RemoteFinderListener.prototype = {
   MESSAGES: [
     "Finder:CaseSensitive",
     "Finder:Destroy",
+    "Finder:EntireWord",
     "Finder:FastFind",
     "Finder:FindAgain",
     "Finder:SetSearchStringToSelection",
     "Finder:GetInitialSelection",
     "Finder:Highlight",
+    "Finder:HighlightAllChange",
     "Finder:EnableSelection",
     "Finder:RemoveSelection",
     "Finder:FocusContent",
     "Finder:FindbarClose",
+    "Finder:FindbarOpen",
     "Finder:KeyPress",
     "Finder:MatchesCount",
     "Finder:ModalHighlightChange"
@@ -257,6 +276,10 @@ RemoteFinderListener.prototype = {
         this._finder.caseSensitive = data.caseSensitive;
         break;
 
+      case "Finder:EntireWord":
+        this._finder.entireWord = data.entireWord;
+        break;
+
       case "Finder:SetSearchStringToSelection": {
         let selection = this._finder.setSearchStringToSelection();
         this._global.sendAsyncMessage("Finder:CurrentSelectionResult",
@@ -282,7 +305,11 @@ RemoteFinderListener.prototype = {
         break;
 
       case "Finder:Highlight":
-        this._finder.highlight(data.highlight, data.word);
+        this._finder.highlight(data.highlight, data.word, data.linksOnly);
+        break;
+
+      case "Finder:HighlightAllChange":
+        this._finder.onHighlightAllChange(data.highlightAll);
         break;
 
       case "Finder:EnableSelection":
@@ -299,6 +326,10 @@ RemoteFinderListener.prototype = {
 
       case "Finder:FindbarClose":
         this._finder.onFindbarClose();
+        break;
+
+      case "Finder:FindbarOpen":
+        this._finder.onFindbarOpen();
         break;
 
       case "Finder:KeyPress":

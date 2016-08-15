@@ -30,6 +30,7 @@
 #include "mozilla/layers/LayersTypes.h"  // for MOZ_LAYERS_LOG
 #include "mozilla/layers/LayerTransactionChild.h"
 #include "mozilla/layers/SharedBufferManagerChild.h"
+#include "mozilla/layers/PTextureChild.h"
 #include "ShadowLayerUtils.h"
 #include "mozilla/layers/TextureClient.h"  // for TextureClient
 #include "mozilla/mozalloc.h"           // for operator new, etc
@@ -211,8 +212,7 @@ CompositableForwarder::IdentifyTextureHost(const TextureFactoryIdentifier& aIden
 }
 
 ShadowLayerForwarder::ShadowLayerForwarder(ClientLayerManager* aClientLayerManager)
- : CompositableForwarder("ShadowLayerForwarder")
- , mClientLayerManager(aClientLayerManager)
+ : mClientLayerManager(aClientLayerManager)
  , mMessageLoop(MessageLoop::current())
  , mDiagnosticTypes(DiagnosticTypes::NO_DIAGNOSTIC)
  , mIsFirstPaint(false)
@@ -437,6 +437,7 @@ ShadowLayerForwarder::UseTextures(CompositableClient* aCompositable,
   for (auto& t : aTextures) {
     MOZ_ASSERT(t.mTextureClient);
     MOZ_ASSERT(t.mTextureClient->GetIPDLActor());
+    MOZ_RELEASE_ASSERT(t.mTextureClient->GetIPDLActor()->GetIPCChannel() == mShadowManager->GetIPCChannel());
     FenceHandle fence = t.mTextureClient->GetAcquireFenceHandle();
     ReadLockDescriptor readLock;
     t.mTextureClient->SerializeReadLock(readLock);
@@ -472,6 +473,8 @@ ShadowLayerForwarder::UseComponentAlphaTextures(CompositableClient* aCompositabl
   MOZ_ASSERT(aTextureOnBlack->GetIPDLActor());
   MOZ_ASSERT(aTextureOnWhite->GetIPDLActor());
   MOZ_ASSERT(aTextureOnBlack->GetSize() == aTextureOnWhite->GetSize());
+  MOZ_RELEASE_ASSERT(aTextureOnWhite->GetIPDLActor()->GetIPCChannel() == mShadowManager->GetIPCChannel());
+  MOZ_RELEASE_ASSERT(aTextureOnBlack->GetIPDLActor()->GetIPCChannel() == mShadowManager->GetIPCChannel());
 
   ReadLockDescriptor readLockW;
   ReadLockDescriptor readLockB;
@@ -541,6 +544,7 @@ ShadowLayerForwarder::RemoveTextureFromCompositable(CompositableClient* aComposi
   MOZ_ASSERT(aTexture);
   MOZ_ASSERT(aCompositable->IsConnected());
   MOZ_ASSERT(aTexture->GetIPDLActor());
+  MOZ_RELEASE_ASSERT(aTexture->GetIPDLActor()->GetIPCChannel() == mShadowManager->GetIPCChannel());
   if (!aCompositable->IsConnected() || !aTexture->GetIPDLActor()) {
     // We don't have an actor anymore, don't try to use it!
     return;
@@ -795,7 +799,7 @@ ShadowLayerForwarder::AllocUnsafeShmem(size_t aSize,
   }
 
   ShmemAllocated(mShadowManager);
-  return mShadowManager->AllocUnsafeShmem(aSize, aShmType, aShmem);
+  return GetCompositorBridgeChild()->AllocUnsafeShmem(aSize, aShmType, aShmem);
 }
 
 bool
@@ -809,7 +813,7 @@ ShadowLayerForwarder::AllocShmem(size_t aSize,
   }
 
   ShmemAllocated(mShadowManager);
-  return mShadowManager->AllocShmem(aSize, aShmType, aShmem);
+  return GetCompositorBridgeChild()->AllocShmem(aSize, aShmType, aShmem);
 }
 
 void
@@ -817,7 +821,7 @@ ShadowLayerForwarder::DeallocShmem(ipc::Shmem& aShmem)
 {
   MOZ_ASSERT(HasShadowManager(), "no shadow manager");
   if (HasShadowManager() && mShadowManager->IPCOpen()) {
-    mShadowManager->DeallocShmem(aShmem);
+    GetCompositorBridgeChild()->DeallocShmem(aShmem);
   }
 }
 
@@ -1032,13 +1036,7 @@ ShadowLayerForwarder::AllocSurfaceDescriptorWithCaps(const gfx::IntSize& aSize,
       return false;
     }
     GfxMemoryImageReporter::DidAlloc(data);
-#ifdef XP_MACOSX
-    // Workaround a bug in Quartz where drawing an a8 surface to another a8
-    // surface with OP_SOURCE still requires the destination to be clear.
-    if (format == gfx::SurfaceFormat::A8) {
-      memset(data, 0, size);
-    }
-#endif
+    memset(data, 0, size);
     bufferDesc = reinterpret_cast<uintptr_t>(data);
   } else {
 
@@ -1096,19 +1094,27 @@ ShadowLayerForwarder::DestroySurfaceDescriptor(SurfaceDescriptor* aSurface)
 void
 ShadowLayerForwarder::UpdateFwdTransactionId()
 {
-  GetCompositorBridgeChild()->UpdateFwdTransactionId();
+  auto compositorBridge = GetCompositorBridgeChild();
+  if (compositorBridge) {
+    compositorBridge->UpdateFwdTransactionId();
+  }
 }
 
 uint64_t
 ShadowLayerForwarder::GetFwdTransactionId()
 {
-  return GetCompositorBridgeChild()->GetFwdTransactionId();
+  auto compositorBridge = GetCompositorBridgeChild();
+  MOZ_DIAGNOSTIC_ASSERT(compositorBridge);
+  return compositorBridge ? compositorBridge->GetFwdTransactionId() : 0;
 }
 
 void
 ShadowLayerForwarder::CancelWaitForRecycle(uint64_t aTextureId)
 {
-  GetCompositorBridgeChild()->CancelWaitForRecycle(aTextureId);
+  auto compositorBridge = GetCompositorBridgeChild();
+  if (compositorBridge) {
+    compositorBridge->CancelWaitForRecycle(aTextureId);
+  }
 }
 
 CompositorBridgeChild*
@@ -1117,8 +1123,17 @@ ShadowLayerForwarder::GetCompositorBridgeChild()
   if (mCompositorBridgeChild) {
     return mCompositorBridgeChild;
   }
-  mCompositorBridgeChild = mClientLayerManager->GetCompositorBridgeChild();
+  if (!mShadowManager) {
+    return nullptr;
+  }
+  mCompositorBridgeChild = static_cast<CompositorBridgeChild*>(mShadowManager->Manager());
   return mCompositorBridgeChild;
+}
+
+TextureForwarder*
+ShadowLayerForwarder::AsTextureForwarder()
+{
+  return GetCompositorBridgeChild();
 }
 
 } // namespace layers

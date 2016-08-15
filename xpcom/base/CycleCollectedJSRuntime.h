@@ -66,7 +66,7 @@ public:
 class JSZoneParticipant : public nsCycleCollectionParticipant
 {
 public:
-  MOZ_CONSTEXPR JSZoneParticipant(): nsCycleCollectionParticipant()
+  constexpr JSZoneParticipant(): nsCycleCollectionParticipant()
   {
   }
 
@@ -143,7 +143,7 @@ protected:
   CycleCollectedJSRuntime();
   virtual ~CycleCollectedJSRuntime();
 
-  nsresult Initialize(JSRuntime* aParentRuntime,
+  nsresult Initialize(JSContext* aParentContext,
                       uint32_t aMaxBytes,
                       uint32_t aMaxNurseryBytes);
 
@@ -207,19 +207,21 @@ private:
 
   static void TraceBlackJS(JSTracer* aTracer, void* aData);
   static void TraceGrayJS(JSTracer* aTracer, void* aData);
-  static void GCCallback(JSRuntime* aRuntime, JSGCStatus aStatus, void* aData);
-  static void GCSliceCallback(JSRuntime* aRuntime, JS::GCProgress aProgress,
+  static void GCCallback(JSContext* aContext, JSGCStatus aStatus, void* aData);
+  static void GCSliceCallback(JSContext* aContext, JS::GCProgress aProgress,
                               const JS::GCDescription& aDesc);
-  static void GCNurseryCollectionCallback(JSRuntime* aRuntime,
+  static void GCNurseryCollectionCallback(JSContext* aContext,
                                           JS::GCNurseryProgress aProgress,
                                           JS::gcreason::Reason aReason);
   static void OutOfMemoryCallback(JSContext* aContext, void* aData);
   static void LargeAllocationFailureCallback(void* aData);
   static bool ContextCallback(JSContext* aCx, unsigned aOperation,
                               void* aData);
+  static JSObject* GetIncumbentGlobalCallback(JSContext* aCx);
   static bool EnqueuePromiseJobCallback(JSContext* aCx,
                                         JS::HandleObject aJob,
                                         JS::HandleObject aAllocationSite,
+                                        JS::HandleObject aIncumbentGlobal,
                                         void* aData);
 #ifdef SPIDERMONKEY_PROMISE
   static void PromiseRejectionTrackerCallback(JSContext* aCx,
@@ -322,20 +324,20 @@ public:
   virtual void EndCycleCollectionCallback(CycleCollectorResults& aResults) = 0;
   virtual void DispatchDeferredDeletion(bool aContinuation, bool aPurge = false) = 0;
 
-  JSRuntime* Runtime() const
-  {
-    MOZ_ASSERT(mJSRuntime);
-    return mJSRuntime;
-  }
-
   JSContext* Context() const
   {
     MOZ_ASSERT(mJSContext);
     return mJSContext;
   }
 
+  JS::RootingContext* RootingCx() const
+  {
+    MOZ_ASSERT(mJSContext);
+    return JS::RootingContext::get(mJSContext);
+  }
+
 protected:
-  JSRuntime* MaybeRuntime() const { return mJSRuntime; }
+  JSContext* MaybeContext() const { return mJSContext; }
 
 public:
   // nsThread entrypoints
@@ -370,7 +372,7 @@ public:
   void PrepareWaitingZonesForGC();
 
   // Queue an async microtask to the current main or worker thread.
-  virtual void DispatchToMicroTask(nsIRunnable* aRunnable);
+  virtual void DispatchToMicroTask(already_AddRefed<nsIRunnable> aRunnable);
 
   // Storage for watching rejected promises waiting for some client to
   // consume their rejection.
@@ -399,7 +401,6 @@ private:
 
   JSZoneParticipant mJSZoneCycleCollectorGlobal;
 
-  JSRuntime* mJSRuntime;
   JSContext* mJSContext;
 
   JS::GCSliceCallback mPrevGCSliceCallback;

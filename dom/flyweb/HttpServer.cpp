@@ -51,9 +51,6 @@ HttpServer::Init(int32_t aPort, bool aHttps, HttpServerListener* aListener)
   mHttps = aHttps;
   mListener = aListener;
 
-  nsCOMPtr<nsIPrefBranch> prefService;
-  prefService = do_GetService(NS_PREFSERVICE_CONTRACTID);
-
   if (mHttps) {
     nsCOMPtr<nsILocalCertService> lcs =
       do_CreateInstance("@mozilla.org/security/local-cert-service;1");
@@ -260,11 +257,12 @@ HttpServer::TransportProvider::SetListener(nsIHttpUpgradeListener* aListener)
   return NS_OK;
 }
 
-NS_IMETHODIMP_(PTransportProviderChild*)
-HttpServer::TransportProvider::GetIPCChild()
+NS_IMETHODIMP
+HttpServer::TransportProvider::GetIPCChild(PTransportProviderChild** aChild)
 {
   MOZ_CRASH("Don't call this in parent process");
-  return nullptr;
+  *aChild = nullptr;
+  return NS_OK;
 }
 
 void

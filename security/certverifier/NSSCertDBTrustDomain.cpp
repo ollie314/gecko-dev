@@ -246,7 +246,7 @@ NSSCertDBTrustDomain::GetCertTrust(EndEntityOrCA endEntityOrCA,
         return Success;
       }
 #ifndef MOZ_NO_EV_CERTS
-      if (CertIsAuthoritativeForEVPolicy(candidateCert.get(), policy)) {
+      if (CertIsAuthoritativeForEVPolicy(candidateCert, policy)) {
         trustLevel = TrustLevel::TrustAnchor;
         return Success;
       }
@@ -956,6 +956,12 @@ NSSCertDBTrustDomain::NetscapeStepUpMatchesServerAuth(Time notBefore,
       MOZ_ASSERT_UNREACHABLE("unhandled NetscapeStepUpPolicy type");
   }
   return Result::FATAL_ERROR_LIBRARY_FAILURE;
+}
+
+void
+NSSCertDBTrustDomain::NoteAuxiliaryExtension(AuxiliaryExtension /*extension*/,
+                                             Input /*extensionData*/)
+{
 }
 
 SECStatus

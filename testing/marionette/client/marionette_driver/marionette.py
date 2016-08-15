@@ -7,12 +7,13 @@ import ConfigParser
 import json
 import os
 import socket
+import sys
 import traceback
 import warnings
 
 from contextlib import contextmanager
 
-from decorators import do_crash_check
+from decorators import do_process_check
 from keys import Keys
 
 import geckoinstance
@@ -542,19 +543,27 @@ class Marionette(object):
     TIMEOUT_PAGE = 'page load'
     DEFAULT_SOCKET_TIMEOUT = 360
     DEFAULT_STARTUP_TIMEOUT = 120
+    DEFAULT_SHUTDOWN_TIMEOUT = 65  # Firefox will kill hanging threads after 60s
 
-    def __init__(self, host='localhost', port=2828, app=None, app_args=None,
-                 bin=None, profile=None, addons=None,
-                 gecko_log=None, baseurl=None,
-                 symbols_path=None, timeout=None,
-                 socket_timeout=DEFAULT_SOCKET_TIMEOUT,
-                 process_args=None, prefs=None,
-                 startup_timeout=None, workspace=None, verbose=0):
+    def __init__(self, host='localhost', port=2828, app=None, bin=None,
+                 baseurl=None, timeout=None, socket_timeout=DEFAULT_SOCKET_TIMEOUT,
+                 startup_timeout=None, **instance_args):
+        """
+        :param host: address for Marionette connection
+        :param port: integer port for Marionette connection
+        :param baseurl: where to look for files served from Marionette's www directory
+        :param startup_timeout: seconds to wait for a connection with binary
+        :param timeout: time to wait for page load, scripts, search
+        :param socket_timeout: timeout for Marionette socket operations
+        :param bin: path to app binary; if any truthy value is given this will
+            attempt to start a gecko instance with the specified `app`
+        :param app: type of instance_class to use for managing app instance.
+            See marionette_driver.geckoinstance
+        :param instance_args: args to pass to instance_class
+        """
         self.host = host
-        self.port = self.local_port = port
+        self.port = self.local_port = int(port)
         self.bin = bin
-        self.profile = profile
-        self.addons = addons
         self.instance = None
         self.session = None
         self.session_id = None
@@ -566,39 +575,38 @@ class Marionette(object):
         self.socket_timeout = socket_timeout
 
         startup_timeout = startup_timeout or self.DEFAULT_STARTUP_TIMEOUT
-
-        if bin:
-            port = int(self.port)
-            if not Marionette.is_port_available(port, host=self.host):
-                ex_msg = "%s:%d is unavailable." % (self.host, port)
-                raise errors.MarionetteException(message=ex_msg)
-            if app:
-                # select instance class for the given app
-                try:
-                    instance_class = geckoinstance.apps[app]
-                except KeyError:
-                    msg = 'Application "%s" unknown (should be one of %s)'
-                    raise NotImplementedError(msg % (app, geckoinstance.apps.keys()))
-            else:
-                try:
-                    config = ConfigParser.RawConfigParser()
-                    config.read(os.path.join(os.path.dirname(bin), 'application.ini'))
-                    app = config.get('App', 'Name')
-                    instance_class = geckoinstance.apps[app.lower()]
-                except (ConfigParser.NoOptionError,
-                        ConfigParser.NoSectionError,
-                        KeyError):
-                    instance_class = geckoinstance.GeckoInstance
-            self.instance = instance_class(host=self.host, port=self.port,
-                                           bin=self.bin, profile=self.profile,
-                                           app_args=app_args,
-                                           symbols_path=symbols_path,
-                                           gecko_log=gecko_log, prefs=prefs,
-                                           addons=self.addons,
-                                           workspace=workspace,
-                                           verbose=verbose)
+        if self.bin:
+            self.instance = self._create_instance(app, instance_args)
             self.instance.start()
             self.raise_for_port(self.wait_for_port(timeout=startup_timeout))
+
+    def _create_instance(self, app, instance_args):
+        if not Marionette.is_port_available(self.port, host=self.host):
+            ex_msg = "%s:%d is unavailable." % (self.host, self.port)
+            raise errors.MarionetteException(message=ex_msg)
+        if app:
+            # select instance class for the given app
+            try:
+                instance_class = geckoinstance.apps[app]
+            except KeyError:
+                msg = 'Application "%s" unknown (should be one of %s)'
+                raise NotImplementedError(
+                    msg % (app, geckoinstance.apps.keys()))
+        else:
+            try:
+                if not isinstance(self.bin, basestring):
+                    raise TypeError("bin must be a string if app is not specified")
+                config = ConfigParser.RawConfigParser()
+                config.read(os.path.join(os.path.dirname(self.bin),
+                                         'application.ini'))
+                app = config.get('App', 'Name')
+                instance_class = geckoinstance.apps[app.lower()]
+            except (ConfigParser.NoOptionError,
+                    ConfigParser.NoSectionError,
+                    KeyError):
+                instance_class = geckoinstance.GeckoInstance
+        return instance_class(host=self.host, port=self.port, bin=self.bin,
+                              **instance_args)
 
     @property
     def profile_path(self):
@@ -609,7 +617,7 @@ class Marionette(object):
         if self.session:
             try:
                 self.delete_session()
-            except (errors.MarionetteException, socket.error, IOError):
+            except (errors.MarionetteException, IOError):
                 # These exceptions get thrown if the Marionette server
                 # hit an exception/died or the connection died. We can
                 # do no further server-side cleanup in this case.
@@ -638,12 +646,12 @@ class Marionette(object):
         timeout = timeout or self.DEFAULT_STARTUP_TIMEOUT
         return transport.wait_for_port(self.host, self.port, timeout=timeout)
 
-    @do_crash_check
+    @do_process_check
     def raise_for_port(self, port_obtained):
         if not port_obtained:
-            raise IOError("Timed out waiting for port!")
+            raise socket.timeout("Timed out waiting for port {}!".format(self.port))
 
-    @do_crash_check
+    @do_process_check
     def _send_message(self, name, params=None, key=None):
         """Send a blocking message to the server.
 
@@ -673,19 +681,12 @@ class Marionette(object):
             else:
                 msg = self.client.request(name, params)
 
-        except IOError:
-            if self.instance and not hasattr(self.instance, 'detached'):
-                # If we've launched the binary we've connected to, wait
-                # for it to shut down.
-                returncode = self.instance.runner.wait(timeout=self.DEFAULT_STARTUP_TIMEOUT)
-                raise IOError("process died with returncode %s" % returncode)
-            raise
-
         except socket.timeout:
             self.session = None
             self.window = None
             self.client.close()
-            raise errors.TimeoutException("Connection timed out")
+
+            raise
 
         res, err = msg.result, msg.error
         if err:
@@ -724,7 +725,7 @@ class Marionette(object):
 
         raise errors.lookup(error)(message, stacktrace=stacktrace)
 
-    def _reset_timeouts(self):
+    def reset_timeouts(self):
         if self.timeout is not None:
             self.timeouts(self.TIMEOUT_SEARCH, self.timeout)
             self.timeouts(self.TIMEOUT_SCRIPT, self.timeout)
@@ -744,6 +745,30 @@ class Marionette(object):
             print ('PROCESS-CRASH | %s | abnormal termination with exit code %d' %
                    (name, returncode))
         return crashed
+
+    def force_shutdown(self):
+        """Force a shutdown of the running instance.
+
+        If we've launched the binary we are connected to, wait for it to shut down.
+        In the case when it doesn't happen, force its shut down.
+
+        """
+        if self.instance:
+            exc, val, tb = sys.exc_info()
+
+            # Give the application some time to shutdown
+            returncode = self.instance.runner.wait(timeout=self.DEFAULT_STARTUP_TIMEOUT)
+            if returncode is None:
+                self.cleanup()
+                message = ('Process killed because the connection to Marionette server is lost.'
+                           ' Check gecko.log for errors')
+            else:
+                message = 'Process has been closed (Exit code: {returncode})'
+
+            if exc:
+                message += ' (Reason: {reason})'
+
+            raise IOError, message.format(returncode=returncode, reason=val), tb
 
     @staticmethod
     def convert_keys(*string):
@@ -972,8 +997,8 @@ class Marionette(object):
         : param prefs: A dictionary whose keys are preference names.
         """
         if not self.instance:
-            raise errors.MarionetteException("enforce_gecko_prefs can only be called "
-                                             "on gecko instances launched by Marionette")
+            raise errors.MarionetteException("enforce_gecko_prefs() can only be called "
+                                             "on Gecko instances launched by Marionette")
         pref_exists = True
         self.set_context(self.CONTEXT_CHROME)
         for pref, value in prefs.iteritems():
@@ -1004,7 +1029,32 @@ class Marionette(object):
             self.instance.restart(prefs)
             self.raise_for_port(self.wait_for_port())
             self.start_session()
-            self._reset_timeouts()
+            self.reset_timeouts()
+
+    @do_process_check
+    def quit_in_app(self):
+        """
+        This will terminate the currently running instance.
+        """
+        if not self.instance:
+            raise errors.MarionetteException("quit_in_app() can only be called "
+                                             "on Gecko instances launched by Marionette")
+        # Values here correspond to constants in nsIAppStartup.
+        # See http://mzl.la/1X0JZsC
+        restart_flags = [
+            "eForceQuit",
+            "eRestart",
+        ]
+        self._send_message("quitApplication", {"flags": restart_flags})
+        self.client.close()
+
+        try:
+            self.raise_for_port(self.wait_for_port())
+        except socket.timeout:
+            if self.instance.runner.returncode is not None:
+                exc, val, tb = sys.exc_info()
+                self.cleanup()
+                raise exc, 'Requested restart of the application was aborted', tb
 
     def restart(self, clean=False, in_app=False):
         """
@@ -1019,29 +1069,25 @@ class Marionette(object):
                         by killing the process.
         """
         if not self.instance:
-            raise errors.MarionetteException("restart can only be called "
-                                             "on gecko instances launched by Marionette")
-
+            raise errors.MarionetteException("restart() can only be called "
+                                             "on Gecko instances launched by Marionette")
         if in_app:
             if clean:
-                raise ValueError
-            # Values here correspond to constants in nsIAppStartup.
-            # See http://mzl.la/1X0JZsC
-            restart_flags = [
-                "eForceQuit",
-                "eRestart",
-            ]
-            self._send_message("quitApplication", {"flags": restart_flags})
-            self.client.close()
-            # The instance is restarting itself; we will no longer be able to
-            # track it by pid, so mark it as 'detached'.
-            self.instance.detached = True
+                raise ValueError("An in_app restart cannot be triggered with the clean flag set")
+            self.quit_in_app()
         else:
             self.delete_session()
             self.instance.restart(clean=clean)
-        self.raise_for_port(self.wait_for_port())
+            self.raise_for_port(self.wait_for_port())
+
         self.start_session(session_id=self.session_id)
-        self._reset_timeouts()
+        self.reset_timeouts()
+
+        if in_app and self.session.get('processId'):
+            # In some cases Firefox restarts itself by spawning into a new process group.
+            # As long as mozprocess cannot track that behavior (bug 1284864) we assist by
+            # informing about the new process id.
+            self.instance.runner.process_handler.check_for_detached(self.session['processId'])
 
     def absolute_url(self, relative_url):
         '''
@@ -1051,6 +1097,7 @@ class Marionette(object):
         '''
         return "%s%s" % (self.baseurl, relative_url)
 
+    @do_process_check
     def start_session(self, desired_capabilities=None, session_id=None, timeout=60):
         """Create a new Marionette session.
 
@@ -1093,8 +1140,8 @@ class Marionette(object):
 
     @test_name.setter
     def test_name(self, test_name):
-        if self._send_message("setTestName", {"value": test_name}):
-            self._test_name = test_name
+        self._send_message("setTestName", {"value": test_name})
+        self._test_name = test_name
 
     def delete_session(self):
         """Close the current session and disconnect from the server."""
@@ -1301,10 +1348,7 @@ class Marionette(object):
     def get_active_frame(self):
         """Returns an HTMLElement representing the frame Marionette is
         currently acting on."""
-        element = self._send_message("getActiveFrame", key="value")
-        if element:
-            return HTMLElement(self, element)
-        return None
+        return self._send_message("getActiveFrame", key="value")
 
     def switch_to_default_content(self):
         """Switch the current context to page's default content."""
@@ -1432,8 +1476,13 @@ class Marionette(object):
         :param ms: A number value specifying the timeout length in
             milliseconds (ms)
         """
-        if timeout_type not in [self.TIMEOUT_SEARCH, self.TIMEOUT_SCRIPT, self.TIMEOUT_PAGE]:
-            raise ValueError("Unknown timeout type: %s" % timeout_type)
+        timeout_types = (self.TIMEOUT_PAGE,
+                         self.TIMEOUT_SCRIPT,
+                         self.TIMEOUT_SEARCH,
+                         )
+        if timeout_type not in timeout_types:
+            raise ValueError("Unknown timeout type: {0} (should be one "
+                             "of {1})".format(timeout_type, timeout_types))
         body = {"type": timeout_type, "ms": ms}
         self._send_message("timeouts", body)
 
@@ -1925,7 +1974,7 @@ class Marionette(object):
 
         """
         body = {"width": width, "height": height}
-        self._send_message("setWindowSize", body)
+        return self._send_message("setWindowSize", body)
 
     def maximize_window(self):
         """ Resize the browser window currently receiving commands. The action

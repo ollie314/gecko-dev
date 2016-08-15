@@ -1,23 +1,23 @@
 $inherits:
   from: 'tasks/builds/firefox_docker_base.yml'
   variables:
-    build_name: 'linux32'
+    build_name: 'linux'
 task:
   #workerType: ..
 
   routes:
-    - 'index.buildbot.branches.{{project}}.linux32'
-    - 'index.buildbot.revisions.{{head_rev}}.{{project}}.linux32'
+    - 'index.buildbot.branches.{{project}}.linux'
+    - 'index.buildbot.revisions.{{head_rev}}.{{project}}.linux'
 
   scopes:
     - 'docker-worker:cache:tooltool-cache'
     - 'docker-worker:relengapi-proxy:tooltool.download.public'
-    - 'docker-worker:cache:level-{{level}}-{{project}}-build-linux32-workspace'
+    - 'docker-worker:cache:level-{{level}}-{{project}}-build-{{build_name}}-{{build_type}}-workspace'
 
   payload:
     cache:
       tooltool-cache: '/home/worker/tooltool-cache'
-      level-{{level}}-{{project}}-build-linux32-workspace: '/home/worker/workspace'
+      level-{{level}}-{{project}}-build-{{build_name}}-{{build_type}}-workspace: '/home/worker/workspace'
 
     features:
       relengAPIProxy: true

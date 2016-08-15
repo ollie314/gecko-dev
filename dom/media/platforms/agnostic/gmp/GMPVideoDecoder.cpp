@@ -10,6 +10,7 @@
 #include "prsystem.h"
 #include "MediaData.h"
 #include "GMPDecoderModule.h"
+#include "VPXDecoder.h"
 
 namespace mozilla {
 
@@ -40,15 +41,16 @@ VideoCallbackAdapter::Decoded(GMPVideoi420Frame* aDecodedFrame)
   }
 
   gfx::IntRect pictureRegion(0, 0, decodedFrame->Width(), decodedFrame->Height());
-  RefPtr<VideoData> v = VideoData::Create(mVideoInfo,
-                                            mImageContainer,
-                                            mLastStreamOffset,
-                                            decodedFrame->Timestamp(),
-                                            decodedFrame->Duration(),
-                                            b,
-                                            false,
-                                            -1,
-                                            pictureRegion);
+  RefPtr<VideoData> v =
+    VideoData::CreateAndCopyData(mVideoInfo,
+                                 mImageContainer,
+                                 mLastStreamOffset,
+                                 decodedFrame->Timestamp(),
+                                 decodedFrame->Duration(),
+                                 b,
+                                 false,
+                                 -1,
+                                 pictureRegion);
   if (v) {
     mCallback->Output(v);
   } else {
@@ -100,18 +102,72 @@ void
 VideoCallbackAdapter::Terminated()
 {
   // Note that this *may* be called from the proxy thread also.
-  NS_WARNING("H.264 GMP decoder terminated.");
+  NS_WARNING("GMP decoder terminated.");
   mCallback->Error(MediaDataDecoderError::FATAL_ERROR);
+}
+
+GMPVideoDecoderParams::GMPVideoDecoderParams(const CreateDecoderParams& aParams)
+  : mConfig(aParams.VideoConfig())
+  , mTaskQueue(aParams.mTaskQueue)
+  , mCallback(nullptr)
+  , mAdapter(nullptr)
+  , mImageContainer(aParams.mImageContainer)
+  , mLayersBackend(aParams.mLayersBackend)
+  , mCrashHelper(aParams.mCrashHelper)
+{}
+
+GMPVideoDecoderParams&
+GMPVideoDecoderParams::WithCallback(MediaDataDecoderProxy* aWrapper)
+{
+  MOZ_ASSERT(aWrapper);
+  MOZ_ASSERT(!mCallback); // Should only be called once per instance.
+  mCallback = aWrapper->Callback();
+  mAdapter = nullptr;
+  return *this;
+}
+
+GMPVideoDecoderParams&
+GMPVideoDecoderParams::WithAdapter(VideoCallbackAdapter* aAdapter)
+{
+  MOZ_ASSERT(aAdapter);
+  MOZ_ASSERT(!mAdapter); // Should only be called once per instance.
+  mCallback = aAdapter->Callback();
+  mAdapter = aAdapter;
+  return *this;
+}
+
+GMPVideoDecoder::GMPVideoDecoder(const GMPVideoDecoderParams& aParams)
+  : mConfig(aParams.mConfig)
+  , mCallback(aParams.mCallback)
+  , mGMP(nullptr)
+  , mHost(nullptr)
+  , mAdapter(aParams.mAdapter)
+  , mConvertNALUnitLengths(false)
+  , mCrashHelper(aParams.mCrashHelper)
+{
+  MOZ_ASSERT(!mAdapter || mCallback == mAdapter->Callback());
+  if (!mAdapter) {
+    mAdapter = new VideoCallbackAdapter(mCallback,
+                                        VideoInfo(mConfig.mDisplay.width,
+                                                  mConfig.mDisplay.height),
+                                        aParams.mImageContainer);
+  }
 }
 
 void
 GMPVideoDecoder::InitTags(nsTArray<nsCString>& aTags)
 {
-  aTags.AppendElement(NS_LITERAL_CSTRING("h264"));
-  const Maybe<nsCString> gmp(
-    GMPDecoderModule::PreferredGMP(NS_LITERAL_CSTRING("video/avc")));
-  if (gmp.isSome()) {
-    aTags.AppendElement(gmp.value());
+  if (MP4Decoder::IsH264(mConfig.mMimeType)) {
+    aTags.AppendElement(NS_LITERAL_CSTRING("h264"));
+    const Maybe<nsCString> gmp(
+      GMPDecoderModule::PreferredGMP(NS_LITERAL_CSTRING("video/avc")));
+    if (gmp.isSome()) {
+      aTags.AppendElement(gmp.value());
+    }
+  } else if (VPXDecoder::IsVP8(mConfig.mMimeType)) {
+    aTags.AppendElement(NS_LITERAL_CSTRING("vp8"));
+  } else if (VPXDecoder::IsVP9(mConfig.mMimeType)) {
+    aTags.AppendElement(NS_LITERAL_CSTRING("vp9"));
   }
 }
 
@@ -164,6 +220,12 @@ GMPVideoDecoder::CreateFrame(MediaRawData* aSample)
   return frame;
 }
 
+const VideoInfo&
+GMPVideoDecoder::GetConfig() const
+{
+  return mConfig;
+}
+
 void
 GMPVideoDecoder::GMPInitDone(GMPVideoDecoderProxy* aGMP, GMPVideoHost* aHost)
 {
@@ -186,15 +248,24 @@ GMPVideoDecoder::GMPInitDone(GMPVideoDecoderProxy* aGMP, GMPVideoHost* aHost)
   memset(&codec, 0, sizeof(codec));
 
   codec.mGMPApiVersion = kGMPVersion33;
-
-  codec.mCodecType = kGMPVideoCodecH264;
+  nsTArray<uint8_t> codecSpecific;
+  if (MP4Decoder::IsH264(mConfig.mMimeType)) {
+    codec.mCodecType = kGMPVideoCodecH264;
+    codecSpecific.AppendElement(0); // mPacketizationMode.
+    codecSpecific.AppendElements(mConfig.mExtraData->Elements(),
+                                 mConfig.mExtraData->Length());
+  } else if (VPXDecoder::IsVP8(mConfig.mMimeType)) {
+    codec.mCodecType = kGMPVideoCodecVP8;
+  } else if (VPXDecoder::IsVP9(mConfig.mMimeType)) {
+    codec.mCodecType = kGMPVideoCodecVP9;
+  } else {
+    // Unrecognized mime type
+    aGMP->Close();
+    mInitPromise.Reject(MediaDataDecoder::DecoderFailureReason::INIT_ERROR, __func__);
+    return;
+  }
   codec.mWidth = mConfig.mImage.width;
   codec.mHeight = mConfig.mImage.height;
-
-  nsTArray<uint8_t> codecSpecific;
-  codecSpecific.AppendElement(0); // mPacketizationMode.
-  codecSpecific.AppendElements(mConfig.mExtraData->Elements(),
-                               mConfig.mExtraData->Length());
 
   nsresult rv = aGMP->InitDecode(codec,
                                  codecSpecific,
@@ -235,7 +306,7 @@ GMPVideoDecoder::Init()
   nsTArray<nsCString> tags;
   InitTags(tags);
   UniquePtr<GetGMPVideoDecoderCallback> callback(new GMPInitDoneCallback(this));
-  if (NS_FAILED(mMPS->GetGMPVideoDecoder(&tags, GetNodeId(), Move(callback)))) {
+  if (NS_FAILED(mMPS->GetGMPVideoDecoder(mCrashHelper, &tags, GetNodeId(), Move(callback)))) {
     mInitPromise.Reject(MediaDataDecoder::DecoderFailureReason::INIT_ERROR, __func__);
   }
 

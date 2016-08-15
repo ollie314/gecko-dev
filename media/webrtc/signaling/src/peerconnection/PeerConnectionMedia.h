@@ -168,14 +168,9 @@ public:
     return dom::MediaSourceEnum::Other;
   }
 
-  already_AddRefed<dom::Promise>
+  already_AddRefed<PledgeVoid>
   ApplyConstraints(nsPIDOMWindowInner* aWindow,
-                   const dom::MediaTrackConstraints& aConstraints,
-                   ErrorResult &aRv) override
-  {
-    NS_ERROR("Can't ApplyConstraints() a remote source!");
-    return nullptr;
-  }
+                   const dom::MediaTrackConstraints& aConstraints) override;
 
   void Stop() override { NS_ERROR("Can't stop a remote source!"); }
 
@@ -447,10 +442,10 @@ class PeerConnectionMedia : public sigslot::has_slots<> {
     explicit ProtocolProxyQueryHandler(PeerConnectionMedia *pcm) :
       pcm_(pcm) {}
 
-    NS_IMETHODIMP OnProxyAvailable(nsICancelable *request,
-                                   nsIChannel *aChannel,
-                                   nsIProxyInfo *proxyinfo,
-                                   nsresult result) override;
+    NS_IMETHOD OnProxyAvailable(nsICancelable *request,
+                                nsIChannel *aChannel,
+                                nsIProxyInfo *proxyinfo,
+                                nsresult result) override;
     NS_DECL_ISUPPORTS
 
    private:

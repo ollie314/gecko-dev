@@ -69,6 +69,7 @@ Http2Session::Http2Session(nsISocketTransport *aSocketTransport, uint32_t versio
   , mSegmentReader(nullptr)
   , mSegmentWriter(nullptr)
   , mNextStreamID(3) // 1 is reserved for Updgrade handshakes
+  , mLastPushedID(0)
   , mConcurrentHighWater(0)
   , mDownstreamState(BUFFERING_OPENING_SETTINGS)
   , mInputFrameBufferSize(kDefaultBufferSize)
@@ -382,6 +383,17 @@ Http2Session::AddStream(nsAHttpTransaction *aHttpTransaction,
 
   if (!mConnection) {
     mConnection = aHttpTransaction->Connection();
+  }
+
+  if (mClosed || mShouldGoAway) {
+    nsHttpTransaction *trans = aHttpTransaction->QueryHttpTransaction();
+    if (trans && !trans->GetPushedStream()) {
+      LOG3(("Http2Session::AddStream %p atrans=%p trans=%p session unusable - resched.\n",
+            this, aHttpTransaction, trans));
+      aHttpTransaction->SetConnection(nullptr);
+      gHttpHandler->InitiateTransaction(trans, trans->Priority());
+      return true;
+    }
   }
 
   aHttpTransaction->SetConnection(this);
@@ -1541,6 +1553,12 @@ Http2Session::RecvPushPromise(Http2Session *self)
     promisedID = NetworkEndian::readUint32(
         self->mInputFrameBuffer.get() + kFrameHeaderBytes + paddingControlBytes);
     promisedID &= 0x7fffffff;
+    if (promisedID <= self->mLastPushedID) {
+      LOG3(("Http2Session::RecvPushPromise %p ID too low %u expected > %u.\n",
+            self, promisedID, self->mLastPushedID));
+      RETURN_SESSION_ERROR(self, PROTOCOL_ERROR);
+    }
+    self->mLastPushedID = promisedID;
   }
 
   uint32_t associatedID = self->mInputFrameID;
@@ -2148,7 +2166,7 @@ Http2Session::RecvAltSvc(Http2Session *self)
     }
   } else {
     // handling of push streams is not defined. Let's ignore it
-    LOG(("Http2Session %p Alt-Svc Stream 0 has empty origin\n", self));
+    LOG(("Http2Session %p Alt-Svc received on pushed stream - ignoring\n", self));
     self->ResetDownstreamState();
     return NS_OK;
   }
@@ -3531,8 +3549,8 @@ Http2Session::ConfirmTLSProfile()
     LOG3(("Http2Session::ConfirmTLSProfile %p FAILED due to DH %d < 2048\n",
           this, keybits));
     RETURN_SESSION_ERROR(this, INADEQUATE_SECURITY);
-  } else if (kea == ssl_kea_ecdh && keybits < 256) { // 256 bits is "security level" of 128
-    LOG3(("Http2Session::ConfirmTLSProfile %p FAILED due to ECDH %d < 256\n",
+  } else if (kea == ssl_kea_ecdh && keybits < 224) { // see rfc7540 9.2.1.
+    LOG3(("Http2Session::ConfirmTLSProfile %p FAILED due to ECDH %d < 224\n",
           this, keybits));
     RETURN_SESSION_ERROR(this, INADEQUATE_SECURITY);
   }
@@ -3581,8 +3599,13 @@ Http2Session::TransactionHasDataToWrite(nsAHttpTransaction *caller)
   LOG3(("Http2Session::TransactionHasDataToWrite %p ID is 0x%X\n",
         this, stream->StreamID()));
 
-  mReadyForWrite.Push(stream);
-  SetWriteCallbacks();
+  if (!mClosed) {
+    mReadyForWrite.Push(stream);
+    SetWriteCallbacks();
+  } else {
+    LOG3(("Http2Session::TransactionHasDataToWrite %p closed so not setting Ready4Write\n",
+          this));
+  }
 
   // NSPR poll will not poll the network if there are non system PR_FileDesc's
   // that are ready - so we can get into a deadlock waiting for the system IO

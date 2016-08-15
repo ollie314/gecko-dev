@@ -353,8 +353,7 @@ HTMLCanvasElement::HTMLCanvasElement(already_AddRefed<mozilla::dom::NodeInfo>& a
   : nsGenericHTMLElement(aNodeInfo),
     mResetLayer(true) ,
     mWriteOnly(false)
-{
-}
+{}
 
 HTMLCanvasElement::~HTMLCanvasElement()
 {
@@ -1270,7 +1269,7 @@ HTMLCanvasElement::OnVisibilityChange()
         : mRenderer(aRenderer)
       {}
 
-      NS_IMETHOD Run()
+      NS_IMETHOD Run() override
       {
         if (mRenderer && mRenderer->mContext) {
           mRenderer->mContext->OnVisibilityChange();
@@ -1312,7 +1311,7 @@ HTMLCanvasElement::OnMemoryPressure()
         : mRenderer(aRenderer)
       {}
 
-      NS_IMETHOD Run()
+      NS_IMETHOD Run() override
       {
         if (mRenderer && mRenderer->mContext) {
           mRenderer->mContext->OnMemoryPressure();

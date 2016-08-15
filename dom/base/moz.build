@@ -1,4 +1,4 @@
-# -*- Mode: python; c-basic-offset: 4; indent-tabs-mode: nil; tab-width: 40 -*-
+# -*- Mode: python; indent-tabs-mode: nil; tab-width: 40 -*-
 # vim: set filetype=python:
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -35,7 +35,6 @@ XPIDL_SOURCES += [
     'nsISimpleContentPolicy.idl',
     'nsISiteSpecificUserAgent.idl',
     'nsISlowScriptDebug.idl',
-    'nsIXMLHttpRequest.idl',
 ]
 
 XPIDL_MODULE = 'dom'
@@ -153,10 +152,12 @@ EXPORTS.mozilla.dom += [
     'BarProps.h',
     'BlobSet.h',
     'BodyUtil.h',
+    'BorrowedAttrInfo.h',
     'ChildIterator.h',
     'ChromeNodeList.h',
     'ChromeUtils.h',
     'Comment.h',
+    'CustomElementsRegistry.h',
     'DirectionalityUtils.h',
     'DocumentFragment.h',
     'DocumentType.h',
@@ -201,8 +202,6 @@ EXPORTS.mozilla.dom += [
     'SubtleCrypto.h',
     'Text.h',
     'TreeWalker.h',
-    'URL.h',
-    'URLSearchParams.h',
     'WebKitCSSMatrix.h',
     'WebSocket.h',
     'WindowOrientationObserver.h',
@@ -214,11 +213,13 @@ UNIFIED_SOURCES += [
     'BarProps.cpp',
     'BlobSet.cpp',
     'BodyUtil.cpp',
+    'BorrowedAttrInfo.cpp',
     'ChildIterator.cpp',
     'ChromeNodeList.cpp',
     'ChromeUtils.cpp',
     'Comment.cpp',
     'Crypto.cpp',
+    'CustomElementsRegistry.cpp',
     'DirectionalityUtils.cpp',
     'DocumentFragment.cpp',
     'DocumentType.cpp',
@@ -322,7 +323,6 @@ UNIFIED_SOURCES += [
     'nsWrapperCache.cpp',
     'nsXHTMLContentSerializer.cpp',
     'nsXMLContentSerializer.cpp',
-    'nsXMLHttpRequest.cpp',
     'nsXMLNameSpaceMap.cpp',
     'PostMessageEvent.cpp',
     'ProcessGlobal.cpp',
@@ -338,8 +338,6 @@ UNIFIED_SOURCES += [
     'TextInputProcessor.cpp',
     'ThirdPartyUtil.cpp',
     'TreeWalker.cpp',
-    'URL.cpp',
-    'URLSearchParams.cpp',
     'WebKitCSSMatrix.cpp',
     'WebSocket.cpp',
     'WindowNamedPropertiesHandler.cpp',

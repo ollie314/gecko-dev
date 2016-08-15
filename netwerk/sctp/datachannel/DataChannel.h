@@ -383,6 +383,10 @@ public:
   // Amount of data buffered to send
   uint32_t GetBufferedAmount()
   {
+    if (!mConnection) {
+      return 0;
+    }
+
     MutexAutoLock lock(mConnection->mLock);
     return GetBufferedAmountLocked();
   }
@@ -490,7 +494,7 @@ public:
     : mType(aType),
       mConnection(aConnection) {}
 
-  NS_IMETHOD Run()
+  NS_IMETHOD Run() override
   {
     MOZ_ASSERT(NS_IsMainThread());
 

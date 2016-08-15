@@ -23,7 +23,6 @@
 #include "mozilla/unused.h"
 #include "nsAppDirectoryServiceDefs.h"
 #include "nsCRT.h"
-#include "nsCertVerificationThread.h"
 #include "nsClientAuthRemember.h"
 #include "nsComponentManagerUtils.h"
 #include "nsDirectoryServiceDefs.h"
@@ -250,53 +249,23 @@ GetRevocationBehaviorFromPrefs(/*out*/ CertVerifier::OcspDownloadConfig* odc,
 }
 
 nsNSSComponent::nsNSSComponent()
-  :mutex("nsNSSComponent.mutex"),
-   mNSSInitialized(false),
+  : mutex("nsNSSComponent.mutex")
+  , mNSSInitialized(false)
 #ifndef MOZ_NO_SMART_CARDS
-   mThreadList(nullptr),
+  , mThreadList(nullptr)
 #endif
-   mCertVerificationThread(nullptr)
 {
   MOZ_LOG(gPIPNSSLog, LogLevel::Debug, ("nsNSSComponent::ctor\n"));
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
 
   NS_ASSERTION( (0 == mInstanceCount), "nsNSSComponent is a singleton, but instantiated multiple times!");
   ++mInstanceCount;
 }
 
-void
-nsNSSComponent::deleteBackgroundThreads()
-{
-  if (mCertVerificationThread)
-  {
-    mCertVerificationThread->requestExit();
-    delete mCertVerificationThread;
-    mCertVerificationThread = nullptr;
-  }
-}
-
-void
-nsNSSComponent::createBackgroundThreads()
-{
-  NS_ASSERTION(!mCertVerificationThread,
-               "Cert verification thread already created.");
-
-  mCertVerificationThread = new nsCertVerificationThread;
-  nsresult rv = mCertVerificationThread->startThread(
-    NS_LITERAL_CSTRING("Cert Verify"));
-
-  if (NS_FAILED(rv)) {
-    delete mCertVerificationThread;
-    mCertVerificationThread = nullptr;
-  }
-}
-
 nsNSSComponent::~nsNSSComponent()
 {
   MOZ_LOG(gPIPNSSLog, LogLevel::Debug, ("nsNSSComponent::dtor\n"));
-  NS_ASSERTION(!mCertVerificationThread,
-               "Cert verification thread should have been cleaned up.");
-
-  deleteBackgroundThreads();
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
 
   // All cleanup code requiring services needs to happen in xpcom_shutdown
 
@@ -1868,6 +1837,7 @@ nsNSSComponent::ShutdownNSS()
   // needs mutex protection.
 
   MOZ_LOG(gPIPNSSLog, LogLevel::Debug, ("nsNSSComponent::ShutdownNSS\n"));
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
 
   MutexAutoLock lock(mutex);
 
@@ -1890,18 +1860,20 @@ nsNSSComponent::ShutdownNSS()
     // TLSServerSocket may be run with the session cache enabled. This ensures
     // those resources are cleaned up.
     Unused << SSL_ShutdownServerSessionIDCache();
-    UnloadLoadableRoots();
 #ifndef MOZ_NO_EV_CERTS
     CleanupIdentityInfo();
 #endif
-    MOZ_LOG(gPIPNSSLog, LogLevel::Debug, ("evaporating psm resources\n"));
-    nsNSSShutDownList::evaporateAllNSSResources();
+    MOZ_LOG(gPIPNSSLog, LogLevel::Debug, ("evaporating psm resources"));
+    if (NS_FAILED(nsNSSShutDownList::evaporateAllNSSResources())) {
+      MOZ_LOG(gPIPNSSLog, LogLevel::Error, ("failed to evaporate resources"));
+      return;
+    }
+    UnloadLoadableRoots();
     EnsureNSSInitialized(nssShutdown);
     if (SECSuccess != ::NSS_Shutdown()) {
-      MOZ_LOG(gPIPNSSLog, LogLevel::Error, ("NSS SHUTDOWN FAILURE\n"));
-    }
-    else {
-      MOZ_LOG(gPIPNSSLog, LogLevel::Debug, ("NSS shutdown =====>> OK <<=====\n"));
+      MOZ_LOG(gPIPNSSLog, LogLevel::Error, ("NSS SHUTDOWN FAILURE"));
+    } else {
+      MOZ_LOG(gPIPNSSLog, LogLevel::Debug, ("NSS shutdown =====>> OK <<====="));
     }
   }
 }
@@ -1909,8 +1881,10 @@ nsNSSComponent::ShutdownNSS()
 nsresult
 nsNSSComponent::Init()
 {
-  // No mutex protection.
-  // Assume Init happens before any concurrency on "this" can start.
+  MOZ_RELEASE_ASSERT(NS_IsMainThread());
+  if (!NS_IsMainThread()) {
+    return NS_ERROR_NOT_SAME_THREAD;
+  }
 
   nsresult rv = NS_OK;
 
@@ -1945,13 +1919,6 @@ nsNSSComponent::Init()
 
   RememberCertErrorsTable::Init();
 
-  createBackgroundThreads();
-  if (!mCertVerificationThread) {
-    MOZ_LOG(gPIPNSSLog, LogLevel::Debug,
-            ("nsNSSComponent::createBackgroundThreads() failed\n"));
-    return NS_ERROR_OUT_OF_MEMORY;
-  }
-
   return RegisterObservers();
 }
 
@@ -1969,14 +1936,7 @@ nsNSSComponent::Observe(nsISupports* aSubject, const char* aTopic,
   if (nsCRT::strcmp(aTopic, PROFILE_BEFORE_CHANGE_TOPIC) == 0) {
     MOZ_LOG(gPIPNSSLog, LogLevel::Debug, ("receiving profile change topic\n"));
     DoProfileBeforeChange();
-  } else if (nsCRT::strcmp(aTopic, NS_XPCOM_SHUTDOWN_OBSERVER_ID) == 0) {
-
-    MOZ_LOG(gPIPNSSLog, LogLevel::Debug, ("nsNSSComponent: XPCom shutdown observed\n"));
-
-    // Cleanup code that requires services, it's too late in destructor.
-    deleteBackgroundThreads();
-  }
-  else if (nsCRT::strcmp(aTopic, NS_PREFBRANCH_PREFCHANGE_TOPIC_ID) == 0) {
+  } else if (nsCRT::strcmp(aTopic, NS_PREFBRANCH_PREFCHANGE_TOPIC_ID) == 0) {
     nsNSSShutDownPreventionLock locker;
     bool clearSessionCache = true;
     NS_ConvertUTF16toUTF8  prefName(someData);
@@ -2117,7 +2077,6 @@ nsNSSComponent::RegisterObservers()
   // Using false for the ownsweak parameter means the observer service will
   // keep a strong reference to this component. As a result, this will live at
   // least as long as the observer service.
-  observerService->AddObserver(this, NS_XPCOM_SHUTDOWN_OBSERVER_ID, false);
   observerService->AddObserver(this, PROFILE_BEFORE_CHANGE_TOPIC, false);
 
   return NS_OK;

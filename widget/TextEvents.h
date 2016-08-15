@@ -548,6 +548,7 @@ public:
 
     mData = aEvent.mData;
     mOriginalMessage = aEvent.mOriginalMessage;
+    mRanges = aEvent.mRanges;
 
     // Currently, we don't need to copy the other members because they are
     // for internal use only (not available from JS).
@@ -712,6 +713,16 @@ public:
     mRefPoint = aPoint;
   }
 
+  void InitForQueryTextRectArray(uint32_t aOffset, uint32_t aLength,
+                                 const Options& aOptions = Options())
+  {
+    NS_ASSERTION(mMessage == eQueryTextRectArray,
+                 "wrong initializer is called");
+    mInput.mOffset = aOffset;
+    mInput.mLength = aLength;
+    Init(aOptions);
+  }
+
   void RequestFontRanges()
   {
     NS_ASSERTION(mMessage == eQueryTextContent,
@@ -833,6 +844,8 @@ public:
     nsCOMPtr<nsITransferable> mTransferable;
     // Used by eQueryTextContent with font ranges requested
     AutoTArray<mozilla::FontRange, 1> mFontRanges;
+    // Used by eQueryTextRectArray
+    nsTArray<mozilla::LayoutDeviceIntRect> mRectArray;
     // true if selection is reversed (end < start)
     bool mReversed;
     // true if the selection exists

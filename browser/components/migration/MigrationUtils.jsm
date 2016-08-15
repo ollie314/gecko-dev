@@ -138,6 +138,20 @@ this.MigratorPrototype = {
   },
 
   /**
+   * OVERRIDE in order to provide an estimate of when the last time was
+   * that somebody used the browser. It is OK that this is somewhat fuzzy -
+   * history may not be available (or be wiped or not present due to e.g.
+   * incognito mode).
+   *
+   * @return a Promise that resolves to the last used date.
+   *
+   * @note If not overridden, the promise will resolve to the unix epoch.
+   */
+  getLastUsedDate() {
+    return Promise.resolve(new Date(0));
+  },
+
+  /**
    * OVERRIDE IF AND ONLY IF the migrator is a startup-only migrator (For now,
    * that is just the Firefox migrator, see bug 737381).  Default: false.
    *
@@ -253,7 +267,7 @@ this.MigratorPrototype = {
           try {
             resource.migrate(resourceDone);
           }
-          catch(ex) {
+          catch (ex) {
             Cu.reportError(ex);
             resourceDone(false);
           }
@@ -323,7 +337,7 @@ this.MigratorPrototype = {
         exists = profiles.length > 0;
       }
     }
-    catch(ex) {
+    catch (ex) {
       Cu.reportError(ex);
     }
     return exists;
@@ -397,7 +411,7 @@ this.MigrationUtils = Object.freeze({
         aFunction.apply(null, arguments);
         success = true;
       }
-      catch(ex) {
+      catch (ex) {
         Cu.reportError(ex);
       }
       // Do not change this to call aCallback directly in try try & catch
@@ -436,6 +450,36 @@ this.MigrationUtils = Object.freeze({
       return getMigrationBundle().GetStringFromName(aKey);
     return getMigrationBundle().formatStringFromName(
       aKey, aReplacements, aReplacements.length);
+  },
+
+  _getLocalePropertyForBrowser(browserId) {
+    switch (browserId) {
+      case "edge":
+        return "sourceNameEdge";
+      case "ie":
+        return "sourceNameIE";
+      case "safari":
+        return "sourceNameSafari";
+      case "canary":
+        return "sourceNameCanary";
+      case "chrome":
+        return "sourceNameChrome";
+      case "chromium":
+        return "sourceNameChromium";
+      case "firefox":
+        return "sourceNameFirefox";
+      case "360se":
+        return "sourceName360se";
+    }
+    return null;
+  },
+
+  getBrowserName(browserId) {
+    let prop = this._getLocalePropertyForBrowser(browserId);
+    if (prop) {
+      return this.getLocalizedString(prop);
+    }
+    return null;
   },
 
   /**
@@ -495,7 +539,7 @@ this.MigrationUtils = Object.freeze({
         migrator = Cc["@mozilla.org/profile/migrator;1?app=browser&type=" +
                       aKey].createInstance(Ci.nsIBrowserProfileMigrator);
       }
-      catch(ex) { Cu.reportError(ex) }
+      catch (ex) { Cu.reportError(ex) }
       this._migrators.set(aKey, migrator);
     }
 
@@ -515,6 +559,7 @@ this.MigrationUtils = Object.freeze({
     // Canary uses the same description as Chrome so we can't distinguish them.
     const APP_DESC_TO_KEY = {
       "Internet Explorer":                 "ie",
+      "Microsoft Edge":                    "edge",
       "Safari":                            "safari",
       "Firefox":                           "firefox",
       "Google Chrome":                     "chrome",  // Windows, Linux
@@ -532,7 +577,7 @@ this.MigrationUtils = Object.freeze({
         getApplicationDescription("http");
       return APP_DESC_TO_KEY[browserDesc] || "";
     }
-    catch(ex) {
+    catch (ex) {
       Cu.reportError("Could not detect default browser: " + ex);
     }
     return "";
@@ -701,8 +746,7 @@ this.MigrationUtils = Object.freeze({
     let isRefresh = migrator && skipSourcePage &&
                     migratorKey == AppConstants.MOZ_APP_NAME;
 
-    if (!isRefresh &&
-        Services.prefs.getBoolPref("browser.migration.automigrate")) {
+    if (!isRefresh && AutoMigrate.enabled) {
       try {
         AutoMigrate.migrate(aProfileStartup, aMigratorKey, aProfileToMigrate);
         return;

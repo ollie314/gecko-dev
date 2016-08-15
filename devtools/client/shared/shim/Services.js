@@ -6,7 +6,7 @@
 
 "use strict";
 
-/* globals localStorage, window */
+/* globals localStorage, window, document, NodeFilter */
 
 // Some constants from nsIPrefBranch.idl.
 const PREF_INVALID = 0;
@@ -14,6 +14,9 @@ const PREF_STRING = 32;
 const PREF_INT = 64;
 const PREF_BOOL = 128;
 const NS_PREFBRANCH_PREFCHANGE_TOPIC_ID = "nsPref:changed";
+
+// We prefix all our local storage items with this.
+const PREFIX = "Services.prefs:";
 
 /**
  * Create a new preference object.
@@ -101,7 +104,7 @@ Preference.prototype = {
       userValue: this.userValue,
     };
 
-    localStorage.setItem(this.fullName, JSON.stringify(store));
+    localStorage.setItem(PREFIX + this.fullName, JSON.stringify(store));
     this.branch._notify(this.name);
   },
 
@@ -249,9 +252,6 @@ PrefBranch.prototype = {
 
   /** @see nsIPrefBranch.addObserver */
   addObserver: function (domain, observer, holdWeak) {
-    if (domain !== "" && !domain.endsWith(".")) {
-      throw new Error("invalid domain to addObserver: " + domain);
-    }
     if (holdWeak) {
       throw new Error("shim prefs only supports strong observers");
     }
@@ -325,7 +325,8 @@ PrefBranch.prototype = {
    */
   _notify: function (relativeName) {
     for (let domain in this._observers) {
-      if (relativeName.startsWith(domain)) {
+      if (relativeName === domain || domain === "" ||
+          (domain.endsWith(".") && relativeName.startsWith(domain))) {
         // Allow mutation while walking.
         let localList = this._observers[domain].slice();
         for (let observer of localList) {
@@ -448,9 +449,12 @@ PrefBranch.prototype = {
     // representations.
     for (let i = 0; i < localStorage.length; ++i) {
       let keyName = localStorage.key(i);
-      let {userValue, hasUserValue, defaultValue} =
-          JSON.parse(localStorage.getItem(keyName));
-      this._findOrCreatePref(keyName, userValue, hasUserValue, defaultValue);
+      if (keyName.startsWith(PREFIX)) {
+        let {userValue, hasUserValue, defaultValue} =
+            JSON.parse(localStorage.getItem(keyName));
+        this._findOrCreatePref(keyName.slice(PREFIX.length), userValue,
+                               hasUserValue, defaultValue);
+      }
     }
 
     this._onStorageChange = this._onStorageChange.bind(this);
@@ -465,6 +469,117 @@ const Services = {
    * by devtools is implemented here.
    */
   prefs: new PrefBranch(null, "", ""),
+
+  /**
+   * An implementation of Services.appinfo that holds just the
+   * properties needed by devtools.
+   */
+  appinfo: {
+    get OS() {
+      const os = window.navigator.userAgent;
+      if (os) {
+        if (os.includes("Linux")) {
+          return "Linux";
+        } else if (os.includes("Windows")) {
+          return "WINNT";
+        } else if (os.includes("Mac")) {
+          return "Darwin";
+        }
+      }
+      return "Unknown";
+    },
+
+    // It's fine for this to be an approximation.
+    get name() {
+      return window.navigator.userAgent;
+    },
+
+    // It's fine for this to be an approximation.
+    get version() {
+      return window.navigator.appVersion;
+    },
+
+    // This is only used by telemetry, which is disabled for the
+    // content case.  So, being totally wrong is ok.
+    get is64Bit() {
+      return true;
+    },
+  },
+
+  /**
+   * A no-op implementation of Services.telemetry.  This supports just
+   * the subset of Services.telemetry that is used by devtools.
+   */
+  telemetry: {
+    getHistogramById: function (name) {
+      return {
+        add: () => {}
+      };
+    },
+
+    getKeyedHistogramById: function (name) {
+      return {
+        add: () => {}
+      };
+    },
+  },
+
+  /**
+   * An implementation of Services.focus that holds just the
+   * properties and methods needed by devtools.
+   * @see nsIFocusManager.idl for details.
+   */
+  focus: {
+    // These values match nsIFocusManager in order to make testing a
+    // bit simpler.
+    MOVEFOCUS_FORWARD: 1,
+    MOVEFOCUS_BACKWARD: 2,
+
+    get focusedElement() {
+      if (!document.hasFocus()) {
+        return null;
+      }
+      return document.activeElement;
+    },
+
+    moveFocus: function (window, startElement, type, flags) {
+      if (flags !== 0) {
+        throw new Error("shim Services.focus.moveFocus only accepts flags===0");
+      }
+      if (type !== Services.focus.MOVEFOCUS_FORWARD
+          && type !== Services.focus.MOVEFOCUS_BACKWARD) {
+        throw new Error("shim Services.focus.moveFocus only supports " +
+                        " MOVEFOCUS_FORWARD and MOVEFOCUS_BACKWARD");
+      }
+
+      if (!startElement) {
+        startElement = document.activeElement || document;
+      }
+
+      let iter = document.createTreeWalker(document, NodeFilter.SHOW_ELEMENT, {
+        acceptNode: function (node) {
+          let tabIndex = node.getAttribute("tabindex");
+          if (tabIndex === "-1") {
+            return NodeFilter.FILTER_SKIP;
+          }
+          node.focus();
+          if (document.activeElement == node) {
+            return NodeFilter.FILTER_ACCEPT;
+          }
+          return NodeFilter.FILTER_SKIP;
+        }
+      });
+
+      iter.currentNode = startElement;
+
+      // Sets the focus via side effect in the filter.
+      if (type === Services.focus.MOVEFOCUS_FORWARD) {
+        iter.nextNode();
+      } else {
+        iter.previousNode();
+      }
+    },
+  },
 };
 
 /**
@@ -480,7 +595,7 @@ function pref(name, value) {
   thePref.setDefault(value);
 }
 
-exports.Services = Services;
+module.exports = Services;
 // This is exported to silence eslint and, at some point, perhaps to
 // provide it when loading devtools.js in order to install the default
 // preferences.

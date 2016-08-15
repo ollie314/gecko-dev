@@ -11,7 +11,6 @@ define(function (require, exports, module) {
   // Dependencies
   const React = require("devtools/client/shared/vendor/react");
   const { createFactories } = require("./rep-utils");
-  const { ObjectBox } = createFactories(require("./object-box"));
   const { Caption } = createFactories(require("./caption"));
 
   // Shortcuts
@@ -32,7 +31,7 @@ define(function (require, exports, module) {
       let items = [];
       let delim;
 
-      for (let i = 0; i < array.length && i <= max; i++) {
+      for (let i = 0; i < array.length && i < max; i++) {
         try {
           let value = array[i];
 
@@ -60,11 +59,13 @@ define(function (require, exports, module) {
         }
       }
 
-      if (array.length > max + 1) {
-        items.pop();
+      if (array.length > max) {
+        let objectLink = this.props.objectLink || DOM.span;
         items.push(Caption({
           key: "more",
-          object: "more...",
+          object: objectLink({
+            object: this.props.object
+          }, (array.length - max) + " more…")
         }));
       }
 
@@ -121,37 +122,37 @@ define(function (require, exports, module) {
       let mode = this.props.mode || "short";
       let object = this.props.object;
       let items;
+      let brackets;
+      let needSpace = function (space) {
+        return space ? { left: "[ ", right: " ]"} : { left: "[", right: "]"};
+      };
 
       if (mode == "tiny") {
-        items = DOM.span({className: "length"}, object.length);
+        let isEmpty = object.length === 0;
+        items = DOM.span({className: "length"}, isEmpty ? "" : object.length);
+        brackets = needSpace(false);
       } else {
         let max = (mode == "short") ? 3 : 300;
         items = this.arrayIterator(object, max);
+        brackets = needSpace(items.length > 0);
       }
 
+      let objectLink = this.props.objectLink || DOM.span;
+
       return (
-        ObjectBox({
-          className: "array",
-          onClick: this.onToggleProperties},
-          DOM.a({
-            className: "objectLink",
-            onclick: this.onClickBracket},
-            DOM.span({
-              className: "arrayLeftBracket",
-              role: "presentation"},
-              "["
-            )
-          ),
+        DOM.span({
+          className: "objectBox objectBox-array"},
+          objectLink({
+            className: "arrayLeftBracket",
+            role: "presentation",
+            object: object
+          }, brackets.left),
           items,
-          DOM.a({
-            className: "objectLink",
-            onclick: this.onClickBracket},
-            DOM.span({
-              className: "arrayRightBracket",
-              role: "presentation"},
-              "]"
-            )
-          ),
+          objectLink({
+            className: "arrayRightBracket",
+            role: "presentation",
+            object: object
+          }, brackets.right),
           DOM.span({
             className: "arrayProperties",
             role: "group"}
@@ -191,7 +192,7 @@ define(function (require, exports, module) {
       let tooltip = "Circular reference";
       return (
         DOM.span({title: tooltip},
-          "[...]")
+          "[…]")
       );
     }
   }));

@@ -28,9 +28,9 @@ class TestSafeBrowsingInitialDownload(FirefoxTestCase):
                 "goog-unwanted-shavar.sbstore",
 
                 # Tracking Protections
-                "mozstd-track-digest256.cache",
-                "mozstd-track-digest256.pset",
-                "mozstd-track-digest256.sbstore",
+                "base-track-digest256.cache",
+                "base-track-digest256.pset",
+                "base-track-digest256.sbstore",
                 "mozstd-trackwhite-digest256.cache",
                 "mozstd-trackwhite-digest256.pset",
                 "mozstd-trackwhite-digest256.sbstore"
@@ -48,7 +48,7 @@ class TestSafeBrowsingInitialDownload(FirefoxTestCase):
 
     browser_prefs = {
         'browser.safebrowsing.downloads.enabled': 'true',
-        'browser.safebrowsing.enabled': 'true',
+        'browser.safebrowsing.phishing.enabled': 'true',
         'browser.safebrowsing.malware.enabled': 'true',
         'browser.safebrowsing.provider.google.nextupdatetime': 1,
         'browser.safebrowsing.provider.mozilla.nextupdatetime': 1,

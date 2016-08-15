@@ -5,7 +5,6 @@
  * You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "CamerasParent.h"
-#include "CamerasUtils.h"
 #include "MediaEngine.h"
 #include "MediaUtils.h"
 
@@ -47,7 +46,7 @@ public:
     : mParent(aParent), mCapEngine(capEngine), mCapId(cap_id),
       mWidth(aWidth), mHeight(aHeight) {}
 
-  NS_IMETHOD Run() {
+  NS_IMETHOD Run() override {
     if (mParent->IsShuttingDown()) {
       // Communication channel is being torn down
       LOG(("FrameSizeChangeRunnable is active without active Child"));
@@ -115,7 +114,7 @@ public:
     }
   };
 
-  NS_IMETHOD Run() {
+  NS_IMETHOD Run() override {
     if (mParent->IsShuttingDown()) {
       // Communication channel is being torn down
       mResult = 0;

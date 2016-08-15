@@ -30,6 +30,7 @@
 #ifdef MOZ_FMP4
 #include "MP4Decoder.h"
 #endif
+#include "CubebUtils.h"
 
 #include "nsIScrollableFrame.h"
 
@@ -337,6 +338,22 @@ nsDOMWindowUtils::UpdateLayerTree()
 }
 
 NS_IMETHODIMP
+nsDOMWindowUtils::GetContentViewerSize(uint32_t *aDisplayWidth, uint32_t *aDisplayHeight)
+{
+  nsIPresShell* presShell = GetPresShell();
+  LayoutDeviceIntSize displaySize;
+
+  if (!presShell || !nsLayoutUtils::GetContentViewerSize(presShell->GetPresContext(), displaySize)) {
+    return NS_ERROR_FAILURE;
+  }
+
+  *aDisplayWidth = displaySize.width;
+  *aDisplayHeight = displaySize.height;
+
+  return NS_OK;
+}
+
+NS_IMETHODIMP
 nsDOMWindowUtils::GetViewportInfo(uint32_t aDisplayWidth,
                                   uint32_t aDisplayHeight,
                                   double *aDefaultZoom, bool *aAllowZoom,
@@ -422,17 +439,14 @@ nsDOMWindowUtils::SetDisplayPortForElement(float aXPx, float aYPx,
         rootFrame == nsLayoutUtils::GetDisplayRootFrame(rootFrame)) {
       nsCOMPtr<nsIWidget> widget = GetWidget();
       if (widget) {
-        bool isRetainingManager;
-        LayerManager* manager = widget->GetLayerManager(&isRetainingManager);
-        if (isRetainingManager) {
-          manager->BeginTransaction();
-          using PaintFrameFlags = nsLayoutUtils::PaintFrameFlags;
-          nsLayoutUtils::PaintFrame(nullptr, rootFrame, nsRegion(),
-                                    NS_RGB(255, 255, 255),
-                                    nsDisplayListBuilderMode::PAINTING,
-                                    PaintFrameFlags::PAINT_WIDGET_LAYERS |
-                                    PaintFrameFlags::PAINT_EXISTING_TRANSACTION);
-        }
+        LayerManager* manager = widget->GetLayerManager();
+        manager->BeginTransaction();
+        using PaintFrameFlags = nsLayoutUtils::PaintFrameFlags;
+        nsLayoutUtils::PaintFrame(nullptr, rootFrame, nsRegion(),
+                                  NS_RGB(255, 255, 255),
+                                  nsDisplayListBuilderMode::PAINTING,
+                                  PaintFrameFlags::PAINT_WIDGET_LAYERS |
+                                  PaintFrameFlags::PAINT_EXISTING_TRANSACTION);
       }
     }
   }
@@ -543,14 +557,17 @@ nsDOMWindowUtils::SetResolutionAndScaleTo(float aResolution)
 }
 
 NS_IMETHODIMP
-nsDOMWindowUtils::SetRestoreResolution(float aResolution)
+nsDOMWindowUtils::SetRestoreResolution(float aResolution,
+                                       uint32_t aDisplayWidth,
+                                       uint32_t aDisplayHeight)
 {
   nsIPresShell* presShell = GetPresShell();
   if (!presShell) {
     return NS_ERROR_FAILURE;
   }
 
-  presShell->SetRestoreResolution(aResolution);
+  presShell->SetRestoreResolution(aResolution,
+    LayoutDeviceIntSize(aDisplayWidth, aDisplayHeight));
 
   return NS_OK;
 }
@@ -631,14 +648,18 @@ nsDOMWindowUtils::SendMouseEvent(const nsAString& aType,
                                  bool aIgnoreRootScrollFrame,
                                  float aPressure,
                                  unsigned short aInputSourceArg,
-                                 bool aIsSynthesized,
+                                 bool aIsDOMEventSynthesized,
+                                 bool aIsWidgetEventSynthesized,
                                  uint8_t aOptionalArgCount,
                                  bool *aPreventDefault)
 {
   return SendMouseEventCommon(aType, aX, aY, aButton, aClickCount, aModifiers,
                               aIgnoreRootScrollFrame, aPressure,
                               aInputSourceArg, false, aPreventDefault,
-                              aOptionalArgCount >= 4 ? aIsSynthesized : true);
+                              aOptionalArgCount >= 4 ?
+                                aIsDOMEventSynthesized : true,
+                              aOptionalArgCount >= 5 ?
+                                aIsWidgetEventSynthesized : false);
 }
 
 NS_IMETHODIMP
@@ -651,7 +672,8 @@ nsDOMWindowUtils::SendMouseEventToWindow(const nsAString& aType,
                                          bool aIgnoreRootScrollFrame,
                                          float aPressure,
                                          unsigned short aInputSourceArg,
-                                         bool aIsSynthesized,
+                                         bool aIsDOMEventSynthesized,
+                                         bool aIsWidgetEventSynthesized,
                                          uint8_t aOptionalArgCount)
 {
   PROFILER_LABEL("nsDOMWindowUtils", "SendMouseEventToWindow",
@@ -660,7 +682,10 @@ nsDOMWindowUtils::SendMouseEventToWindow(const nsAString& aType,
   return SendMouseEventCommon(aType, aX, aY, aButton, aClickCount, aModifiers,
                               aIgnoreRootScrollFrame, aPressure,
                               aInputSourceArg, true, nullptr,
-                              aOptionalArgCount >= 4 ? aIsSynthesized : true);
+                              aOptionalArgCount >= 4 ?
+                                aIsDOMEventSynthesized : true,
+                              aOptionalArgCount >= 5 ?
+                                aIsWidgetEventSynthesized : false);
 }
 
 NS_IMETHODIMP
@@ -675,12 +700,14 @@ nsDOMWindowUtils::SendMouseEventCommon(const nsAString& aType,
                                        unsigned short aInputSourceArg,
                                        bool aToWindow,
                                        bool *aPreventDefault,
-                                       bool aIsSynthesized)
+                                       bool aIsDOMEventSynthesized,
+                                       bool aIsWidgetEventSynthesized)
 {
   nsCOMPtr<nsIPresShell> presShell = GetPresShell();
   return nsContentUtils::SendMouseEvent(presShell, aType, aX, aY, aButton,
       aClickCount, aModifiers, aIgnoreRootScrollFrame, aPressure,
-      aInputSourceArg, aToWindow, aPreventDefault, aIsSynthesized);
+      aInputSourceArg, aToWindow, aPreventDefault, aIsDOMEventSynthesized,
+      aIsWidgetEventSynthesized);
 }
 
 NS_IMETHODIMP
@@ -737,11 +764,12 @@ nsDOMWindowUtils::SendPointerEventCommon(const nsAString& aType,
   event.pressure = aPressure;
   event.inputSource = aInputSourceArg;
   event.pointerId = aPointerId;
-  event.width = aWidth;
-  event.height = aHeight;
+  event.mWidth = aWidth;
+  event.mHeight = aHeight;
   event.tiltX = aTiltX;
   event.tiltY = aTiltY;
-  event.isPrimary = (nsIDOMMouseEvent::MOZ_SOURCE_MOUSE == aInputSourceArg) ? true : aIsPrimary;
+  event.mIsPrimary =
+    (nsIDOMMouseEvent::MOZ_SOURCE_MOUSE == aInputSourceArg) ? true : aIsPrimary;
   event.mClickCount = aClickCount;
   event.mTime = PR_IntervalNow();
   event.mFlags.mIsSynthesizedForTests = aOptionalArgCount >= 10 ? aIsSynthesized : true;
@@ -1914,6 +1942,9 @@ nsDOMWindowUtils::SendQueryContentEvent(uint32_t aType,
     case QUERY_CHARACTER_AT_POINT:
       message = eQueryCharacterAtPoint;
       break;
+    case QUERY_TEXT_RECT_ARRAY:
+      message = eQueryTextRectArray;
+      break;
     default:
       return NS_ERROR_INVALID_ARG;
   }
@@ -2030,6 +2061,9 @@ nsDOMWindowUtils::SendQueryContentEvent(uint32_t aType,
       break;
     case eQuerySelectedText:
       queryEvent.InitForQuerySelectedText(selectionType, options);
+      break;
+    case eQueryTextRectArray:
+      queryEvent.InitForQueryTextRectArray(aOffset, aLength, options);
       break;
     default:
       queryEvent.Init(options);
@@ -2298,9 +2332,16 @@ nsDOMWindowUtils::GetSupportsHardwareH264Decoding(JS::MutableHandle<JS::Value> a
   if (rv.Failed()) {
     return rv.StealNSResult();
   }
-  promise.MaybeResolve(NS_LITERAL_STRING("No; Compiled without MP4 support."));
+  promise->MaybeResolve(NS_LITERAL_STRING("No; Compiled without MP4 support."));
   aPromise.setObject(*promise->PromiseObj());
 #endif
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsDOMWindowUtils::GetCurrentAudioBackend(nsAString& aBackend)
+{
+  CubebUtils::GetCurrentBackend(aBackend);
   return NS_OK;
 }
 
@@ -2778,7 +2819,7 @@ CheckLeafLayers(Layer* aLayer, const nsIntPoint& aOffset, nsIntRegion* aCoveredR
       transform.HasNonIntegerTranslation())
     return false;
   transform.NudgeToIntegers();
-  nsIntPoint offset = aOffset + nsIntPoint(transform._31, transform._32);
+  IntPoint offset = aOffset + IntPoint::Truncate(transform._31, transform._32);
 
   Layer* child = aLayer->GetFirstChild();
   if (child) {
@@ -3072,7 +3113,7 @@ nsDOMWindowUtils::FlushPendingFileDeletions()
 NS_IMETHODIMP
 nsDOMWindowUtils::IsIncrementalGCEnabled(JSContext* cx, bool* aResult)
 {
-  *aResult = JS::IsIncrementalGCEnabled(JS_GetRuntime(cx));
+  *aResult = JS::IsIncrementalGCEnabled(cx);
   return NS_OK;
 }
 
@@ -3208,6 +3249,10 @@ PrepareForFullscreenChange(nsIPresShell* aPresShell, const nsSize& aSize,
   }
   if (nsRefreshDriver* rd = aPresShell->GetRefreshDriver()) {
     rd->SetIsResizeSuppressed();
+    // Since we are suppressing the resize reflow which would originally
+    // be triggered by view manager, we need to ensure that the refresh
+    // driver actually schedules a flush, otherwise it may get stuck.
+    rd->ScheduleViewManagerFlush();
   }
   if (!aSize.IsEmpty()) {
     if (nsViewManager* viewManager = aPresShell->GetViewManager()) {

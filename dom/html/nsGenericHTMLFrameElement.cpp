@@ -174,7 +174,7 @@ nsGenericHTMLFrameElement::CreateRemoteFrameLoader(nsITabParent* aTabParent)
 }
 
 NS_IMETHODIMP
-nsGenericHTMLFrameElement::GetFrameLoader(nsIFrameLoader **aFrameLoader)
+nsGenericHTMLFrameElement::GetFrameLoaderXPCOM(nsIFrameLoader **aFrameLoader)
 {
   NS_IF_ADDREF(*aFrameLoader = mFrameLoader);
   return NS_OK;
@@ -592,19 +592,6 @@ nsGenericHTMLFrameElement::GetIsolated(bool *aOut)
 
   // Isolation is only disabled if the attribute is present
   *aOut = !HasAttr(kNameSpaceID_None, nsGkAtoms::noisolation);
-  return NS_OK;
-}
-
-/* [infallible] */ NS_IMETHODIMP
-nsGenericHTMLFrameElement::GetIsExpectingSystemMessage(bool *aOut)
-{
-  *aOut = false;
-
-  if (!nsIMozBrowserFrame::GetReallyIsApp()) {
-    return NS_OK;
-  }
-
-  *aOut = HasAttr(kNameSpaceID_None, nsGkAtoms::expectingSystemMessage);
   return NS_OK;
 }
 

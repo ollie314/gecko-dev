@@ -6,12 +6,14 @@
 
 #include "ServiceWorkerRegistration.h"
 
+#include "ipc/ErrorIPCUtils.h"
 #include "mozilla/dom/Notification.h"
 #include "mozilla/dom/Promise.h"
 #include "mozilla/dom/PromiseWorkerProxy.h"
 #include "mozilla/dom/ServiceWorkerRegistrationBinding.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/Services.h"
+#include "mozilla/unused.h"
 #include "nsCycleCollectionParticipant.h"
 #include "nsNetUtil.h"
 #include "nsServiceManagerUtils.h"
@@ -374,7 +376,7 @@ public:
   void
   UpdateSucceeded(ServiceWorkerRegistrationInfo* aRegistration) override
   {
-    mPromise->MaybeResolve(JS::UndefinedHandleValue);
+    mPromise->MaybeResolveWithUndefined();
   }
 
   void
@@ -387,38 +389,40 @@ public:
 class UpdateResultRunnable final : public WorkerRunnable
 {
   RefPtr<PromiseWorkerProxy> mPromiseProxy;
-  ErrorResult mStatus;
+  IPC::Message mSerializedErrorResult;
 
   ~UpdateResultRunnable()
   {}
 
 public:
   UpdateResultRunnable(PromiseWorkerProxy* aPromiseProxy, ErrorResult& aStatus)
-    : WorkerRunnable(aPromiseProxy->GetWorkerPrivate(), WorkerThreadModifyBusyCount)
+    : WorkerRunnable(aPromiseProxy->GetWorkerPrivate())
     , mPromiseProxy(aPromiseProxy)
-    , mStatus(Move(aStatus))
-  { }
+  {
+    // ErrorResult is not thread safe.  Serialize it for transfer across
+    // threads.
+    IPC::WriteParam(&mSerializedErrorResult, aStatus);
+    aStatus.SuppressException();
+  }
 
   bool
   WorkerRun(JSContext* aCx, WorkerPrivate* aWorkerPrivate) override
   {
+    // Deserialize the ErrorResult now that we are back in the worker
+    // thread.
+    ErrorResult status;
+    PickleIterator iter = PickleIterator(mSerializedErrorResult);
+    Unused << IPC::ReadParam(&mSerializedErrorResult, &iter, &status);
+
     Promise* promise = mPromiseProxy->WorkerPromise();
-    if (mStatus.Failed()) {
-      promise->MaybeReject(mStatus);
+    if (status.Failed()) {
+      promise->MaybeReject(status);
     } else {
-      promise->MaybeResolve(JS::UndefinedHandleValue);
+      promise->MaybeResolveWithUndefined();
     }
-    mStatus.SuppressException();
+    status.SuppressException();
     mPromiseProxy->CleanUp();
     return true;
-  }
-
-  void
-  PostDispatch(WorkerPrivate* aWorkerPrivate, bool aSuccess) override
-  {
-    if (!aSuccess) {
-      mStatus.SuppressException();
-    }
   }
 };
 
@@ -525,7 +529,7 @@ public:
     MOZ_ASSERT(mPromise);
   }
 
-  NS_IMETHODIMP
+  NS_IMETHOD
   UnregisterSucceeded(bool aState) override
   {
     AssertIsOnMainThread();
@@ -533,7 +537,7 @@ public:
     return NS_OK;
   }
 
-  NS_IMETHODIMP
+  NS_IMETHOD
   UnregisterFailed() override
   {
     AssertIsOnMainThread();
@@ -556,7 +560,7 @@ class FulfillUnregisterPromiseRunnable final : public WorkerRunnable
 public:
   FulfillUnregisterPromiseRunnable(PromiseWorkerProxy* aProxy,
                                    Maybe<bool> aState)
-    : WorkerRunnable(aProxy->GetWorkerPrivate(), WorkerThreadModifyBusyCount)
+    : WorkerRunnable(aProxy->GetWorkerPrivate())
     , mPromiseWorkerProxy(aProxy)
     , mState(aState)
   {
@@ -591,7 +595,7 @@ public:
     MOZ_ASSERT(aProxy);
   }
 
-  NS_IMETHODIMP
+  NS_IMETHOD
   UnregisterSucceeded(bool aState) override
   {
     AssertIsOnMainThread();
@@ -599,7 +603,7 @@ public:
     return NS_OK;
   }
 
-  NS_IMETHODIMP
+  NS_IMETHOD
   UnregisterFailed() override
   {
     AssertIsOnMainThread();
@@ -1115,7 +1119,7 @@ ServiceWorkerRegistrationWorkerThread::Update(ErrorResult& aRv)
   // level script evaluation.  See:
   // https://github.com/slightlyoff/ServiceWorker/issues/800
   if (worker->LoadScriptAsPartOfLoadingServiceWorkerScript()) {
-    promise->MaybeResolve(JS::UndefinedHandleValue);
+    promise->MaybeResolveWithUndefined();
     return promise.forget();
   }
 
@@ -1285,7 +1289,7 @@ class FireUpdateFoundRunnable final : public WorkerRunnable
 public:
   FireUpdateFoundRunnable(WorkerPrivate* aWorkerPrivate,
                           WorkerListener* aListener)
-    : WorkerRunnable(aWorkerPrivate, WorkerThreadModifyBusyCount)
+    : WorkerRunnable(aWorkerPrivate)
     , mListener(aListener)
   {
     // Need this assertion for now since runnables which modify busy count can

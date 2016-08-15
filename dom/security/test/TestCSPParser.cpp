@@ -28,6 +28,8 @@ template<class T> class nsReadingIterator;
 #include "TestHarness.h"
 #include "nsIScriptSecurityManager.h"
 #include "mozilla/dom/nsCSPContext.h"
+#include "nsIPrefService.h"
+#include "nsIPrefBranch.h"
 
 #ifndef MOZILLA_INTERNAL_API
 #undef nsString_h___
@@ -148,7 +150,7 @@ nsresult runTest(uint32_t aExpectedPolicyCount, // this should be 0 for policies
   // compare the parsed policy against the expected result
   nsString parsedPolicyStr;
   // checking policy at index 0, which is the one what we appended.
-  rv = csp->GetPolicy(0, parsedPolicyStr);
+  rv = csp->GetPolicyString(0, parsedPolicyStr);
   NS_ENSURE_SUCCESS(rv, rv);
 
   if (!NS_ConvertUTF16toUTF8(parsedPolicyStr).EqualsASCII(aExpextedResult)) {
@@ -166,10 +168,23 @@ nsresult runTestSuite(const PolicyTest* aPolicies,
                       uint32_t aPolicyCount,
                       uint32_t aExpectedPolicyCount) {
   nsresult rv;
+  nsCOMPtr<nsIPrefBranch> prefs = do_GetService(NS_PREFSERVICE_CONTRACTID);
+  bool experimentalEnabledCache = false;
+  if (prefs)
+  {
+    prefs->GetBoolPref("security.csp.experimentalEnabled", &experimentalEnabledCache);
+    prefs->SetBoolPref("security.csp.experimentalEnabled", true);
+  }
+
   for (uint32_t i = 0; i < aPolicyCount; i++) {
     rv = runTest(aExpectedPolicyCount, aPolicies[i].policy, aPolicies[i].expectedResult);
     NS_ENSURE_SUCCESS(rv, rv);
   }
+
+  if (prefs) {
+    prefs->SetBoolPref("security.csp.experimentalEnabled", experimentalEnabledCache);
+  }
+
   return NS_OK;
 }
 
@@ -534,6 +549,7 @@ nsresult TestBadPolicies() {
     { "defaut-src asdf", "" },
     { "default-src: aaa", "" },
     { "asdf http://test.com", ""},
+    { "referrer", ""},
   };
 
   uint32_t policyCount = sizeof(policies) / sizeof(PolicyTest);

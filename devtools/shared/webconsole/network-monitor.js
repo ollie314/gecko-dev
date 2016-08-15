@@ -14,6 +14,8 @@ loader.lazyRequireGetter(this, "NetworkHelper",
                          "devtools/shared/webconsole/network-helper");
 loader.lazyRequireGetter(this, "DevToolsUtils",
                          "devtools/shared/DevToolsUtils");
+loader.lazyRequireGetter(this, "flags",
+                         "devtools/shared/flags");
 loader.lazyImporter(this, "NetUtil", "resource://gre/modules/NetUtil.jsm");
 loader.lazyServiceGetter(this, "gActivityDistributor",
                          "@mozilla.org/network/http-activity-distributor;1",
@@ -55,9 +57,9 @@ function matchRequest(channel, filters) {
   // Ignore requests from chrome or add-on code when we are monitoring
   // content.
   // TODO: one particular test (browser_styleeditor_fetch-from-cache.js) needs
-  // the DevToolsUtils.testing check. We will move to a better way to serve
+  // the flags.testing check. We will move to a better way to serve
   // its needs in bug 1167188, where this check should be removed.
-  if (!DevToolsUtils.testing && channel.loadInfo &&
+  if (!flags.testing && channel.loadInfo &&
       channel.loadInfo.loadingDocument === null &&
       channel.loadInfo.loadingPrincipal ===
       Services.scriptSecurityManager.getSystemPrincipal()) {
@@ -81,8 +83,25 @@ function matchRequest(channel, filters) {
 
   if (filters.topFrame) {
     let topFrame = NetworkHelper.getTopFrameForRequest(channel);
-    if (topFrame && topFrame === filters.topFrame) {
-      return true;
+    while (topFrame) {
+      // In the normal case, a topFrame filter should match the request's topFrame if it
+      // will match at all.
+      if (topFrame === filters.topFrame) {
+        return true;
+      }
+      // As a stop gap approach for RDM, where `filters.topFrame` will be the
+      // <xul:browser> frame for an entire tab and the request's `topFrame` is the
+      // <iframe mozbrower> that triggered the request, we try to climb up parent frames
+      // above the request's `topFrame` to see if they might also match the filter.
+      // In bug 1240912, we want to rework this, since we don't really want to be passing
+      // a frame down to the network monitor.
+      if (!topFrame.ownerGlobal) {
+        break;
+      }
+      topFrame = topFrame.ownerGlobal
+                         .QueryInterface(Ci.nsIInterfaceRequestor)
+                         .getInterface(Ci.nsIDOMWindowUtils)
+                         .containerElement;
     }
   }
 
@@ -481,6 +500,14 @@ NetworkResponseListener.prototype = {
    * Parse security state of this request and report it to the client.
    */
   _getSecurityInfo: DevToolsUtils.makeInfallible(function () {
+    // Many properties of the securityInfo (e.g., the server certificate or HPKP
+    // status) are not available in the content process and can't be even touched safely,
+    // because their C++ getters trigger assertions. This function is called in content
+    // process for synthesized responses from service workers, in the parent otherwise.
+    if (Services.appinfo.processType == Ci.nsIXULRuntime.PROCESS_TYPE_CONTENT) {
+      return;
+    }
+
     // Take the security information from the original nsIHTTPChannel instead of
     // the nsIRequest received in onStartRequest. If response to this request
     // was a redirect from http to https, the request object seems to contain
@@ -695,15 +722,14 @@ NetworkResponseListener.prototype = {
  *        logged.
  * @param object owner
  *        The network monitor owner. This object needs to hold:
- *        - onNetworkEvent(requestInfo, channel, networkMonitor).
+ *        - onNetworkEvent(requestInfo)
  *          This method is invoked once for every new network request and it is
- *          given the following arguments: the initial network request
- *          information, and the channel. The third argument is the NetworkMonitor
- *          instance. onNetworkEvent() must return an object which holds several add*()
- *          methods which are used to add further network request/response
- *          information.
- *        - stackTraceCollector If the owner has this optional property, it will
- *          be used as a StackTraceCollector by the NetworkMonitor.
+ *          given the initial network request information as an argument.
+ *          onNetworkEvent() must return an object which holds several add*()
+ *          methods which are used to add further network request/response information.
+ *        - stackTraceCollector
+ *          If the owner has this optional property, it will be used as a
+ *          StackTraceCollector by the NetworkMonitor.
  */
 function NetworkMonitor(filters, owner) {
   this.filters = filters;
@@ -1062,7 +1088,7 @@ NetworkMonitor.prototype = {
       cookies = NetworkHelper.parseCookieHeader(cookieHeader);
     }
 
-    httpActivity.owner = this.owner.onNetworkEvent(event, channel);
+    httpActivity.owner = this.owner.onNetworkEvent(event);
 
     this._setupResponseListener(httpActivity);
 
@@ -1583,8 +1609,9 @@ NetworkEventActorProxy.prototype = {
  */
 function NetworkMonitorManager(frame, id) {
   this.id = id;
-  let mm = frame.QueryInterface(Ci.nsIFrameLoaderOwner).frameLoader
-      .messageManager;
+  // Get messageManager from XUL browser (which might be a specialized tunnel for RDM)
+  // or else fallback to asking the frameLoader itself.
+  let mm = frame.messageManager || frame.frameLoader.messageManager;
   this.messageManager = mm;
   this.frame = frame;
   this.onNetMonitorMessage = this.onNetMonitorMessage.bind(this);

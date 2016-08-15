@@ -51,10 +51,9 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INTERNAL(XPCWrappedNative)
         char name[72];
         XPCNativeScriptableInfo* si = tmp->GetScriptableInfo();
         if (si)
-            JS_snprintf(name, sizeof(name), "XPCWrappedNative (%s)",
-                        si->GetJSClass()->name);
+            snprintf(name, sizeof(name), "XPCWrappedNative (%s)", si->GetJSClass()->name);
         else
-            JS_snprintf(name, sizeof(name), "XPCWrappedNative");
+            snprintf(name, sizeof(name), "XPCWrappedNative");
 
         cb.DescribeRefCountedNode(tmp->mRefCnt.get(), name);
     } else {
@@ -625,8 +624,8 @@ XPCWrappedNative::UpdateScriptableInfo(XPCNativeScriptableInfo* si)
     MOZ_ASSERT(mScriptableInfo, "UpdateScriptableInfo expects an existing scriptable info");
 
     // Write barrier for incremental GC.
-    JSRuntime* rt = GetRuntime()->Runtime();
-    if (IsIncrementalBarrierNeeded(rt))
+    JSContext* cx = GetRuntime()->Context();
+    if (IsIncrementalBarrierNeeded(cx))
         mScriptableInfo->Mark();
 
     mScriptableInfo = si;
@@ -640,8 +639,8 @@ XPCWrappedNative::SetProto(XPCWrappedNativeProto* p)
     MOZ_ASSERT(HasProto());
 
     // Write barrier for incremental GC.
-    JSRuntime* rt = GetRuntime()->Runtime();
-    GetProto()->WriteBarrierPre(rt);
+    JSContext* cx = GetRuntime()->Context();
+    GetProto()->WriteBarrierPre(cx);
 
     mMaybeProto = p;
 }

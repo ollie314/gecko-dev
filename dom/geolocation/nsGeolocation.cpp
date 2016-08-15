@@ -37,16 +37,16 @@
 
 class nsIPrincipal;
 
-#ifdef MOZ_ENABLE_QT5GEOPOSITION
-#include "QTMLocationProvider.h"
-#endif
-
 #ifdef MOZ_WIDGET_ANDROID
 #include "AndroidLocationProvider.h"
 #endif
 
 #ifdef MOZ_WIDGET_GONK
 #include "GonkGPSGeolocationProvider.h"
+#endif
+
+#ifdef MOZ_GPSD
+#include "GpsdLocationProvider.h"
 #endif
 
 #ifdef MOZ_WIDGET_COCOA
@@ -83,8 +83,8 @@ class nsGeolocationRequest final
   NS_DECL_CYCLE_COLLECTION_CLASS_AMBIGUOUS(nsGeolocationRequest, nsIContentPermissionRequest)
 
   nsGeolocationRequest(Geolocation* aLocator,
-                       const GeoPositionCallback& aCallback,
-                       const GeoPositionErrorCallback& aErrorCallback,
+                       GeoPositionCallback aCallback,
+                       GeoPositionErrorCallback aErrorCallback,
                        PositionOptions* aOptions,
                        uint8_t aProtocolType,
                        bool aWatchPositionRequest = false,
@@ -206,7 +206,7 @@ public:
   {
   }
 
-  NS_IMETHOD Run()
+  NS_IMETHOD Run() override
   {
     nsCOMPtr<nsPIDOMWindowInner> window = do_QueryReferent(mWindow);
     nsContentPermissionUtils::AskPermission(mRequest, window);
@@ -227,7 +227,7 @@ public:
   {
   }
 
-  NS_IMETHOD Run() {
+  NS_IMETHOD Run() override {
     if (mAllow) {
       mRequest->Allow(JS::UndefinedHandleValue);
     } else {
@@ -251,7 +251,7 @@ public:
   {
   }
 
-  NS_IMETHOD Run() {
+  NS_IMETHOD Run() override {
     mRequest->SendLocation(mPosition);
     return NS_OK;
   }
@@ -347,15 +347,15 @@ PositionError::NotifyCallback(const GeoPositionErrorCallback& aCallback)
 ////////////////////////////////////////////////////
 
 nsGeolocationRequest::nsGeolocationRequest(Geolocation* aLocator,
-                                           const GeoPositionCallback& aCallback,
-                                           const GeoPositionErrorCallback& aErrorCallback,
+                                           GeoPositionCallback aCallback,
+                                           GeoPositionErrorCallback aErrorCallback,
                                            PositionOptions* aOptions,
                                            uint8_t aProtocolType,
                                            bool aWatchPositionRequest,
                                            int32_t aWatchId)
   : mIsWatchPositionRequest(aWatchPositionRequest),
-    mCallback(aCallback),
-    mErrorCallback(aErrorCallback),
+    mCallback(Move(aCallback)),
+    mErrorCallback(Move(aErrorCallback)),
     mOptions(aOptions),
     mLocator(aLocator),
     mWatchId(aWatchId),
@@ -567,18 +567,10 @@ nsGeolocationRequest::SetTimeoutTimer()
 {
   StopTimeoutTimer();
 
-  int32_t timeout;
-  if (mOptions && (timeout = mOptions->mTimeout) != 0) {
-
-    if (timeout < 0) {
-      timeout = 0;
-    } else if (timeout < 10) {
-      timeout = 10;
-    }
-
+  if (mOptions && mOptions->mTimeout != 0 && mOptions->mTimeout != 0x7fffffff) {
     mTimeoutTimer = do_CreateInstance("@mozilla.org/timer;1");
     RefPtr<TimerCallbackHolder> holder = new TimerCallbackHolder(this);
-    mTimeoutTimer->InitWithCallback(holder, timeout, nsITimer::TYPE_ONE_SHOT);
+    mTimeoutTimer->InitWithCallback(holder, mOptions->mTimeout, nsITimer::TYPE_ONE_SHOT);
   }
 }
 
@@ -765,10 +757,6 @@ nsresult nsGeolocationService::Init()
   obs->AddObserver(this, "xpcom-shutdown", false);
   obs->AddObserver(this, "mozsettings-changed", false);
 
-#ifdef MOZ_ENABLE_QT5GEOPOSITION
-  mProvider = new QTMLocationProvider();
-#endif
-
 #ifdef MOZ_WIDGET_ANDROID
   mProvider = new AndroidLocationProvider();
 #endif
@@ -780,6 +768,14 @@ nsresult nsGeolocationService::Init()
   // do_Createinstance will create multiple instances of the provider which is not right.
   // bug 993041
   mProvider = do_GetService(GONK_GPS_GEOLOCATION_PROVIDER_CONTRACTID);
+#endif
+
+#ifdef MOZ_WIDGET_GTK
+#ifdef MOZ_GPSD
+  if (Preferences::GetBool("geo.provider.use_gpsd", false)) {
+    mProvider = new GpsdLocationProvider();
+  }
+#endif
 #endif
 
 #ifdef MOZ_WIDGET_COCOA
@@ -826,7 +822,7 @@ nsGeolocationService::HandleMozsettingChanged(nsISupports* aSubject)
     // The string that we're interested in will be a JSON string that looks like:
     //  {"key":"gelocation.enabled","value":true}
 
-    RootedDictionary<SettingChangeNotification> setting(nsContentUtils::RootingCxForThread());
+    RootedDictionary<SettingChangeNotification> setting(RootingCx());
     if (!WrappedJSToDictionary(aSubject, setting)) {
       return;
     }
@@ -976,7 +972,7 @@ nsGeolocationService::StartDevice(nsIPrincipal *aPrincipal)
 
   obs->NotifyObservers(mProvider,
                        "geolocation-device-events",
-                       MOZ_UTF16("starting"));
+                       u"starting");
 
   return NS_OK;
 }
@@ -1065,7 +1061,7 @@ nsGeolocationService::StopDevice()
   mProvider->Shutdown();
   obs->NotifyObservers(mProvider,
                        "geolocation-device-events",
-                       MOZ_UTF16("shutdown"));
+                       u"shutdown");
 }
 
 StaticRefPtr<nsGeolocationService> nsGeolocationService::sService;
@@ -1394,10 +1390,8 @@ Geolocation::GetCurrentPosition(PositionCallback& aCallback,
                                 const PositionOptions& aOptions,
                                 ErrorResult& aRv)
 {
-  GeoPositionCallback successCallback(&aCallback);
-  GeoPositionErrorCallback errorCallback(aErrorCallback);
-
-  nsresult rv = GetCurrentPosition(successCallback, errorCallback,
+  nsresult rv = GetCurrentPosition(GeoPositionCallback(&aCallback),
+                                   GeoPositionErrorCallback(aErrorCallback),
                                    CreatePositionOptionsCopy(aOptions));
 
   if (NS_FAILED(rv)) {
@@ -1414,15 +1408,13 @@ Geolocation::GetCurrentPosition(nsIDOMGeoPositionCallback* aCallback,
 {
   NS_ENSURE_ARG_POINTER(aCallback);
 
-  GeoPositionCallback successCallback(aCallback);
-  GeoPositionErrorCallback errorCallback(aErrorCallback);
-
-  return GetCurrentPosition(successCallback, errorCallback, aOptions);
+  return GetCurrentPosition(GeoPositionCallback(aCallback),
+                            GeoPositionErrorCallback(aErrorCallback), aOptions);
 }
 
 nsresult
-Geolocation::GetCurrentPosition(GeoPositionCallback& callback,
-                                GeoPositionErrorCallback& errorCallback,
+Geolocation::GetCurrentPosition(GeoPositionCallback callback,
+                                GeoPositionErrorCallback errorCallback,
                                 PositionOptions *options)
 {
   if (mPendingCallbacks.Length() > MAX_GEO_REQUESTS_PER_WINDOW) {
@@ -1434,7 +1426,7 @@ Geolocation::GetCurrentPosition(GeoPositionCallback& callback,
                         static_cast<uint8_t>(mProtocolType));
 
   RefPtr<nsGeolocationRequest> request =
-    new nsGeolocationRequest(this, callback, errorCallback, options,
+    new nsGeolocationRequest(this, Move(callback), Move(errorCallback), options,
                              static_cast<uint8_t>(mProtocolType), false);
 
   if (!sGeoEnabled) {
@@ -1483,10 +1475,8 @@ Geolocation::WatchPosition(PositionCallback& aCallback,
                            ErrorResult& aRv)
 {
   int32_t ret = 0;
-  GeoPositionCallback successCallback(&aCallback);
-  GeoPositionErrorCallback errorCallback(aErrorCallback);
-
-  nsresult rv = WatchPosition(successCallback, errorCallback,
+  nsresult rv = WatchPosition(GeoPositionCallback(&aCallback),
+                              GeoPositionErrorCallback(aErrorCallback),
                               CreatePositionOptionsCopy(aOptions), &ret);
 
   if (NS_FAILED(rv)) {
@@ -1504,15 +1494,14 @@ Geolocation::WatchPosition(nsIDOMGeoPositionCallback *aCallback,
 {
   NS_ENSURE_ARG_POINTER(aCallback);
 
-  GeoPositionCallback successCallback(aCallback);
-  GeoPositionErrorCallback errorCallback(aErrorCallback);
-
-  return WatchPosition(successCallback, errorCallback, aOptions, aRv);
+  return WatchPosition(GeoPositionCallback(aCallback),
+                       GeoPositionErrorCallback(aErrorCallback),
+                       aOptions, aRv);
 }
 
 nsresult
-Geolocation::WatchPosition(GeoPositionCallback& aCallback,
-                           GeoPositionErrorCallback& aErrorCallback,
+Geolocation::WatchPosition(GeoPositionCallback aCallback,
+                           GeoPositionErrorCallback aErrorCallback,
                            PositionOptions* aOptions,
                            int32_t* aRv)
 {
@@ -1528,8 +1517,9 @@ Geolocation::WatchPosition(GeoPositionCallback& aCallback,
   *aRv = mLastWatchId++;
 
   RefPtr<nsGeolocationRequest> request =
-    new nsGeolocationRequest(this, aCallback, aErrorCallback, aOptions,
-                             static_cast<uint8_t>(mProtocolType), true, *aRv);
+    new nsGeolocationRequest(this, Move(aCallback), Move(aErrorCallback),
+                             aOptions, static_cast<uint8_t>(mProtocolType),
+                             true, *aRv);
 
   if (!sGeoEnabled) {
     nsCOMPtr<nsIRunnable> ev = new RequestAllowEvent(false, request);

@@ -27,6 +27,7 @@
 #include "nsSVGEffects.h" // for nsSVGRenderingObserver
 #include "nsWindowMemoryReporter.h"
 #include "ImageRegion.h"
+#include "ISurfaceProvider.h"
 #include "LookupResult.h"
 #include "Orientation.h"
 #include "SVGDocumentWrapper.h"
@@ -858,34 +859,55 @@ VectorImage::Draw(gfxContext* aContext,
   SVGDrawingParameters params(aContext, aSize, aRegion, aSamplingFilter,
                               svgContext, animTime, aFlags);
 
-  if (aFlags & FLAG_BYPASS_SURFACE_CACHE) {
-    CreateSurfaceAndShow(params);
+  // If we have an prerasterized version of this image that matches the
+  // drawing parameters, use that.
+  RefPtr<gfxDrawable> svgDrawable = LookupCachedSurface(params);
+  if (svgDrawable) {
+    Show(svgDrawable, params);
     return DrawResult::SUCCESS;
+  }
+
+  // We didn't get a hit in the surface cache, so we'll need to rerasterize.
+  CreateSurfaceAndShow(params);
+  return DrawResult::SUCCESS;
+}
+
+already_AddRefed<gfxDrawable>
+VectorImage::LookupCachedSurface(const SVGDrawingParameters& aParams)
+{
+  // If we're not allowed to use a cached surface, don't attempt a lookup.
+  if (aParams.flags & FLAG_BYPASS_SURFACE_CACHE) {
+    return nullptr;
   }
 
   LookupResult result =
     SurfaceCache::Lookup(ImageKey(this),
-                         VectorSurfaceKey(params.size,
-                                          params.svgContext,
-                                          params.animationTime));
-
-  // Draw.
-  if (result) {
-    RefPtr<SourceSurface> surface = result.DrawableRef()->GetSurface();
-    if (surface) {
-      RefPtr<gfxDrawable> svgDrawable =
-        new gfxSurfaceDrawable(surface, result.DrawableRef()->GetSize());
-      Show(svgDrawable, params);
-      return DrawResult::SUCCESS;
-    }
-
-    // We lost our surface due to some catastrophic event.
-    RecoverFromLossOfSurfaces();
+                         VectorSurfaceKey(aParams.size,
+                                          aParams.svgContext,
+                                          aParams.animationTime));
+  if (!result) {
+    return nullptr;  // No matching surface.
   }
 
-  CreateSurfaceAndShow(params);
+  DrawableFrameRef drawableRef = result.Provider()->DrawableRef();
+  if (!drawableRef) {
+    // Something went wrong. (Probably the OS freeing our volatile buffer due to
+    // low memory.) Attempt to recover.
+    RecoverFromLossOfSurfaces();
+    return nullptr;
+  }
 
-  return DrawResult::SUCCESS;
+  RefPtr<SourceSurface> surface = drawableRef->GetSurface();
+  if (!surface) {
+    // Something went wrong. (Probably a GPU driver crash or device reset.)
+    // Attempt to recover.
+    RecoverFromLossOfSurfaces();
+    return nullptr;
+  }
+
+  RefPtr<gfxDrawable> svgDrawable =
+    new gfxSurfaceDrawable(surface, drawableRef->GetSize());
+  return svgDrawable.forget();
 }
 
 void
@@ -919,11 +941,11 @@ VectorImage::CreateSurfaceAndShow(const SVGDrawingParameters& aParams)
   // invalidation. If this image is locked, any surfaces that are still useful
   // will become locked again when Draw touches them, and the remainder will
   // eventually expire.
-  SurfaceCache::UnlockSurfaces(ImageKey(this));
+  SurfaceCache::UnlockEntries(ImageKey(this));
 
   // Try to create an imgFrame, initializing the surface it contains by drawing
   // our gfxDrawable into it. (We use FILTER_NEAREST since we never scale here.)
-  RefPtr<imgFrame> frame = new imgFrame;
+  NotNull<RefPtr<imgFrame>> frame = WrapNotNull(new imgFrame);
   nsresult rv =
     frame->InitWithDrawable(svgDrawable, aParams.size,
                             SurfaceFormat::B8G8R8A8,
@@ -944,7 +966,9 @@ VectorImage::CreateSurfaceAndShow(const SVGDrawingParameters& aParams)
   }
 
   // Attempt to cache the frame.
-  SurfaceCache::Insert(frame, ImageKey(this),
+  NotNull<RefPtr<ISurfaceProvider>> provider =
+    WrapNotNull(new SimpleSurfaceProvider(frame));
+  SurfaceCache::Insert(provider, ImageKey(this),
                        VectorSurfaceKey(aParams.size,
                                         aParams.svgContext,
                                         aParams.animationTime));
@@ -1203,6 +1227,10 @@ VectorImage::OnSVGDocumentLoaded()
                         FLAG_DECODE_COMPLETE |
                         FLAG_ONLOAD_UNBLOCKED;
 
+    if (mHaveAnimations) {
+      progress |= FLAG_IS_ANIMATED;
+    }
+
     // Merge in any saved progress from OnImageDataComplete.
     if (mLoadProgress) {
       progress |= *mLoadProgress;
@@ -1295,7 +1323,7 @@ VectorImage::OptimalImageSizeForDest(const gfxSize& aDest,
              "Unexpected destination size");
 
   // We can rescale SVGs freely, so just return the provided destination size.
-  return nsIntSize(ceil(aDest.width), ceil(aDest.height));
+  return nsIntSize::Ceil(aDest.width, aDest.height);
 }
 
 already_AddRefed<imgIContainer>

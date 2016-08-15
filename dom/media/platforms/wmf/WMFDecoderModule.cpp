@@ -25,6 +25,8 @@
 #include "prsystem.h"
 #include "mozilla/Maybe.h"
 #include "mozilla/StaticMutex.h"
+#include "MP4Decoder.h"
+#include "VPXDecoder.h"
 
 namespace mozilla {
 
@@ -76,17 +78,12 @@ WMFDecoderModule::Startup()
 }
 
 already_AddRefed<MediaDataDecoder>
-WMFDecoderModule::CreateVideoDecoder(const VideoInfo& aConfig,
-                                     layers::LayersBackend aLayersBackend,
-                                     layers::ImageContainer* aImageContainer,
-                                     TaskQueue* aTaskQueue,
-                                     MediaDataDecoderCallback* aCallback,
-                                     DecoderDoctorDiagnostics* aDiagnostics)
+WMFDecoderModule::CreateVideoDecoder(const CreateDecoderParams& aParams)
 {
   nsAutoPtr<WMFVideoMFTManager> manager(
-    new WMFVideoMFTManager(aConfig,
-                           aLayersBackend,
-                           aImageContainer,
+    new WMFVideoMFTManager(aParams.VideoConfig(),
+                           aParams.mLayersBackend,
+                           aParams.mImageContainer,
                            sDXVAEnabled));
 
   if (!manager->Init()) {
@@ -94,25 +91,22 @@ WMFDecoderModule::CreateVideoDecoder(const VideoInfo& aConfig,
   }
 
   RefPtr<MediaDataDecoder> decoder =
-    new WMFMediaDataDecoder(manager.forget(), aTaskQueue, aCallback);
+    new WMFMediaDataDecoder(manager.forget(), aParams.mTaskQueue, aParams.mCallback);
 
   return decoder.forget();
 }
 
 already_AddRefed<MediaDataDecoder>
-WMFDecoderModule::CreateAudioDecoder(const AudioInfo& aConfig,
-                                     TaskQueue* aTaskQueue,
-                                     MediaDataDecoderCallback* aCallback,
-                                     DecoderDoctorDiagnostics* aDiagnostics)
+WMFDecoderModule::CreateAudioDecoder(const CreateDecoderParams& aParams)
 {
-  nsAutoPtr<WMFAudioMFTManager> manager(new WMFAudioMFTManager(aConfig));
+  nsAutoPtr<WMFAudioMFTManager> manager(new WMFAudioMFTManager(aParams.AudioConfig()));
 
   if (!manager->Init()) {
     return nullptr;
   }
 
   RefPtr<MediaDataDecoder> decoder =
-    new WMFMediaDataDecoder(manager.forget(), aTaskQueue, aCallback);
+    new WMFMediaDataDecoder(manager.forget(), aParams.mTaskQueue, aParams.mCallback);
   return decoder.forget();
 }
 
@@ -201,9 +195,7 @@ WMFDecoderModule::SupportsMimeType(const nsACString& aMimeType,
        WMFDecoderModule::HasAAC()) {
     return true;
   }
-  if ((aMimeType.EqualsLiteral("video/avc") ||
-       aMimeType.EqualsLiteral("video/mp4")) &&
-       WMFDecoderModule::HasH264()) {
+  if (MP4Decoder::IsH264(aMimeType) && WMFDecoderModule::HasH264()) {
     return true;
   }
   if (aMimeType.EqualsLiteral("audio/mpeg") &&
@@ -211,11 +203,11 @@ WMFDecoderModule::SupportsMimeType(const nsACString& aMimeType,
     return true;
   }
   if (MediaPrefs::PDMWMFIntelDecoderEnabled() && sDXVAEnabled) {
-    if (aMimeType.EqualsLiteral("video/webm; codecs=vp8") &&
+    if (VPXDecoder::IsVP8(aMimeType) &&
         CanCreateWMFDecoder<CLSID_WebmMfVp8Dec>()) {
       return true;
     }
-    if (aMimeType.EqualsLiteral("video/webm; codecs=vp9") &&
+    if (VPXDecoder::IsVP9(aMimeType) &&
         CanCreateWMFDecoder<CLSID_WebmMfVp9Dec>()) {
       return true;
     }
@@ -228,9 +220,7 @@ WMFDecoderModule::SupportsMimeType(const nsACString& aMimeType,
 PlatformDecoderModule::ConversionRequired
 WMFDecoderModule::DecoderNeedsConversion(const TrackInfo& aConfig) const
 {
-  if (aConfig.IsVideo() &&
-      (aConfig.mMimeType.EqualsLiteral("video/avc") ||
-       aConfig.mMimeType.EqualsLiteral("video/mp4"))) {
+  if (aConfig.IsVideo() && MP4Decoder::IsH264(aConfig.mMimeType)) {
     return kNeedAnnexB;
   } else {
     return kNeedNone;

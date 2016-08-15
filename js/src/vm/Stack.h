@@ -966,6 +966,8 @@ class GenericArgsBase
 
         *static_cast<JS::CallArgs*>(this) = CallArgsFromVp(argc, v_.begin());
         this->constructing_ = Construct;
+        if (Construct)
+            this->CallArgs::setThis(MagicValue(JS_IS_CONSTRUCTING));
         return true;
     }
 };
@@ -981,6 +983,8 @@ class FixedArgsBase
     explicit FixedArgsBase(JSContext* cx) : v_(cx) {
         *static_cast<JS::CallArgs*>(this) = CallArgsFromVp(N, v_.begin());
         this->constructing_ = Construct;
+        if (Construct)
+            this->CallArgs::setThis(MagicValue(JS_IS_CONSTRUCTING));
     }
 };
 
@@ -1427,7 +1431,6 @@ class JitActivation : public Activation
 {
     uint8_t* prevJitTop_;
     JitActivation* prevJitActivation_;
-    JSContext* prevJitJSContext_;
     bool active_;
 
     // Rematerialized Ion frames which has info copied out of snapshots. Maps
@@ -1493,9 +1496,6 @@ class JitActivation : public Activation
     }
     static size_t offsetOfPrevJitTop() {
         return offsetof(JitActivation, prevJitTop_);
-    }
-    static size_t offsetOfPrevJitJSContext() {
-        return offsetof(JitActivation, prevJitJSContext_);
     }
     static size_t offsetOfPrevJitActivation() {
         return offsetof(JitActivation, prevJitActivation_);
@@ -1663,19 +1663,16 @@ class InterpreterFrameIterator
 // all kinds of jit code.
 class WasmActivation : public Activation
 {
-    wasm::Instance& instance_;
     WasmActivation* prevWasm_;
-    WasmActivation* prevWasmForInstance_;
     void* entrySP_;
     void* resumePC_;
     uint8_t* fp_;
     wasm::ExitReason exitReason_;
 
   public:
-    WasmActivation(JSContext* cx, wasm::Instance& instance);
+    explicit WasmActivation(JSContext* cx);
     ~WasmActivation();
 
-    wasm::Instance& instance() const { return instance_; }
     WasmActivation* prevWasm() const { return prevWasm_; }
 
     bool isProfiling() const {

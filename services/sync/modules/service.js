@@ -32,6 +32,7 @@ Cu.import("resource://services-sync/rest.js");
 Cu.import("resource://services-sync/stages/enginesync.js");
 Cu.import("resource://services-sync/stages/declined.js");
 Cu.import("resource://services-sync/status.js");
+Cu.import("resource://services-sync/telemetry.js");
 Cu.import("resource://services-sync/userapi.js");
 Cu.import("resource://services-sync/util.js");
 
@@ -548,7 +549,8 @@ Sync11Service.prototype = {
     // Always check for errors; this is also where we look for X-Weave-Alert.
     this.errorHandler.checkServerError(info);
     if (!info.success) {
-      throw "Aborting sync: failed to get collections.";
+      this._log.error("Aborting sync: failed to get collections.")
+      throw info;
     }
     return info;
   },
@@ -1085,7 +1087,7 @@ Sync11Service.prototype = {
         return false;
       }
 
-      if (!this.recordManager.response.success || !newMeta) {
+      if (this.recordManager.response.status == 404) {
         this._log.debug("No meta/global record on the server. Creating one.");
         newMeta = new WBORecord("meta", "global");
         newMeta.payload.syncID = this.syncID;
@@ -1101,6 +1103,10 @@ Sync11Service.prototype = {
           this.errorHandler.checkServerError(uploadRes);
           return false;
         }
+      } else if (!newMeta) {
+        this._log.warn("Unable to get meta/global. Failing remote setup.");
+        this.errorHandler.checkServerError(this.recordManager.response);
+        return false;
       } else {
         // If newMeta, then it stands to reason that meta != null.
         newMeta.isNew   = meta.isNew;
@@ -1502,6 +1508,7 @@ Sync11Service.prototype = {
    */
   wipeServer: function wipeServer(collections) {
     let response;
+    let histogram = Services.telemetry.getHistogramById("WEAVE_WIPE_SERVER_SUCCEEDED");
     if (!collections) {
       // Strip the trailing slash.
       let res = this.resource(this.storageURL.slice(0, -1));
@@ -1510,13 +1517,16 @@ Sync11Service.prototype = {
         response = res.delete();
       } catch (ex) {
         this._log.debug("Failed to wipe server", ex);
+        histogram.add(false);
         throw ex;
       }
       if (response.status != 200 && response.status != 404) {
         this._log.debug("Aborting wipeServer. Server responded with " +
                         response.status + " response for " + this.storageURL);
+        histogram.add(false);
         throw response;
       }
+      histogram.add(true);
       return response.headers["x-weave-timestamp"];
     }
 
@@ -1527,12 +1537,14 @@ Sync11Service.prototype = {
         response = this.resource(url).delete();
       } catch (ex) {
         this._log.debug("Failed to wipe '" + name + "' collection", ex);
+        histogram.add(false);
         throw ex;
       }
 
       if (response.status != 200 && response.status != 404) {
         this._log.debug("Aborting wipeServer. Server responded with " +
                         response.status + " response for " + url);
+        histogram.add(false);
         throw response;
       }
 
@@ -1540,7 +1552,7 @@ Sync11Service.prototype = {
         timestamp = response.headers["x-weave-timestamp"];
       }
     }
-
+    histogram.add(true);
     return timestamp;
   },
 

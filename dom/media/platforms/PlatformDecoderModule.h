@@ -12,6 +12,7 @@
 #include "mozilla/layers/LayersTypes.h"
 #include "nsTArray.h"
 #include "mozilla/RefPtr.h"
+#include "GMPService.h"
 #include <queue>
 
 namespace mozilla {
@@ -31,6 +32,55 @@ class TaskQueue;
 class CDMProxy;
 
 static LazyLogModule sPDMLog("PlatformDecoderModule");
+
+struct CreateDecoderParams {
+  explicit CreateDecoderParams(const TrackInfo& aConfig)
+    : mConfig(aConfig)
+  {}
+
+  template <typename T1, typename... Ts>
+  CreateDecoderParams(const TrackInfo& aConfig, T1&& a1, Ts&&... args)
+    : mConfig(aConfig)
+  {
+    Set(mozilla::Forward<T1>(a1), mozilla::Forward<Ts>(args)...);
+  }
+
+  const VideoInfo& VideoConfig() const
+  {
+    MOZ_ASSERT(mConfig.IsVideo());
+    return *mConfig.GetAsVideoInfo();
+  }
+
+  const AudioInfo& AudioConfig() const
+  {
+    MOZ_ASSERT(mConfig.IsAudio());
+    return *mConfig.GetAsAudioInfo();
+  }
+
+  const TrackInfo& mConfig;
+  TaskQueue* mTaskQueue = nullptr;
+  MediaDataDecoderCallback* mCallback = nullptr;
+  DecoderDoctorDiagnostics* mDiagnostics = nullptr;
+  layers::ImageContainer* mImageContainer = nullptr;
+  layers::LayersBackend mLayersBackend = layers::LayersBackend::LAYERS_NONE;
+  RefPtr<GMPCrashHelper> mCrashHelper;
+  bool mUseBlankDecoder = false;
+
+private:
+  void Set(TaskQueue* aTaskQueue) { mTaskQueue = aTaskQueue; }
+  void Set(MediaDataDecoderCallback* aCallback) { mCallback = aCallback; }
+  void Set(DecoderDoctorDiagnostics* aDiagnostics) { mDiagnostics = aDiagnostics; }
+  void Set(layers::ImageContainer* aImageContainer) { mImageContainer = aImageContainer; }
+  void Set(layers::LayersBackend aLayersBackend) { mLayersBackend = aLayersBackend; }
+  void Set(GMPCrashHelper* aCrashHelper) { mCrashHelper = aCrashHelper; }
+  void Set(bool aUseBlankDecoder) { mUseBlankDecoder = aUseBlankDecoder; }
+  template <typename T1, typename T2, typename... Ts>
+  void Set(T1&& a1, T2&& a2, Ts&&... args)
+  {
+    Set(mozilla::Forward<T1>(a1));
+    Set(mozilla::Forward<T2>(a2), mozilla::Forward<Ts>(args)...);
+  }
+};
 
 // The PlatformDecoderModule interface is used by the MediaFormatReader to
 // abstract access to decoders provided by various
@@ -88,12 +138,7 @@ protected:
   // It is safe to store a reference to aConfig.
   // This is called on the decode task queue.
   virtual already_AddRefed<MediaDataDecoder>
-  CreateVideoDecoder(const VideoInfo& aConfig,
-                     layers::LayersBackend aLayersBackend,
-                     layers::ImageContainer* aImageContainer,
-                     TaskQueue* aTaskQueue,
-                     MediaDataDecoderCallback* aCallback,
-                     DecoderDoctorDiagnostics* aDiagnostics) = 0;
+  CreateVideoDecoder(const CreateDecoderParams& aParams) = 0;
 
   // Creates an Audio decoder with the specified properties.
   // Asynchronous decoding of audio should be done in runnables dispatched to
@@ -106,10 +151,7 @@ protected:
   // It is safe to store a reference to aConfig.
   // This is called on the decode task queue.
   virtual already_AddRefed<MediaDataDecoder>
-  CreateAudioDecoder(const AudioInfo& aConfig,
-                     TaskQueue* aTaskQueue,
-                     MediaDataDecoderCallback* aCallback,
-                     DecoderDoctorDiagnostics* aDiagnostics) = 0;
+  CreateAudioDecoder(const CreateDecoderParams& aParams) = 0;
 };
 
 enum MediaDataDecoderError {

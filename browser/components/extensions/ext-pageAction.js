@@ -6,6 +6,7 @@ Cu.import("resource://gre/modules/Task.jsm");
 Cu.import("resource://gre/modules/ExtensionUtils.jsm");
 var {
   EventManager,
+  IconDetails,
 } = ExtensionUtils;
 
 // WeakMap[Extension -> PageAction]
@@ -63,7 +64,7 @@ PageAction.prototype = {
     }
 
     if (tab.selected) {
-      this.updateButton(tab.ownerDocument.defaultView);
+      this.updateButton(tab.ownerGlobal);
     }
   },
 
@@ -91,8 +92,19 @@ PageAction.prototype = {
       button.setAttribute("tooltiptext", title);
       button.setAttribute("aria-label", title);
 
-      let {icon} = IconDetails.getURL(tabData.icon, window, this.extension);
-      button.setAttribute("src", icon);
+      // These URLs should already be properly escaped, but make doubly sure CSS
+      // string escape characters are escaped here, since they could lead to a
+      // sandbox break.
+      let escape = str => str.replace(/[\\\s"]/g, encodeURIComponent);
+
+      let getIcon = size => escape(IconDetails.getPreferredIcon(tabData.icon, this.extension, size).icon);
+
+      button.setAttribute("style", `
+        --webextension-urlbar-image: url("${getIcon(16)}");
+        --webextension-urlbar-image-2x: url("${getIcon(32)}");
+      `);
+
+      button.classList.add("webextension-page-action");
     }
 
     button.hidden = !tabData.show;
@@ -171,7 +183,7 @@ PageAction.prototype = {
     if (fromBrowse) {
       this.tabContext.clear(tab);
     }
-    this.updateButton(tab.ownerDocument.defaultView);
+    this.updateButton(tab.ownerGlobal);
   },
 
   shutdown() {
@@ -223,11 +235,13 @@ extensions.registerSchemaAPI("pageAction", (extension, context) => {
       show(tabId) {
         let tab = TabManager.getTab(tabId);
         PageAction.for(extension).setProperty(tab, "show", true);
+        return Promise.resolve();
       },
 
       hide(tabId) {
         let tab = TabManager.getTab(tabId);
         PageAction.for(extension).setProperty(tab, "show", false);
+        return Promise.resolve();
       },
 
       setTitle(details) {

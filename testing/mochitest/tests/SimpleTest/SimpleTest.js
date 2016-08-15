@@ -938,10 +938,16 @@ SimpleTest.waitForClipboard = function(aExpectedStringOrValidatorFn, aSetupFn,
         SimpleTest.waitForClipboard_polls = 0;
     }
 
+    var lastValue;
     function wait(validatorFn, successFn, failureFn, flavor) {
+        if (SimpleTest.waitForClipboard_polls == 0) {
+          lastValue = undefined;
+        }
+
         if (++SimpleTest.waitForClipboard_polls > maxPolls) {
             // Log the failure.
             SimpleTest.ok(aExpectFailure, "Timed out while polling clipboard for pasted data");
+            dump("Got this value: " + lastValue);
             reset();
             failureFn();
             return;
@@ -958,6 +964,7 @@ SimpleTest.waitForClipboard = function(aExpectedStringOrValidatorFn, aSetupFn,
             reset();
             successFn();
         } else {
+            lastValue = data;
             SimpleTest._originalSetTimeout.apply(window, [function() { return wait(validatorFn, successFn, failureFn, flavor); }, 100]);
         }
     }
@@ -1626,3 +1633,33 @@ window.onerror = function simpletestOnerror(errorMsg, url, lineNumber,
         SimpleTest.executeSoon(SimpleTest.finish);
     }
 };
+
+// Lifted from dom/media/test/manifest.js
+// Make sure to not touch navigator in here, since we want to push prefs that
+// will affect the APIs it exposes, but the set of exposed APIs is determined
+// when Navigator.prototype is created.  So if we touch navigator before pushing
+// the prefs, the APIs it exposes will not take those prefs into account.  We
+// work around this by using a navigator object from a different global for our
+// UA string testing.
+var gAndroidSdk = null;
+function getAndroidSdk() {
+    if (gAndroidSdk === null) {
+        var iframe = document.documentElement.appendChild(document.createElement("iframe"));
+        iframe.style.display = "none";
+        var nav = iframe.contentWindow.navigator;
+        if (nav.userAgent.indexOf("Mobile") == -1 &&
+            nav.userAgent.indexOf("Tablet") == -1) {
+            gAndroidSdk = -1;
+        } else {
+            // See nsSystemInfo.cpp, the getProperty('version') returns different value
+            // on each platforms, so we need to distinguish the android and B2G platform.
+            var versionString = nav.userAgent.indexOf("Android") != -1 ?
+                                'version' : 'sdk_version';
+            gAndroidSdk = SpecialPowers.Cc['@mozilla.org/system-info;1']
+                                       .getService(SpecialPowers.Ci.nsIPropertyBag2)
+                                       .getProperty(versionString);
+        }
+        document.documentElement.removeChild(iframe);
+    }
+    return gAndroidSdk;
+}

@@ -328,6 +328,12 @@ def _refptrForget(expr):
 def _refptrTake(expr):
     return ExprCall(ExprSelect(expr, '.', 'take'))
 
+def _uniqueptr(T):
+    return Type('UniquePtr', T=T)
+
+def _uniqueptrGet(expr):
+    return ExprCall(ExprSelect(expr, '.', 'get'))
+
 def _cxxArrayType(basetype, const=0, ref=0):
     return Type('nsTArray', T=basetype, const=const, ref=ref, hasimplicitcopyctor=False)
 
@@ -2494,13 +2500,21 @@ def _generateCxxUnion(ud):
             StmtReturn(c.getConstValue())
         ])
 
+        readvalue = MethodDefn(MethodDecl(
+            'get', ret=Type.VOID, const=1,
+            params=[Decl(c.ptrToType(), 'aOutValue')]))
+        readvalue.addstmts([
+            StmtExpr(ExprAssn(ExprDeref(ExprVar('aOutValue')),
+                              ExprCall(getConstValueVar)))
+        ])
+
         optype = MethodDefn(MethodDecl('', typeop=c.refType(), force_inline=1))
         optype.addstmt(StmtReturn(ExprCall(getValueVar)))
         opconsttype = MethodDefn(MethodDecl(
             '', const=1, typeop=c.constRefType(), force_inline=1))
         opconsttype.addstmt(StmtReturn(ExprCall(getConstValueVar)))
 
-        cls.addstmts([ getvalue, getconstvalue,
+        cls.addstmts([ getvalue, getconstvalue, readvalue,
                        optype, opconsttype,
                        Whitespace.NL ])
 
@@ -3237,6 +3251,7 @@ class _GenerateProtocolActorCode(ipdl.ast.Visitor):
         destroysubtreevar = ExprVar('DestroySubtree')
         deallocsubtreevar = ExprVar('DeallocSubtree')
         deallocshmemvar = ExprVar('DeallocShmems')
+        deallocselfvar = ExprVar('Dealloc' + _actorName(ptype.name(), self.side))
 
         # OnProcesingError(code)
         codevar = ExprVar('aCode')
@@ -3315,7 +3330,8 @@ class _GenerateProtocolActorCode(ipdl.ast.Visitor):
                 StmtExpr(ExprCall(destroysubtreevar,
                                   args=[ _DestroyReason.NormalShutdown ])),
                 StmtExpr(ExprCall(deallocsubtreevar)),
-                StmtExpr(ExprCall(deallocshmemvar))
+                StmtExpr(ExprCall(deallocshmemvar)),
+                StmtExpr(ExprCall(deallocselfvar))
             ])
         else:
             onclose.addstmt(
@@ -3329,7 +3345,8 @@ class _GenerateProtocolActorCode(ipdl.ast.Visitor):
                 StmtExpr(ExprCall(destroysubtreevar,
                                   args=[ _DestroyReason.AbnormalShutdown ])),
                 StmtExpr(ExprCall(deallocsubtreevar)),
-                StmtExpr(ExprCall(deallocshmemvar))
+                StmtExpr(ExprCall(deallocshmemvar)),
+                StmtExpr(ExprCall(deallocselfvar))
             ])
         else:
             onerror.addstmt(
@@ -3550,6 +3567,9 @@ class _GenerateProtocolActorCode(ipdl.ast.Visitor):
                 StmtExpr(ExprCall(ExprSelect(p.shmemMapVar(), '.', 'Clear')))
             ])
             self.cls.addstmts([ deallocshmem, Whitespace.NL ])
+
+            deallocself = MethodDefn(MethodDecl(deallocselfvar.name, virtual=1))
+            self.cls.addstmts([ deallocself, Whitespace.NL ])
 
         self.implementPickling()
 
@@ -4211,19 +4231,19 @@ class _GenerateProtocolActorCode(ipdl.ast.Visitor):
                 pvar,
                 ExprCall(
                     _allocMethod(actor.ptype, actor.side),
-                    args=[ tvar, pidvar ]))))
+                    args=[ _uniqueptrGet(tvar), pidvar ]))))
             iffailalloc.addifstmt(StmtReturn(_Result.ProcessingError))
 
             settrans = StmtExpr(ExprCall(
                 ExprSelect(pvar, '->', 'IToplevelProtocol::SetTransport'),
-                args=[tvar]))
+                args=[ExprMove(tvar)]))
 
             addopened = StmtExpr(ExprCall(
                 ExprVar('IToplevelProtocol::AddOpenedActor'),
                 args=[pvar]))
 
             case.addstmts([
-                StmtDecl(Decl(Type('Transport', ptr=1), tvar.name)),
+                StmtDecl(Decl(_uniqueptr(Type('Transport')), tvar.name)),
                 StmtDecl(Decl(Type(_actorName(actor.ptype.name(), actor.side),
                                    ptr=1), pvar.name)),
                 iffailopen,

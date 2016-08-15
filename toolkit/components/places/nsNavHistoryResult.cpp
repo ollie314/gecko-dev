@@ -191,7 +191,7 @@ nsNavHistoryResultNode::GetTags(nsAString& aTags) {
       "SELECT t.title AS tag_title "
       "FROM moz_bookmarks b "
       "JOIN moz_bookmarks t ON t.id = +b.parent "
-      "WHERE b.fk = (SELECT id FROM moz_places WHERE url = :page_url) "
+      "WHERE b.fk = (SELECT id FROM moz_places WHERE url_hash = hash(:page_url) AND url = :page_url) "
         "AND t.parent = :tags_folder "
       "ORDER BY t.title COLLATE NOCASE ASC "
     ") "
@@ -3166,7 +3166,7 @@ nsNavHistoryFolderResultNode::GetQueries(uint32_t* queryCount,
                         (moz_xmalloc(sizeof(nsINavHistoryQuery*)));
   if (!*queries)
     return NS_ERROR_OUT_OF_MEMORY;
-  NS_ADDREF((*queries)[0] = query);
+  (*queries)[0] = query.forget().take();
   *queryCount = 1;
   return NS_OK;
 }
@@ -4636,7 +4636,7 @@ nsNavHistoryResult::OnVisit(nsIURI* aURI, int64_t aVisitId, PRTime aTime,
       NS_ENSURE_TRUE(history, NS_OK);
       nsAutoCString todayLabel;
       history->GetStringFromName(
-        MOZ_UTF16("finduri-AgeInDays-is-0"), todayLabel);
+        u"finduri-AgeInDays-is-0", todayLabel);
       todayIsMissing = !todayLabel.Equals(title);
     }
   }

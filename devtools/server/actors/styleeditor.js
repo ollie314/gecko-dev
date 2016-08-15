@@ -14,7 +14,7 @@ const {Arg, method, RetVal} = protocol;
 const {fetch} = require("devtools/shared/DevToolsUtils");
 const {oldStyleSheetSpec, styleEditorSpec} = require("devtools/shared/specs/styleeditor");
 
-loader.lazyGetter(this, "CssLogic", () => require("devtools/shared/inspector/css-logic").CssLogic);
+loader.lazyGetter(this, "CssLogic", () => require("devtools/shared/inspector/css-logic"));
 
 var TRANSITION_CLASS = "moz-styleeditor-transitioning";
 var TRANSITION_DURATION_MS = 500;
@@ -28,7 +28,7 @@ transition-property: all !important;\
 
 var LOAD_ERROR = "error-load";
 
-var OldStyleSheetActor = protocol.ActorClassWithSpec(oldStyleSheetSpec, {
+var OldStyleSheetActor = protocol.ActorClass(oldStyleSheetSpec, {
   toString: function() {
     return "[OldStyleSheetActor " + this.actorID + "]";
   },
@@ -321,7 +321,7 @@ exports.OldStyleSheetActor = OldStyleSheetActor;
  * Creates a StyleEditorActor. StyleEditorActor provides remote access to the
  * stylesheets of a document.
  */
-var StyleEditorActor = exports.StyleEditorActor = protocol.ActorClassWithSpec(styleEditorSpec, {
+var StyleEditorActor = exports.StyleEditorActor = protocol.ActorClass(styleEditorSpec, {
   /**
    * The window we work with, taken from the parent actor.
    */

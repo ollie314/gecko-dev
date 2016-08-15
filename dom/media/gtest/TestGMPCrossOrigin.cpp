@@ -51,7 +51,8 @@ private:
 };
 
 template<class T, class Base,
-         nsresult (NS_STDCALL GeckoMediaPluginService::*Getter)(nsTArray<nsCString>*,
+         nsresult (NS_STDCALL GeckoMediaPluginService::*Getter)(GMPCrashHelper*,
+                                                                nsTArray<nsCString>*,
                                                                 const nsACString&,
                                                                 UniquePtr<Base>&&)>
 class RunTestGMPVideoCodec : public Base
@@ -90,7 +91,7 @@ protected:
 
     RefPtr<GeckoMediaPluginService> service =
       GeckoMediaPluginService::GetGeckoMediaPluginService();
-    return ((*service).*Getter)(&tags, aNodeId, Move(aCallback));
+    return ((*service).*Getter)(nullptr, &tags, aNodeId, Move(aCallback));
   }
 
 protected:
@@ -360,7 +361,7 @@ public:
   explicit NotifyObserversTask(const char* aTopic)
     : mTopic(aTopic)
   {}
-  NS_IMETHOD Run() {
+  NS_IMETHOD Run() override {
     MOZ_ASSERT(NS_IsMainThread());
     nsCOMPtr<nsIObserverService> observerService =
         mozilla::services::GetObserverService();
@@ -605,7 +606,7 @@ class GMPStorageTest : public GMPDecryptorProxyCallback
       EXPECT_TRUE(!!mRunner->mDecryptor);
 
       if (mRunner->mDecryptor) {
-        mRunner->mDecryptor->Init(mRunner);
+        mRunner->mDecryptor->Init(mRunner, false, true);
       }
       nsCOMPtr<nsIThread> thread(GetGMPThread());
       thread->Dispatch(mContinuation, NS_DISPATCH_NORMAL);
@@ -643,7 +644,7 @@ class GMPStorageTest : public GMPDecryptorProxyCallback
     {
     }
 
-    NS_IMETHOD Run()
+    NS_IMETHOD Run() override
     {
       for (auto& update : mUpdates) {
         mRunner->Update(update);
@@ -678,7 +679,7 @@ class GMPStorageTest : public GMPDecryptorProxyCallback
     UniquePtr<GetGMPDecryptorCallback> callback(
       new CreateDecryptorDone(this, aContinuation));
     nsresult rv =
-      service->GetGMPDecryptor(&tags, mNodeId, Move(callback));
+      service->GetGMPDecryptor(nullptr, &tags, mNodeId, Move(callback));
     EXPECT_TRUE(NS_SUCCEEDED(rv));
   }
 

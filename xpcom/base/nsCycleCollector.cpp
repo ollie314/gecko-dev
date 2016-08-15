@@ -1246,10 +1246,6 @@ enum ccType
   ShutdownCC   /* Shutdown CC, used for finding leaks. */
 };
 
-#ifdef MOZ_NUWA_PROCESS
-#include "ipc/Nuwa.h"
-#endif
-
 ////////////////////////////////////////////////////////////////////////
 // Top level structure for the cycle collector.
 ////////////////////////////////////////////////////////////////////////
@@ -3543,7 +3539,7 @@ nsCycleCollector::FixGrayBits(bool aForceGC, TimeLog& aTimeLog)
 bool
 nsCycleCollector::IsIncrementalGCInProgress()
 {
-  return mJSRuntime && JS::IsIncrementalGCInProgress(mJSRuntime->Runtime());
+  return mJSRuntime && JS::IsIncrementalGCInProgress(mJSRuntime->Context());
 }
 
 void
@@ -3551,8 +3547,8 @@ nsCycleCollector::FinishAnyIncrementalGCInProgress()
 {
   if (IsIncrementalGCInProgress()) {
     NS_WARNING("Finishing incremental GC in progress during CC");
-    JS::PrepareForIncrementalGC(mJSRuntime->Runtime());
-    JS::FinishIncrementalGC(mJSRuntime->Runtime(), JS::gcreason::CC_FORCED);
+    JS::PrepareForIncrementalGC(mJSRuntime->Context());
+    JS::FinishIncrementalGC(mJSRuntime->Context(), JS::gcreason::CC_FORCED);
   }
 }
 

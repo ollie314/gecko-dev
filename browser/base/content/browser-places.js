@@ -25,7 +25,7 @@ var StarUI = {
     element.hidden = false;
     element.addEventListener("keypress", this, false);
     element.addEventListener("mouseout", this, false);
-    element.addEventListener("mouseover", this, false);
+    element.addEventListener("mousemove", this, false);
     element.addEventListener("popuphidden", this, false);
     element.addEventListener("popupshown", this, false);
     return this.panel = element;
@@ -63,7 +63,7 @@ var StarUI = {
   // nsIDOMEventListener
   handleEvent(aEvent) {
     switch (aEvent.type) {
-      case "mouseover":
+      case "mousemove":
         clearTimeout(this._autoCloseTimer);
         break;
       case "popuphidden":
@@ -130,14 +130,13 @@ var StarUI = {
             break;
         }
         break;
-      case "mouseout": {
+      case "mouseout":
+        // Explicit fall-through
+      case "popupshown":
         // Don't handle events for descendent elements.
         if (aEvent.target != aEvent.currentTarget) {
           break;
         }
-        // Explicit fall-through
-      }
-      case "popupshown":
         // auto-close if new and not interacted with
         if (this._isNewBookmark) {
           // 3500ms matches the timeout that Pocket uses in
@@ -146,7 +145,9 @@ var StarUI = {
           if (this._closePanelQuickForTesting) {
             delay /= 10;
           }
-          this._autoCloseTimer = setTimeout(() => this.panel.hidePopup(), delay, this);
+          this._autoCloseTimer = setTimeout(() => {
+            this.panel.hidePopup();
+          }, delay);
         }
         break;
     }
@@ -1165,7 +1166,7 @@ var PlacesToolbarHelper = {
   onWidgetUnderflow: function(aNode, aContainer) {
     // The view gets broken by being removed and reinserted by the overflowable
     // toolbar, so we have to force an uninit and reinit.
-    let win = aNode.ownerDocument.defaultView;
+    let win = aNode.ownerGlobal;
     if (aNode.id == "personal-bookmarks" && win == window) {
       this._resetView();
     }
@@ -1418,14 +1419,21 @@ var BookmarkingUI = {
         Services.prefs.removeObserver(this.RECENTLY_BOOKMARKED_PREF, prefObserver, false);
         PlacesUtils.bookmarks.removeObserver(this._recentlyBookmarkedObserver);
         this._recentlyBookmarkedObserver = null;
-        placesContextMenu.removeEventListener("popupshowing", onPlacesContextMenuShowing);
+        if (placesContextMenu) {
+          placesContextMenu.removeEventListener("popupshowing", onPlacesContextMenuShowing);
+        }
         bookmarksMenu.removeEventListener("popuphidden", onBookmarksMenuHidden);
       }
     };
 
     Services.prefs.addObserver(this.RECENTLY_BOOKMARKED_PREF, prefObserver, false);
     PlacesUtils.bookmarks.addObserver(this._recentlyBookmarkedObserver, true);
-    placesContextMenu.addEventListener("popupshowing", onPlacesContextMenuShowing);
+
+    // The context menu doesn't exist in non-browser windows on Mac
+    if (placesContextMenu) {
+      placesContextMenu.addEventListener("popupshowing", onPlacesContextMenuShowing);
+    }
+
     bookmarksMenu.addEventListener("popuphidden", onBookmarksMenuHidden);
   },
 
@@ -1625,7 +1633,7 @@ var BookmarkingUI = {
         try {
           PlacesUtils.addLazyBookmarkObserver(this);
           this._hasBookmarksObserver = true;
-        } catch(ex) {
+        } catch (ex) {
           Components.utils.reportError("BookmarkingUI failed adding a bookmarks observer: " + ex);
         }
       }
@@ -1908,7 +1916,7 @@ var BookmarkingUI = {
       gNavigatorBundle.getString("starButtonOverflowedStarred.label");
   },
   onWidgetOverflow: function(aNode, aContainer) {
-    let win = aNode.ownerDocument.defaultView;
+    let win = aNode.ownerGlobal;
     if (aNode.id != this.BOOKMARK_BUTTON_ID || win != window)
       return;
 
@@ -1924,7 +1932,7 @@ var BookmarkingUI = {
   },
 
   onWidgetUnderflow: function(aNode, aContainer) {
-    let win = aNode.ownerDocument.defaultView;
+    let win = aNode.ownerGlobal;
     if (aNode.id != this.BOOKMARK_BUTTON_ID || win != window)
       return;
 

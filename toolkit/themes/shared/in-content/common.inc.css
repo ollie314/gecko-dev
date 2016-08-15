@@ -429,6 +429,14 @@ xul|textbox {
   padding-left: 10px;
 }
 
+/* Create a separate rule to unset these styles on .tree-input instead of
+   using :not(.tree-input) so the selector specifity doesn't change. */
+xul|textbox.tree-input {
+  min-height: unset;
+  padding-right: unset;
+  padding-left: unset;
+}
+
 html|input[type="text"],
 html|textarea {
   font-family: inherit;
@@ -451,15 +459,13 @@ xul|textbox[disabled="true"] {
 /* Links */
 
 html|a,
-.text-link,
-.inline-link {
+.text-link {
   color: var(--in-content-link-color);
   text-decoration: none;
 }
 
 html|a:hover,
-.text-link:hover,
-.inline-link:hover {
+.text-link:hover {
   color: var(--in-content-link-color-hover);
   text-decoration: underline;
 }
@@ -469,8 +475,7 @@ html|a:visited {
 }
 
 html|a:hover:active,
-.text-link:hover:active,
-.inline-link:hover:active {
+.text-link:hover:active {
   color: var(--in-content-link-color-active);
   text-decoration: none;
 }

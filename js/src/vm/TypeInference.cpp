@@ -205,9 +205,9 @@ TypeSet::TypeString(TypeSet::Type type)
     which = (which + 1) & 3;
 
     if (type.isSingleton())
-        JS_snprintf(bufs[which], 40, "<0x%p>", (void*) type.singletonNoBarrier());
+        snprintf(bufs[which], 40, "<0x%p>", (void*) type.singletonNoBarrier());
     else
-        JS_snprintf(bufs[which], 40, "[0x%p]", (void*) type.groupNoBarrier());
+        snprintf(bufs[which], 40, "[0x%p]", (void*) type.groupNoBarrier());
 
     return bufs[which];
 }
@@ -230,6 +230,26 @@ js::InferSpew(SpewChannel channel, const char* fmt, ...)
     vfprintf(stderr, fmt, ap);
     fprintf(stderr, "\n");
     va_end(ap);
+}
+
+MOZ_NORETURN MOZ_COLD static void
+TypeFailure(JSContext* cx, const char* fmt, ...)
+{
+    char msgbuf[1024]; /* Larger error messages will be truncated */
+    char errbuf[1024];
+
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(errbuf, sizeof(errbuf), fmt, ap);
+    va_end(ap);
+
+    snprintf(msgbuf, sizeof(msgbuf), "[infer failure] %s", errbuf);
+
+    /* Dump type state, even if INFERFLAGS is unset. */
+    PrintTypes(cx, cx->compartment(), true);
+
+    MOZ_ReportAssertionFailure(msgbuf, __FILE__, __LINE__);
+    MOZ_CRASH();
 }
 
 bool
@@ -286,25 +306,6 @@ js::ObjectGroupHasProperty(JSContext* cx, ObjectGroup* group, jsid id, const Val
 
 #endif
 
-void
-js::TypeFailure(JSContext* cx, const char* fmt, ...)
-{
-    char msgbuf[1024]; /* Larger error messages will be truncated */
-    char errbuf[1024];
-
-    va_list ap;
-    va_start(ap, fmt);
-    JS_vsnprintf(errbuf, sizeof(errbuf), fmt, ap);
-    va_end(ap);
-
-    JS_snprintf(msgbuf, sizeof(msgbuf), "[infer failure] %s", errbuf);
-
-    /* Dump type state, even if INFERFLAGS is unset. */
-    PrintTypes(cx, cx->compartment(), true);
-
-    MOZ_ReportAssertionFailure(msgbuf, __FILE__, __LINE__);
-    MOZ_CRASH();
-}
 
 /////////////////////////////////////////////////////////////////////
 // TypeSet
@@ -3430,7 +3431,7 @@ PreliminaryObjectArrayWithTemplate::writeBarrierPre(PreliminaryObjectArrayWithTe
 {
     Shape* shape = objects->shape();
 
-    if (!shape || shape->runtimeFromAnyThread()->isHeapBusy())
+    if (!shape || shape->runtimeFromAnyThread()->isHeapCollecting())
         return;
 
     JS::Zone* zone = shape->zoneFromAnyThread();
@@ -3513,7 +3514,7 @@ PreliminaryObjectArrayWithTemplate::maybeAnalyze(ExclusiveContext* cx, ObjectGro
         }
     }
 
-    TryConvertToUnboxedLayout(cx, shape(), group, preliminaryObjects);
+    TryConvertToUnboxedLayout(cx, enter, shape(), group, preliminaryObjects);
     if (group->maybeUnboxedLayout())
         return;
 
@@ -3794,7 +3795,7 @@ TypeNewScript::maybeAnalyze(JSContext* cx, ObjectGroup* group, bool* regenerate,
     }
 
     // Try to use an unboxed representation for the group.
-    if (!TryConvertToUnboxedLayout(cx, templateObject()->lastProperty(), group, preliminaryObjects))
+    if (!TryConvertToUnboxedLayout(cx, enter, templateObject()->lastProperty(), group, preliminaryObjects))
         return false;
 
     js_delete(preliminaryObjects);
@@ -3988,7 +3989,7 @@ TypeNewScript::trace(JSTracer* trc)
 /* static */ void
 TypeNewScript::writeBarrierPre(TypeNewScript* newScript)
 {
-    if (newScript->function()->runtimeFromAnyThread()->isHeapBusy())
+    if (newScript->function()->runtimeFromAnyThread()->isHeapCollecting())
         return;
 
     JS::Zone* zone = newScript->function()->zoneFromAnyThread();

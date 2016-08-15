@@ -88,8 +88,27 @@ public class RecentTabsAdapter extends RecyclerView.Adapter<CombinedHistoryItem>
         EventDispatcher.getInstance().unregisterGeckoThreadListener(this, "ClosedTabs:Data");
     }
 
+    public void startListeningForHistorySanitize() {
+        EventDispatcher.getInstance().registerGeckoThreadListener(this, "Sanitize:Finished");
+    }
+
+    public void stopListeningForHistorySanitize() {
+        EventDispatcher.getInstance().unregisterGeckoThreadListener(this, "Sanitize:Finished");
+    }
+
     @Override
     public void handleMessage(String event, NativeJSObject message, EventCallback callback) {
+        switch (event) {
+            case "ClosedTabs:Data":
+                updateRecentlyClosedTabs(message);
+                break;
+            case "Sanitize:Finished":
+                clearLastSessionData();
+                break;
+        }
+    }
+
+    private void updateRecentlyClosedTabs(NativeJSObject message) {
         final NativeJSObject[] tabs = message.getObjectArray("tabs");
         final int length = tabs.length;
 
@@ -123,12 +142,14 @@ public class RecentTabsAdapter extends RecyclerView.Adapter<CombinedHistoryItem>
     }
 
     private void readPreviousSessionData() {
-        // Make sure that the start up code has had a chance to update sessionstore.bak as necessary.
-        GeckoProfile.get(context).waitForOldSessionDataProcessing();
-
-        ThreadUtils.postToBackgroundThread(new Runnable() {
+        // If we happen to initialise before GeckoApp, waiting on either the main or the background
+        // thread can lead to a deadlock, so we have to run on a separate thread instead.
+        final Thread parseThread = new Thread(new Runnable() {
             @Override
             public void run() {
+                // Make sure that the start up code has had a chance to update sessionstore.bak as necessary.
+                GeckoProfile.get(context).waitForOldSessionDataProcessing();
+
                 final String jsonString = GeckoProfile.get(context).readSessionFile(true);
                 if (jsonString == null) {
                     // No previous session data.
@@ -175,10 +196,12 @@ public class RecentTabsAdapter extends RecyclerView.Adapter<CombinedHistoryItem>
                     }
                 });
             }
-        });
+        }, "LastSessionTabsThread");
+
+        parseThread.start();
     }
 
-    public void clearLastSessionData() {
+    private void clearLastSessionData() {
         final ClosedTab[] emptyLastSessionTabs = new ClosedTab[0];
 
         // Only modify mLastSessionTabs on the UI thread.

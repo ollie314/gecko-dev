@@ -27,7 +27,7 @@
 #include "mozilla/gfx/2D.h"
 #include "Units.h"
 #include "mozilla/ToString.h"
-#include "nsHTMLReflowMetrics.h"
+#include "mozilla/ReflowOutput.h"
 #include "ImageContainer.h"
 #include "gfx2DGlue.h"
 
@@ -2246,12 +2246,12 @@ public:
   static bool HasCurrentTransitions(const nsIFrame* aFrame);
 
   /**
-   * Returns true if the frame has any current animations or transitions
-   * for any of the specified properties.
+   * Returns true if the frame has current or in-effect (i.e. in before phase,
+   * running or filling) animations or transitions for the
+   * property.
    */
-  static bool HasCurrentAnimationsForProperties(const nsIFrame* aFrame,
-                                                const nsCSSProperty* aProperties,
-                                                size_t aPropertyCount);
+  static bool HasRelevantAnimationOfProperty(const nsIFrame* aFrame,
+                                             nsCSSProperty aProperty);
 
   /**
    * Checks if off-main-thread animations are enabled.
@@ -2277,12 +2277,6 @@ public:
   static gfxSize ComputeSuitableScaleForAnimation(const nsIFrame* aFrame,
                                                   const nsSize& aVisibleSize,
                                                   const nsSize& aDisplaySize);
-
-  /**
-   * Checks if we should forcibly use nearest pixel filtering for the
-   * background.
-   */
-  static bool UseBackgroundNearestFiltering();
 
   /**
    * Checks whether we want to use the GPU to scale images when
@@ -2425,6 +2419,17 @@ public:
 
   static bool TextCombineUprightDigitsEnabled() {
     return sTextCombineUprightDigitsEnabled;
+  }
+
+  // Stylo (the Servo backend for Gecko's style system) is generally enabled
+  // or disabled at compile-time. However, we provide the additional capability
+  // to disable it dynamically in stylo-enabled builds via a pref.
+  static bool StyloEnabled() {
+#ifdef MOZ_STYLO
+    return sStyloEnabled;
+#else
+    return false;
+#endif
   }
 
   /**
@@ -2730,7 +2735,7 @@ public:
   static bool IsOutlineStyleAutoEnabled();
 
   static void SetBSizeFromFontMetrics(const nsIFrame* aFrame,
-                                      nsHTMLReflowMetrics& aMetrics,
+                                      mozilla::ReflowOutput& aMetrics,
                                       const mozilla::LogicalMargin& aFramePadding,
                                       mozilla::WritingMode aLineWM,
                                       mozilla::WritingMode aFrameWM);
@@ -2836,6 +2841,24 @@ public:
    */
   static bool IsTransformed(nsIFrame* aForFrame, nsIFrame* aTopFrame = nullptr);
 
+  /**
+   * Walk up from aFrame to the cross-doc root, accumulating all the APZ callback
+   * transforms on the content elements encountered along the way. Return the
+   * accumulated value.
+   * XXX: Note that this does not take into account CSS transforms, nor
+   * differences in structure between the frame tree and the layer tree (which
+   * is probably what we *want* to be computing).
+   */
+  static CSSPoint GetCumulativeApzCallbackTransform(nsIFrame* aFrame);
+
+  /*
+   * Returns whether the given document supports being rendered with a
+   * Servo-backed style system.  This checks whether Stylo is enabled
+   * globally, that the document is an HTML document, and that it is
+   * being presented in a content docshell.
+   */
+  static bool SupportsServoStyleBackend(nsIDocument* aDocument);
+
 private:
   static uint32_t sFontSizeInflationEmPerLine;
   static uint32_t sFontSizeInflationMinTwips;
@@ -2849,6 +2872,9 @@ private:
   static bool sInterruptibleReflowEnabled;
   static bool sSVGTransformBoxEnabled;
   static bool sTextCombineUprightDigitsEnabled;
+#ifdef MOZ_STYLO
+  static bool sStyloEnabled;
+#endif
 
   /**
    * Helper function for LogTestDataForPaint().

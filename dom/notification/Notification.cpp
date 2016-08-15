@@ -322,7 +322,7 @@ public:
   { }
 
   NS_IMETHOD
-  Run()
+  Run() override
   {
     AssertIsOnMainThread();
     if (!mWindow->IsCurrentInnerWindow()) {
@@ -839,11 +839,11 @@ NotificationTelemetryService::Observe(nsISupports* aSubject,
 {
   uint32_t capability;
   if (strcmp("perm-changed", aTopic) ||
-      !NS_strcmp(MOZ_UTF16("cleared"), aData) ||
+      !NS_strcmp(u"cleared", aData) ||
       !GetNotificationPermission(aSubject, &capability)) {
     return NS_OK;
   }
-  if (!NS_strcmp(MOZ_UTF16("deleted"), aData)) {
+  if (!NS_strcmp(u"deleted", aData)) {
     if (capability == nsIPermissionManager::DENY_ACTION) {
       Telemetry::Accumulate(
         Telemetry::WEB_NOTIFICATION_PERMISSION_REMOVED, 0);
@@ -1037,7 +1037,7 @@ Notification::Constructor(const GlobalObject& aGlobal,
 {
   // FIXME(nsm): If the sticky flag is set, throw an error.
   ServiceWorkerGlobalScope* scope = nullptr;
-  UNWRAP_WORKER_OBJECT(ServiceWorkerGlobalScope, aGlobal.Get(), scope);
+  UNWRAP_OBJECT(ServiceWorkerGlobalScope, aGlobal.Get(), scope);
   if (scope) {
     aRv.ThrowTypeError<MSG_NOTIFICATION_NO_CONSTRUCTOR_IN_SERVICEWORKER>();
     return nullptr;
@@ -1073,7 +1073,7 @@ Notification::ConstructFromFields(
 {
   MOZ_ASSERT(aGlobal);
 
-  RootedDictionary<NotificationOptions> options(nsContentUtils::RootingCxForThread());
+  RootedDictionary<NotificationOptions> options(RootingCx());
   options.mDir = Notification::StringToDirection(nsString(aDir));
   options.mLang = aLang;
   options.mBody = aBody;
@@ -2710,7 +2710,7 @@ Notification::ShowPersistentNotification(JSContext* aCx,
   // "Otherwise, resolve promise with undefined."
   // The Notification may still not be shown due to other errors, but the spec
   // is not concerned with those.
-  p->MaybeResolve(JS::UndefinedHandleValue);
+  p->MaybeResolveWithUndefined();
 
   RefPtr<Notification> notification =
     CreateAndShow(aCx, aGlobal, aTitle, aOptions, aScope, aRv);

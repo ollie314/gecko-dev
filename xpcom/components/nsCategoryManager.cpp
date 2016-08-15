@@ -393,6 +393,12 @@ nsCategoryManager::GetSingleton()
 /* static */ void
 nsCategoryManager::Destroy()
 {
+  // The nsMemoryReporterManager gets destroyed before the nsCategoryManager,
+  // so we don't need to unregister the nsCategoryManager as a memory reporter.
+  // In debug builds we assert that unregistering fails, as a way (imperfect
+  // but better than nothing) of testing the "destroyed before" part.
+  MOZ_ASSERT(NS_FAILED(UnregisterWeakMemoryReporter(gCategoryManager)));
+
   delete gCategoryManager;
   gCategoryManager = nullptr;
 }
@@ -418,7 +424,7 @@ nsCategoryManager::nsCategoryManager()
 void
 nsCategoryManager::InitMemoryReporter()
 {
-  RegisterStrongMemoryReporter(this);
+  RegisterWeakMemoryReporter(this);
 }
 
 nsCategoryManager::~nsCategoryManager()
@@ -814,7 +820,7 @@ NS_CreateServicesFromCategory(const char* aCategory,
       nsCOMPtr<nsIObserver> observer = do_QueryInterface(instance);
       if (observer) {
         observer->Observe(aOrigin, aObserverTopic,
-                          aObserverData ? aObserverData : MOZ_UTF16(""));
+                          aObserverData ? aObserverData : u"");
       } else {
         LogMessage("While creating services from category '%s', service for entry '%s', contract ID '%s' does not implement nsIObserver.",
                    aCategory, entryString.get(), contractID.get());

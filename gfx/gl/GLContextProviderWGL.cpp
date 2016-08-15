@@ -17,11 +17,13 @@
 
 #include "mozilla/Preferences.h"
 #include "mozilla/StaticPtr.h"
+#include "mozilla/widget/CompositorWidget.h"
 
 namespace mozilla {
 namespace gl {
 
 using namespace mozilla::gfx;
+using namespace mozilla::widget;
 
 WGLLibrary sWGLLib;
 
@@ -204,7 +206,7 @@ WGLLibrary::EnsureInitialized()
         MOZ_ASSERT(extString);
         MOZ_ASSERT(HasExtension(extString, "WGL_ARB_extensions_string"));
 
-        if (HasExtension(extString, "WGL_ARB_context_create")) {
+        if (HasExtension(extString, "WGL_ARB_create_context")) {
             if (GLLibraryLoader::LoadSymbols(mOGLLibrary, &robustnessSymbols[0], lookupFunc)) {
                 if (HasExtension(extString, "WGL_ARB_create_context_robustness")) {
                     mHasRobustness = true;
@@ -430,6 +432,12 @@ GLContextProviderWGL::CreateWrappingExisting(void*, void*)
 }
 
 already_AddRefed<GLContext>
+GLContextProviderWGL::CreateForCompositorWidget(CompositorWidget* aCompositorWidget, bool aForceAccelerated)
+{
+    return CreateForWindow(aCompositorWidget->RealWidget(), aForceAccelerated);
+}
+
+already_AddRefed<GLContext>
 GLContextProviderWGL::CreateForWindow(nsIWidget* aWidget, bool aForceAccelerated)
 {
     if (!sWGLLib.EnsureInitialized()) {
@@ -553,8 +561,8 @@ CreatePBufferOffscreenContext(CreateContextFlags flags, const IntSize& aSize,
             LOCAL_WGL_CONTEXT_RESET_NOTIFICATION_STRATEGY_ARB, LOCAL_WGL_LOSE_CONTEXT_ON_RESET_ARB,
             0
         };
-
-        context = wgl.fCreateContextAttribs(pbdc, aShareContext->Context(), attribs);
+        const HGLRC shareHandle = (aShareContext ? aShareContext->Context() : 0);
+        context = wgl.fCreateContextAttribs(pbdc, shareHandle, attribs);
     } else {
         context = wgl.fCreateContext(pbdc);
         if (context && aShareContext) {

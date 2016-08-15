@@ -24,7 +24,7 @@
 #include <gdk/gdkx.h>
 #endif /* MOZ_X11 */
 
-#include "nsShmImage.h"
+#include "mozilla/widget/WindowSurface.h"
 
 #ifdef ACCESSIBILITY
 #include "mozilla/a11y/Accessible.h"
@@ -79,12 +79,12 @@ public:
     static void ReleaseGlobals();
 
     NS_DECL_ISUPPORTS_INHERITED
-    
+
     void CommonCreate(nsIWidget *aParent, bool aListenForResizes);
-    
+
     virtual nsresult DispatchEvent(mozilla::WidgetGUIEvent* aEvent,
                                    nsEventStatus& aStatus) override;
-    
+
     // called when we are destroyed
     virtual void OnDestroy(void) override;
 
@@ -100,7 +100,7 @@ public:
     NS_IMETHOD         Destroy(void) override;
     virtual nsIWidget *GetParent() override;
     virtual float      GetDPI() override;
-    virtual double     GetDefaultScaleInternal() override; 
+    virtual double     GetDefaultScaleInternal() override;
     // Under Gtk, we manage windows using device pixels so no scaling is needed:
     mozilla::DesktopToLayoutDeviceScale GetDesktopToDeviceScale() final
     {
@@ -254,6 +254,7 @@ public:
 
     void               ThemeChanged(void);
     void               OnDPIChanged(void);
+    void               OnCheckResize(void);
 
 #ifdef MOZ_X11
     Window             mOldFocusWindow;
@@ -315,9 +316,6 @@ public:
    virtual nsresult    ConfigureChildren(const nsTArray<Configuration>& aConfigurations) override;
    nsresult            UpdateTranslucentWindowAlphaInternal(const nsIntRect& aRect,
                                                             uint8_t* aAlphas, int32_t aStride);
-
-    already_AddRefed<mozilla::gfx::DrawTarget> GetDrawTarget(const LayoutDeviceIntRegion& aRegion,
-                                                             mozilla::layers::BufferMode* aBufferMode);
 
 #if (MOZ_WIDGET_GTK == 2)
     static already_AddRefed<DrawTarget> GetDrawTargetForGdkDrawable(GdkDrawable* aDrawable,
@@ -457,6 +455,8 @@ private:
     nsRefPtrHashtable<nsPtrHashKey<GdkEventSequence>, mozilla::dom::Touch> mTouches;
 #endif
 
+    mozilla::UniquePtr<mozilla::widget::WindowSurface> mWindowSurface;
+
 #ifdef MOZ_X11
     Display*            mXDisplay;
     Window              mXWindow;
@@ -464,14 +464,9 @@ private:
     int                 mXDepth;
 #endif
 
-#ifdef MOZ_HAVE_SHMIMAGE
-    // If we're using xshm rendering
-    RefPtr<nsShmImage>  mFrontShmImage;
-    RefPtr<nsShmImage>  mBackShmImage;
-#endif
-
-    // A fallback image surface when a SHM surface is unavailable.
-    cairo_surface_t* mFallbackSurface;
+    // Upper bound on pending ConfigureNotify events to be dispatched to the
+    // window. See bug 1225044.
+    int mPendingConfigures;
 
 #ifdef ACCESSIBILITY
     RefPtr<mozilla::a11y::Accessible> mRootAccessible;
@@ -534,7 +529,7 @@ private:
     // full translucency at this time; each pixel is either fully opaque
     // or fully transparent.
     gchar*       mTransparencyBitmap;
- 
+
     // all of our DND stuff
     void   InitDragEvent(mozilla::WidgetDragEvent& aEvent);
 
@@ -551,12 +546,13 @@ private:
     // nsBaseWidget
     virtual LayerManager* GetLayerManager(PLayerTransactionChild* aShadowManager = nullptr,
                                           LayersBackend aBackendHint = mozilla::layers::LayersBackend::LAYERS_NONE,
-                                          LayerManagerPersistence aPersistence = LAYER_MANAGER_CURRENT,
-                                          bool* aAllowRetaining = nullptr) override;
+                                          LayerManagerPersistence aPersistence = LAYER_MANAGER_CURRENT) override;
 
     void CleanLayerManagerRecursive();
 
     virtual int32_t RoundsWidgetCoordinatesTo() override;
+
+    mozilla::UniquePtr<mozilla::widget::WindowSurface> CreateWindowSurface();
 
     /**
      * |mIMContext| takes all IME related stuff.

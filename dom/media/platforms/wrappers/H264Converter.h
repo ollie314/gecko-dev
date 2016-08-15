@@ -22,12 +22,7 @@ class H264Converter : public MediaDataDecoder {
 public:
 
   H264Converter(PlatformDecoderModule* aPDM,
-                const VideoInfo& aConfig,
-                layers::LayersBackend aLayersBackend,
-                layers::ImageContainer* aImageContainer,
-                TaskQueue* aTaskQueue,
-                MediaDataDecoderCallback* aCallback,
-                DecoderDoctorDiagnostics* aDiagnostics);
+                const CreateDecoderParams& aParams);
   virtual ~H264Converter();
 
   RefPtr<InitPromise> Init() override;
@@ -44,8 +39,6 @@ public:
     return "H264Converter decoder (pending)";
   }
 
-  // Return true if mimetype is H.264.
-  static bool IsH264(const TrackInfo& aConfig);
   nsresult GetLastError() const { return mLastError; }
 
 private:
@@ -70,6 +63,7 @@ private:
   MediaDataDecoderCallback* mCallback;
   RefPtr<MediaDataDecoder> mDecoder;
   MozPromiseRequestHolder<InitPromise> mInitPromiseRequest;
+  RefPtr<GMPCrashHelper> mGMPCrashHelper;
   bool mNeedAVCC;
   nsresult mLastError;
 };

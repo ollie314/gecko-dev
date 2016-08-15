@@ -16,8 +16,6 @@
 #include "mozilla/Atomics.h"            // for Atomic
 #include "mozilla/layers/LayersMessages.h" // for ShmemSection
 #include "LayersTypes.h"
-#include "gfxPrefs.h"
-#include "mozilla/layers/AtomicRefCountedWithFinalize.h"
 
 /*
  * FIXME [bjacob] *** PURE CRAZYNESS WARNING ***
@@ -77,12 +75,13 @@ mozilla::ipc::SharedMemory::SharedMemoryType OptimalShmemType();
  * These methods should be only called in the ipdl implementor's thread, unless
  * specified otherwise in the implementing class.
  */
-class ISurfaceAllocator : public AtomicRefCountedWithFinalize<ISurfaceAllocator>
+class ISurfaceAllocator
 {
 public:
   MOZ_DECLARE_REFCOUNTED_TYPENAME(ISurfaceAllocator)
+  NS_INLINE_DECL_THREADSAFE_REFCOUNTING(ISurfaceAllocator)
 
-  ISurfaceAllocator(const char* aName) : AtomicRefCountedWithFinalize(aName) {}
+  ISurfaceAllocator() {}
 
   // down-casting
 
@@ -115,21 +114,21 @@ protected:
   void Finalize() {}
 
   virtual ~ISurfaceAllocator() {}
-
-  friend class AtomicRefCountedWithFinalize<ISurfaceAllocator>;
 };
 
 /// Methods that are specific to the client/child side.
 class ClientIPCAllocator : public ISurfaceAllocator
 {
 public:
-  ClientIPCAllocator(const char* aName) : ISurfaceAllocator(aName) {}
+  ClientIPCAllocator() {}
 
   virtual ClientIPCAllocator* AsClientAllocator() override { return this; }
 
+  virtual base::ProcessId GetParentPid() const = 0;
+
   virtual MessageLoop * GetMessageLoop() const = 0;
 
-  virtual int32_t GetMaxTextureSize() const { return gfxPrefs::MaxTextureSize(); }
+  virtual int32_t GetMaxTextureSize() const;
 
   virtual void CancelWaitForRecycle(uint64_t aTextureId) = 0;
 };
@@ -138,7 +137,7 @@ public:
 class HostIPCAllocator : public ISurfaceAllocator
 {
 public:
-  HostIPCAllocator(const char* aName) : ISurfaceAllocator(aName) {}
+  HostIPCAllocator() {}
 
   virtual HostIPCAllocator* AsHostIPCAllocator() override { return this; }
 
@@ -174,7 +173,7 @@ protected:
 class CompositorBridgeParentIPCAllocator : public HostIPCAllocator
 {
 public:
-  CompositorBridgeParentIPCAllocator(const char* aName) : HostIPCAllocator(aName) {}
+  CompositorBridgeParentIPCAllocator() {}
   virtual void NotifyNotUsed(PTextureParent* aTexture, uint64_t aTransactionId) override;
 };
 

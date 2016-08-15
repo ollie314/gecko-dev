@@ -57,7 +57,10 @@ namespace dom {
 class Function;
 class MessagePort;
 class MessagePortIdentifier;
+class PromiseNativeHandler;
 class StructuredCloneHolder;
+class WorkerDebuggerGlobalScope;
+class WorkerGlobalScope;
 } // namespace dom
 namespace ipc {
 class PrincipalInfo;
@@ -76,8 +79,6 @@ class SharedWorker;
 class ServiceWorkerClientInfo;
 class WorkerControlRunnable;
 class WorkerDebugger;
-class WorkerDebuggerGlobalScope;
-class WorkerGlobalScope;
 class WorkerPrivate;
 class WorkerRunnable;
 class WorkerThread;
@@ -234,7 +235,7 @@ private:
   PostMessageInternal(JSContext* aCx, JS::Handle<JS::Value> aMessage,
                       const Optional<Sequence<JS::Value>>& aTransferable,
                       UniquePtr<ServiceWorkerClientInfo>&& aClientInfo,
-                      const nsMainThreadPtrHandle<nsISupports>& aKeepAliveToken,
+                      PromiseNativeHandler* aHandler,
                       ErrorResult& aRv);
 
   nsresult
@@ -349,11 +350,11 @@ public:
   PostMessageToServiceWorker(JSContext* aCx, JS::Handle<JS::Value> aMessage,
                              const Optional<Sequence<JS::Value>>& aTransferable,
                              UniquePtr<ServiceWorkerClientInfo>&& aClientInfo,
-                             const nsMainThreadPtrHandle<nsISupports>& aKeepAliveToken,
+                             PromiseNativeHandler* aHandler,
                              ErrorResult& aRv);
 
   void
-  UpdateRuntimeOptions(const JS::RuntimeOptions& aRuntimeOptions);
+  UpdateContextOptions(const JS::ContextOptions& aContextOptions);
 
   void
   UpdateLanguages(const nsTArray<nsString>& aLanguages);
@@ -603,18 +604,6 @@ public:
     return mLoadInfo.mPrincipalIsSystem;
   }
 
-  bool
-  IsInPrivilegedApp() const
-  {
-    return mLoadInfo.mIsInPrivilegedApp;
-  }
-
-  bool
-  IsInCertifiedApp() const
-  {
-    return mLoadInfo.mIsInCertifiedApp;
-  }
-
   const PrincipalInfo&
   GetPrincipalInfo() const
   {
@@ -651,6 +640,18 @@ public:
     mLoadInfo.mCSP = aCSP;
   }
 
+  net::ReferrerPolicy
+  GetReferrerPolicy() const
+  {
+    return mLoadInfo.mReferrerPolicy;
+  }
+
+  void
+  SetReferrerPolicy(net::ReferrerPolicy aReferrerPolicy)
+  {
+    mLoadInfo.mReferrerPolicy = aReferrerPolicy;
+  }
+
   bool
   IsEvalAllowed() const
   {
@@ -667,6 +668,12 @@ public:
   GetReportCSPViolations() const
   {
     return mLoadInfo.mReportCSPViolations;
+  }
+
+  void
+  SetReportCSPViolations(bool aReport)
+  {
+    mLoadInfo.mReportCSPViolations = aReport;
   }
 
   bool
@@ -1150,7 +1157,7 @@ public:
   }
 
   void
-  UpdateRuntimeOptionsInternal(JSContext* aCx, const JS::RuntimeOptions& aRuntimeOptions);
+  UpdateContextOptionsInternal(JSContext* aCx, const JS::ContextOptions& aContextOptions);
 
   void
   UpdateLanguagesInternal(const nsTArray<nsString>& aLanguages);

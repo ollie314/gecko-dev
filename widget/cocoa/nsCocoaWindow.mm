@@ -68,6 +68,15 @@ extern NSMenu* sApplicationMenu; // Application menu shared by all menubars
 // defined in nsChildView.mm
 extern BOOL                gSomeMenuBarPainted;
 
+#if !defined(MAC_OS_X_VERSION_10_12) || \
+    MAC_OS_X_VERSION_MAX_ALLOWED < MAC_OS_X_VERSION_10_12
+
+@interface NSWindow(AutomaticWindowTabbing)
++ (void)setAllowsAutomaticWindowTabbing:(BOOL)allow;
+@end
+
+#endif
+
 extern "C" {
   // CGSPrivate.h
   typedef NSInteger CGSConnection;
@@ -121,7 +130,11 @@ nsCocoaWindow::nsCocoaWindow()
 , mInResize(false)
 , mNumModalDescendents(0)
 {
-
+  if ([NSWindow respondsToSelector:@selector(setAllowsAutomaticWindowTabbing:)]) {
+    // Disable automatic tabbing on 10.12. We need to do this before we
+    // orderFront any of our windows.
+    [NSWindow setAllowsAutomaticWindowTabbing:NO];
+  }
 }
 
 void nsCocoaWindow::DestroyNativeWindow()
@@ -757,8 +770,9 @@ NS_IMETHODIMP nsCocoaWindow::Show(bool bState)
         [NSApp endSheet:nativeParentWindow];
       }
 
-      nsCocoaWindow* sheetShown = nullptr;
-      if (NS_SUCCEEDED(piParentWidget->GetChildSheet(true, &sheetShown)) &&
+      nsCOMPtr<nsIWidget> sheetShown;
+      if (NS_SUCCEEDED(piParentWidget->GetChildSheet(
+                           true, getter_AddRefs(sheetShown))) &&
           (!sheetShown || sheetShown == this)) {
         // If this sheet is already the sheet actually being shown, don't
         // tell it to show again. Otherwise the number of calls to
@@ -799,11 +813,11 @@ NS_IMETHODIMP nsCocoaWindow::Show(bool bState)
       // [NSWindow makeKeyAndOrderFront:] can sometimes trigger "Error (1000)
       // creating CGSWindow", which in turn triggers an internal inconsistency
       // NSException.  These errors shouldn't be fatal.  So we need to wrap
-      // calls to ...orderFront: in LOGONLY blocks.  See bmo bug 470864.
-      NS_OBJC_BEGIN_TRY_LOGONLY_BLOCK;
+      // calls to ...orderFront: in TRY blocks.  See bmo bug 470864.
+      NS_OBJC_BEGIN_TRY_ABORT_BLOCK;
       [[mWindow contentView] setNeedsDisplay:YES];
       [mWindow orderFront:nil];
-      NS_OBJC_END_TRY_LOGONLY_BLOCK;
+      NS_OBJC_END_TRY_ABORT_BLOCK;
       SendSetZLevelEvent();
       AdjustWindowShadow();
       SetWindowBackgroundBlur();
@@ -827,7 +841,7 @@ NS_IMETHODIMP nsCocoaWindow::Show(bool bState)
                             ordered:NSWindowAbove];
     }
     else {
-      NS_OBJC_BEGIN_TRY_LOGONLY_BLOCK;
+      NS_OBJC_BEGIN_TRY_ABORT_BLOCK;
       if (mWindowType == eWindowType_toplevel &&
           [mWindow respondsToSelector:@selector(setAnimationBehavior:)]) {
         NSWindowAnimationBehavior behavior;
@@ -849,7 +863,7 @@ NS_IMETHODIMP nsCocoaWindow::Show(bool bState)
         [mWindow setAnimationBehavior:behavior];
       }
       [mWindow makeKeyAndOrderFront:nil];
-      NS_OBJC_END_TRY_LOGONLY_BLOCK;
+      NS_OBJC_END_TRY_ABORT_BLOCK;
       SendSetZLevelEvent();
     }
   }
@@ -875,11 +889,12 @@ NS_IMETHODIMP nsCocoaWindow::Show(bool bState)
         
         [TopLevelWindowData deactivateInWindow:mWindow];
 
-        nsCocoaWindow* siblingSheetToShow = nullptr;
+        nsCOMPtr<nsIWidget> siblingSheetToShow;
         bool parentIsSheet = false;
 
         if (nativeParentWindow && piParentWidget &&
-            NS_SUCCEEDED(piParentWidget->GetChildSheet(false, &siblingSheetToShow)) &&
+            NS_SUCCEEDED(piParentWidget->GetChildSheet(
+                             false, getter_AddRefs(siblingSheetToShow))) &&
             siblingSheetToShow) {
           // First, give sibling sheets an opportunity to show.
           siblingSheetToShow->Show(true);
@@ -911,9 +926,9 @@ NS_IMETHODIMP nsCocoaWindow::Show(bool bState)
         else {
           // Sheet, that was hard.  No more siblings or parents, going back
           // to a real window.
-          NS_OBJC_BEGIN_TRY_LOGONLY_BLOCK;
+          NS_OBJC_BEGIN_TRY_ABORT_BLOCK;
           [sheetParent makeKeyAndOrderFront:nil];
-          NS_OBJC_END_TRY_LOGONLY_BLOCK;
+          NS_OBJC_END_TRY_ABORT_BLOCK;
         }
         SendSetZLevelEvent();
       }
@@ -1041,14 +1056,12 @@ nsCocoaWindow::ConfigureChildren(const nsTArray<Configuration>& aConfigurations)
 LayerManager*
 nsCocoaWindow::GetLayerManager(PLayerTransactionChild* aShadowManager,
                                LayersBackend aBackendHint,
-                               LayerManagerPersistence aPersistence,
-                               bool* aAllowRetaining)
+                               LayerManagerPersistence aPersistence)
 {
   if (mPopupContentView) {
     return mPopupContentView->GetLayerManager(aShadowManager,
                                               aBackendHint,
-                                              aPersistence,
-                                              aAllowRetaining);
+                                              aPersistence);
   }
   return nullptr;
 }
@@ -1214,13 +1227,13 @@ NS_IMETHODIMP nsCocoaWindow::Move(double aX, double aY)
 }
 
 // Position the window behind the given window
-NS_METHOD nsCocoaWindow::PlaceBehind(nsTopLevelWidgetZPlacement aPlacement,
-                                     nsIWidget *aWidget, bool aActivate)
+NS_IMETHODIMP nsCocoaWindow::PlaceBehind(nsTopLevelWidgetZPlacement aPlacement,
+                                         nsIWidget *aWidget, bool aActivate)
 {
   return NS_OK;
 }
 
-NS_METHOD nsCocoaWindow::SetSizeMode(nsSizeMode aMode)
+NS_IMETHODIMP nsCocoaWindow::SetSizeMode(nsSizeMode aMode)
 {
   NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT;
 
@@ -1817,7 +1830,7 @@ NS_IMETHODIMP nsCocoaWindow::Invalidate(const LayoutDeviceIntRect& aRect)
 // a drop, to a drag enter/leave, or a drag over event. The actual event
 // is passed in |aMessage| and is passed along to our event hanlder so Gecko
 // knows about it.
-bool nsCocoaWindow::DragEvent(unsigned int aMessage, Point aMouseGlobal, UInt16 aKeyModifiers)
+bool nsCocoaWindow::DragEvent(unsigned int aMessage, mozilla::gfx::Point aMouseGlobal, UInt16 aKeyModifiers)
 {
   return false;
 }
@@ -1831,7 +1844,7 @@ NS_IMETHODIMP nsCocoaWindow::SendSetZLevelEvent()
   return NS_OK;
 }
 
-NS_IMETHODIMP nsCocoaWindow::GetChildSheet(bool aShown, nsCocoaWindow** _retval)
+NS_IMETHODIMP nsCocoaWindow::GetChildSheet(bool aShown, nsIWidget** _retval)
 {
   nsIWidget* child = GetFirstChild();
 
@@ -1842,7 +1855,8 @@ NS_IMETHODIMP nsCocoaWindow::GetChildSheet(bool aShown, nsCocoaWindow** _retval)
       if (cocoaWindow->mWindow &&
           ((aShown && [cocoaWindow->mWindow isVisible]) ||
           (!aShown && cocoaWindow->mSheetNeedsShow))) {
-        *_retval = cocoaWindow;
+        nsCOMPtr<nsIWidget> widget = cocoaWindow;
+        widget.forget(_retval);
         return NS_OK;
       }
     }

@@ -210,6 +210,7 @@ namespace jit {
     _(JSOP_RETURN)             \
     _(JSOP_FUNCTIONTHIS)       \
     _(JSOP_GLOBALTHIS)         \
+    _(JSOP_CHECKISOBJ)         \
     _(JSOP_CHECKTHIS)          \
     _(JSOP_CHECKRETURN)        \
     _(JSOP_NEWTARGET)          \
@@ -224,7 +225,8 @@ namespace jit {
     _(JSOP_INITHIDDENELEM_SETTER) \
     _(JSOP_CHECKOBJCOERCIBLE)  \
     _(JSOP_DEBUGCHECKSELFHOSTED) \
-    _(JSOP_JUMPTARGET)
+    _(JSOP_JUMPTARGET) \
+    _(JSOP_IS_CONSTRUCTING)
 
 class BaselineCompiler : public BaselineCompilerSpecific
 {

@@ -73,7 +73,7 @@ class GetRunnable final : public Runnable
                                  PromiseWorkerProxy* aPromiseProxy,
                                  UniquePtr<ServiceWorkerClientInfo>&& aValue,
                                  nsresult aRv)
-      : WorkerRunnable(aWorkerPrivate, WorkerThreadModifyBusyCount),
+      : WorkerRunnable(aWorkerPrivate),
         mPromiseProxy(aPromiseProxy),
         mValue(Move(aValue)),
         mRv(Move(aRv))
@@ -97,7 +97,7 @@ class GetRunnable final : public Runnable
           new ServiceWorkerWindowClient(promise->GetParentObject(), *mValue);
         promise->MaybeResolve(windowClient.get());
       } else {
-        promise->MaybeResolve(JS::UndefinedHandleValue);
+        promise->MaybeResolveWithUndefined();
       }
       mPromiseProxy->CleanUp();
       return true;
@@ -153,7 +153,7 @@ class MatchAllRunnable final : public Runnable
     ResolvePromiseWorkerRunnable(WorkerPrivate* aWorkerPrivate,
                                  PromiseWorkerProxy* aPromiseProxy,
                                  nsTArray<ServiceWorkerClientInfo>& aValue)
-      : WorkerRunnable(aWorkerPrivate, WorkerThreadModifyBusyCount),
+      : WorkerRunnable(aWorkerPrivate),
         mPromiseProxy(aPromiseProxy)
     {
       AssertIsOnMainThread();
@@ -229,7 +229,7 @@ public:
   ResolveClaimRunnable(WorkerPrivate* aWorkerPrivate,
                        PromiseWorkerProxy* aPromiseProxy,
                        nsresult aResult)
-    : WorkerRunnable(aWorkerPrivate, WorkerThreadModifyBusyCount)
+    : WorkerRunnable(aWorkerPrivate)
     , mPromiseProxy(aPromiseProxy)
     , mResult(aResult)
   {
@@ -246,7 +246,7 @@ public:
     MOZ_ASSERT(promise);
 
     if (NS_SUCCEEDED(mResult)) {
-      promise->MaybeResolve(JS::UndefinedHandleValue);
+      promise->MaybeResolveWithUndefined();
     } else {
       promise->MaybeReject(NS_ERROR_DOM_INVALID_STATE_ERR);
     }
@@ -304,7 +304,7 @@ public:
   ResolveOpenWindowRunnable(PromiseWorkerProxy* aPromiseProxy,
                             UniquePtr<ServiceWorkerClientInfo>&& aClientInfo,
                             const nsresult aStatus)
-  : WorkerRunnable(aPromiseProxy->GetWorkerPrivate(), WorkerThreadModifyBusyCount)
+  : WorkerRunnable(aPromiseProxy->GetWorkerPrivate())
   , mPromiseProxy(aPromiseProxy)
   , mClientInfo(Move(aClientInfo))
   , mStatus(aStatus)
@@ -606,7 +606,7 @@ private:
                            spec.get(),
                            nullptr,
                            nullptr,
-                           false, false, true, nullptr, nullptr, 1.0f, 0,
+                           false, false, true, nullptr, 1.0f, 0,
                            getter_AddRefs(newWindow));
       nsCOMPtr<nsPIDOMWindowOuter> pwindow = nsPIDOMWindowOuter::From(newWindow);
       pwindow.forget(aWindow);

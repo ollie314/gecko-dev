@@ -9,8 +9,9 @@
 
 #include "mozilla/Atomics.h"
 #include "mozilla/Maybe.h"
-#include "mozilla/TaskQueue.h"
 #include "mozilla/Monitor.h"
+#include "mozilla/StateMirroring.h"
+#include "mozilla/TaskQueue.h"
 
 #include "MediaDataDemuxer.h"
 #include "MediaDecoderReader.h"
@@ -100,6 +101,8 @@ public:
   // Returns a string describing the state of the decoder data.
   // Used for debugging purposes.
   void GetMozDebugReaderData(nsAString& aString);
+
+  void SetVideoBlankDecode(bool aIsBlankDecode) override;
 
 private:
 
@@ -253,6 +256,7 @@ private:
       , mSizeOfQueue(0)
       , mIsHardwareAccelerated(false)
       , mLastStreamSourceID(UINT32_MAX)
+      , mIsBlankDecode(false)
     {}
 
     MediaFormatReader* mOwner;
@@ -427,6 +431,9 @@ private:
     Maybe<media::TimeUnit> mLastTimeRangesEnd;
     RefPtr<SharedTrackInfo> mInfo;
     Maybe<media::TimeUnit> mFirstDemuxedSampleTime;
+    // Use BlankDecoderModule or not.
+    bool mIsBlankDecode;
+
   };
 
   class DecoderDataWithPromise : public DecoderData {
@@ -515,6 +522,11 @@ private:
   // delta there.
   uint64_t mLastReportedNumDecodedFrames;
 
+  // Timestamp of the previous decoded keyframe, in microseconds.
+  int64_t mPreviousDecodedKeyframeTime_us;
+  // Default mLastDecodedKeyframeTime_us value, must be bigger than anything.
+  static const int64_t sNoPreviousDecodedKeyframe = INT64_MAX;
+
   layers::LayersBackend mLayersBackendType;
 
   // Metadata objects
@@ -546,18 +558,12 @@ private:
   void OnSeekFailed(TrackType aTrack, DemuxerFailureReason aFailure);
   void DoVideoSeek();
   void OnVideoSeekCompleted(media::TimeUnit aTime);
-  void OnVideoSeekFailed(DemuxerFailureReason aFailure)
-  {
-    OnSeekFailed(TrackType::kVideoTrack, aFailure);
-  }
+  void OnVideoSeekFailed(DemuxerFailureReason aFailure);
   bool mSeekScheduled;
 
   void DoAudioSeek();
   void OnAudioSeekCompleted(media::TimeUnit aTime);
-  void OnAudioSeekFailed(DemuxerFailureReason aFailure)
-  {
-    OnSeekFailed(TrackType::kAudioTrack, aFailure);
-  }
+  void OnAudioSeekFailed(DemuxerFailureReason aFailure);
   // The SeekTarget that was last given to Seek()
   SeekTarget mOriginalSeekTarget;
   // Temporary seek information while we wait for the data
@@ -571,6 +577,12 @@ private:
 #ifdef MOZ_EME
   RefPtr<CDMProxy> mCDMProxy;
 #endif
+  RefPtr<GMPCrashHelper> mCrashHelper;
+
+  void SetBlankDecode(TrackType aTrack, bool aIsBlankDecode);
+
+  // The duration explicitly set by JS, mirrored from the main thread.
+  Mirror<Maybe<double>> mExplicitDuration;
 };
 
 } // namespace mozilla

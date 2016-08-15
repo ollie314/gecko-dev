@@ -132,6 +132,13 @@ IsJavaMIME(const nsACString & aMIMEType)
 }
 
 static bool
+IsFlashMIME(const nsACString & aMIMEType)
+{
+  return
+    nsPluginHost::GetSpecialType(aMIMEType) == nsPluginHost::eSpecialType_Flash;
+}
+
+static bool
 InActiveDocument(nsIContent *aContent)
 {
   if (!aContent->IsInComposedDoc()) {
@@ -465,11 +472,10 @@ private:
 ///
 
 static bool
-IsSuccessfulRequest(nsIRequest* aRequest)
+IsSuccessfulRequest(nsIRequest* aRequest, nsresult* aStatus)
 {
-  nsresult status;
-  nsresult rv = aRequest->GetStatus(&status);
-  if (NS_FAILED(rv) || NS_FAILED(status)) {
+  nsresult rv = aRequest->GetStatus(aStatus);
+  if (NS_FAILED(rv) || NS_FAILED(*aStatus)) {
     return false;
   }
 
@@ -719,9 +725,11 @@ nsObjectLoadingContent::nsObjectLoadingContent()
   , mInstantiating(false)
   , mNetworkCreated(true)
   , mActivated(false)
+  , mContentBlockingDisabled(false)
   , mIsStopping(false)
   , mIsLoading(false)
-  , mScriptRequested(false) {}
+  , mScriptRequested(false)
+  , mRewrittenYoutubeEmbed(false) {}
 
 nsObjectLoadingContent::~nsObjectLoadingContent()
 {
@@ -1122,13 +1130,31 @@ nsObjectLoadingContent::OnStartRequest(nsIRequest *aRequest,
   nsCOMPtr<nsIChannel> chan(do_QueryInterface(aRequest));
   NS_ASSERTION(chan, "Why is our request not a channel?");
 
-  nsCOMPtr<nsIURI> uri;
+  nsresult status;
+  bool success = IsSuccessfulRequest(aRequest, &status);
 
-  if (IsSuccessfulRequest(aRequest)) {
-    chan->GetURI(getter_AddRefs(uri));
+  if (status == NS_ERROR_BLOCKED_URI) {
+    nsCOMPtr<nsIConsoleService> console(
+      do_GetService("@mozilla.org/consoleservice;1"));
+    if (console) {
+      nsCOMPtr<nsIURI> uri;
+      chan->GetURI(getter_AddRefs(uri));
+      nsAutoCString spec;
+      uri->GetSpec(spec);
+      nsString message = NS_LITERAL_STRING("Blocking ") +
+        NS_ConvertASCIItoUTF16(spec.get()) +
+        NS_LITERAL_STRING(" since it was found on an internal Firefox blocklist.");
+      console->LogStringMessage(message.get());
+    }
+    Telemetry::Accumulate(Telemetry::PLUGIN_BLOCKED_FOR_STABILITY, 1);
+    return NS_ERROR_FAILURE;
+  } else if (status == NS_ERROR_TRACKING_URI) {
+    return NS_ERROR_FAILURE;
+  } else {
+    mContentBlockingDisabled = true;
   }
 
-  if (!uri) {
+  if (!success) {
     LOG(("OBJLC [%p]: OnStartRequest: Request failed\n", this));
     // If the request fails, we still call LoadObject() to handle fallback
     // content and notifying of failure. (mChannelLoaded && !mChannel) indicates
@@ -1209,7 +1235,7 @@ nsObjectLoadingContent::OnDataAvailable(nsIRequest *aRequest,
 
 // nsIFrameLoaderOwner
 NS_IMETHODIMP
-nsObjectLoadingContent::GetFrameLoader(nsIFrameLoader** aFrameLoader)
+nsObjectLoadingContent::GetFrameLoaderXPCOM(nsIFrameLoader** aFrameLoader)
 {
   NS_IF_ADDREF(*aFrameLoader = mFrameLoader);
   return NS_OK;
@@ -1843,6 +1869,7 @@ nsObjectLoadingContent::UpdateObjectParameters(bool aJavaURI)
     NS_NOTREACHED("Unrecognized plugin-loading tag");
   }
 
+  mRewrittenYoutubeEmbed = false;
   // Note that the baseURI changing could affect the newURI, even if uriStr did
   // not change.
   if (!uriStr.IsEmpty()) {
@@ -1856,6 +1883,7 @@ nsObjectLoadingContent::UpdateObjectParameters(bool aJavaURI)
                              getter_AddRefs(rewrittenURI));
     if (rewrittenURI) {
       newURI = rewrittenURI;
+      mRewrittenYoutubeEmbed = true;
       newMime = NS_LITERAL_CSTRING("text/html");
     }
 
@@ -2264,7 +2292,10 @@ nsObjectLoadingContent::LoadObject(bool aNotify,
     }
     int16_t contentPolicy = nsIContentPolicy::ACCEPT;
     // If mChannelLoaded is set we presumably already passed load policy
-    if (allowLoad && mURI && !mChannelLoaded) {
+    // If mType == eType_Loading then we call OpenChannel() which internally
+    // creates a new channel and calls asyncOpen2() on that channel which
+    // then enforces content policy checks.
+    if (allowLoad && mURI && !mChannelLoaded && mType != eType_Loading) {
       allowLoad = CheckLoadPolicy(&contentPolicy);
     }
     // If we're loading a type now, check ProcessPolicy. Note that we may check
@@ -2272,32 +2303,6 @@ nsObjectLoadingContent::LoadObject(bool aNotify,
     // channel.
     if (allowLoad && mType != eType_Loading) {
       allowLoad = CheckProcessPolicy(&contentPolicy);
-    }
-
-    // This needs to be reverted once the plugin stability experiment is over (see bug #1268120).
-    if (allowLoad && Preferences::GetBool(kPrefBlockURIs)) {
-      RefPtr<nsChannelClassifier> channelClassifier = new nsChannelClassifier();
-      nsCOMPtr<nsIURIClassifier> classifier = do_GetService(NS_URICLASSIFIERSERVICE_CONTRACTID);
-      if (classifier) {
-        nsAutoCString tables;
-        Preferences::GetCString("urlclassifier.blockedTable", &tables);
-        nsAutoCString results;
-        rv = classifier->ClassifyLocalWithTables(mURI, tables, results);
-        if (NS_SUCCEEDED(rv) && !results.IsEmpty()) {
-          nsAutoCString uri;
-          mURI->GetSpec(uri);
-          nsCOMPtr<nsIConsoleService> console(
-            do_GetService("@mozilla.org/consoleservice;1"));
-          if (console) {
-            nsString message = NS_LITERAL_STRING("Blocking ") +
-              NS_ConvertASCIItoUTF16(uri) +
-              NS_LITERAL_STRING(" since it was found on an internal Firefox blocklist.");
-            console->LogStringMessage(message.get());
-          }
-          Telemetry::Accumulate(Telemetry::PLUGIN_BLOCKED_FOR_STABILITY, 1);
-          allowLoad = false;
-        }
-      }
     }
 
     // Content policy implementations can mutate the DOM, check for re-entry
@@ -2345,6 +2350,13 @@ nsObjectLoadingContent::LoadObject(bool aNotify,
       nestedURI->GetInnerURI(getter_AddRefs(tempURI));
       nestedURI = do_QueryInterface(tempURI);
     }
+  }
+
+  // Items resolved as Image/Document are no candidates for content blocking,
+  // as well as invalid plugins (they will not have the mContentType set).
+  if ((mType == eType_Null || mType == eType_Plugin) && ShouldBlockContent()) {
+    LOG(("OBJLC [%p]: Enable content blocking", this));
+    mType = eType_Loading;
   }
 
   // If we're a plugin but shouldn't start yet, load fallback with
@@ -2617,8 +2629,6 @@ nsObjectLoadingContent::OpenChannel()
 {
   nsCOMPtr<nsIContent> thisContent =
     do_QueryInterface(static_cast<nsIImageLoadingContent*>(this));
-  nsCOMPtr<nsIScriptSecurityManager> secMan =
-    nsContentUtils::GetSecurityManager();
   NS_ASSERTION(thisContent, "must be a content");
   nsIDocument* doc = thisContent->OwnerDoc();
   NS_ASSERTION(doc, "No owner document?");
@@ -2631,9 +2641,6 @@ nsObjectLoadingContent::OpenChannel()
     return NS_ERROR_NOT_AVAILABLE;
   }
 
-  rv = secMan->CheckLoadURIWithPrincipal(thisContent->NodePrincipal(), mURI, 0);
-  NS_ENSURE_SUCCESS(rv, rv);
-
   nsCOMPtr<nsILoadGroup> group = doc->GetDocumentLoadGroup();
   nsCOMPtr<nsIChannel> chan;
   RefPtr<ObjectInterfaceRequestorShim> shim =
@@ -2644,7 +2651,7 @@ nsObjectLoadingContent::OpenChannel()
                                                                mURI,
                                                                true,   // aInheritForAboutBlank
                                                                false); // aForceInherit
-  nsSecurityFlags securityFlags = nsILoadInfo::SEC_NORMAL;
+  nsSecurityFlags securityFlags = nsILoadInfo::SEC_ALLOW_CROSS_ORIGIN_DATA_INHERITS;
   if (inherit) {
     securityFlags |= nsILoadInfo::SEC_FORCE_INHERIT_PRINCIPAL;
   }
@@ -2686,8 +2693,8 @@ nsObjectLoadingContent::OpenChannel()
     scriptChannel->SetExecutionPolicy(nsIScriptChannel::EXECUTE_NORMAL);
   }
 
-  // AsyncOpen can fail if a file does not exist.
-  rv = chan->AsyncOpen(shim, nullptr);
+  // AsyncOpen2 can fail if a file does not exist.
+  rv = chan->AsyncOpen2(shim);
   NS_ENSURE_SUCCESS(rv, rv);
   LOG(("OBJLC [%p]: Channel opened", this));
   mChannel = chan;
@@ -3362,6 +3369,20 @@ static uint32_t sSessionTimeoutMinutes;
 static uint32_t sPersistentTimeoutDays;
 
 bool
+nsObjectLoadingContent::ShouldBlockContent()
+{
+  if (mContentBlockingDisabled || !mURI)
+    return false;
+
+  if (!IsFlashMIME(mContentType) || !Preferences::GetBool(kPrefBlockURIs)) {
+    mContentBlockingDisabled = true;
+    return false;
+  }
+
+  return true;
+}
+
+bool
 nsObjectLoadingContent::ShouldPlay(FallbackType &aReason, bool aIgnoreCurrentType)
 {
   nsresult rv;
@@ -3661,8 +3682,7 @@ nsObjectLoadingContent::SetupProtoChain(JSContext* aCx,
   // If we got an xpconnect-wrapped plugin object, set obj's
   // prototype's prototype to the scriptable plugin.
 
-  JS::Rooted<JSObject*> global(aCx, JS_GetGlobalForObject(aCx, aObject));
-  JS::Handle<JSObject*> my_proto = GetDOMClass(aObject)->mGetProto(aCx, global);
+  JS::Handle<JSObject*> my_proto = GetDOMClass(aObject)->mGetProto(aCx);
   MOZ_ASSERT(my_proto);
 
   // Set 'this.__proto__' to pi

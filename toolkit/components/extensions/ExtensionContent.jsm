@@ -51,21 +51,18 @@ var {
   injectAPI,
   flushJarCache,
   detectLanguage,
+  getInnerWindowID,
   promiseDocumentReady,
   ChildAPIManager,
 } = ExtensionUtils;
+
+XPCOMUtils.defineLazyGetter(this, "console", ExtensionUtils.getConsole);
 
 function isWhenBeforeOrSame(when1, when2) {
   let table = {"document_start": 0,
                "document_end": 1,
                "document_idle": 2};
   return table[when1] <= table[when2];
-}
-
-function getInnerWindowID(window) {
-  return window.QueryInterface(Ci.nsIInterfaceRequestor)
-    .getInterface(Ci.nsIDOMWindowUtils)
-    .currentInnerWindowID;
 }
 
 // This is the fairly simple API that we inject into content
@@ -323,7 +320,8 @@ class ExtensionContext extends BaseContext {
     this.isExtensionPage = isExtensionPage;
     this.extension = ExtensionManager.get(extensionId);
     this.extensionId = extensionId;
-    this.contentWindow = contentWindow;
+
+    this.setContentWindow(contentWindow);
 
     let frameId = WebNavigationFrames.getFrameId(contentWindow);
     this.frameId = frameId;
@@ -371,7 +369,7 @@ class ExtensionContext extends BaseContext {
       // the content script to be associated with both the extension and
       // the tab holding the content page.
       let metadata = {
-        "inner-window-id": getInnerWindowID(contentWindow),
+        "inner-window-id": this.innerWindowID,
         addonId: attrs.addonId,
       };
 
@@ -380,8 +378,15 @@ class ExtensionContext extends BaseContext {
         sandboxPrototype: contentWindow,
         wantXrays: true,
         isWebExtensionContentScript: true,
+        wantExportHelpers: true,
         wantGlobalProperties: ["XMLHttpRequest", "fetch"],
       });
+
+      Cu.evalInSandbox(`
+        window.JSON = JSON;
+        window.XMLHttpRequest = XMLHttpRequest;
+        window.fetch = fetch;
+      `, this.sandbox);
     }
 
     let delegate = {
@@ -404,21 +409,13 @@ class ExtensionContext extends BaseContext {
     // reason. However, we waive here anyway in case that changes.
     Cu.waiveXrays(this.sandbox).chrome = this.chromeObj;
 
-    let apis = {
-      "storage": "chrome://extensions/content/schemas/storage.json",
-      "test": "chrome://extensions/content/schemas/test.json",
-    };
-
     let incognito = PrivateBrowsingUtils.isContentWindowPrivate(this.contentWindow);
-    this.childManager = new ChildAPIManager(this, mm, Object.keys(apis), {
+    this.childManager = new ChildAPIManager(this, mm, ["storage", "test"], {
       type: "content_script",
       url,
       incognito,
     });
 
-    for (let api in apis) {
-      Schemas.load(apis[api]);
-    }
     Schemas.inject(this.chromeObj, this.childManager);
 
     injectAPI(api(this), this.chromeObj);
@@ -462,20 +459,21 @@ class ExtensionContext extends BaseContext {
   close() {
     super.unload();
 
-    for (let script of this.scripts) {
-      if (script.requiresCleanup) {
-        script.cleanup(this.contentWindow);
-      }
-    }
-
     this.childManager.close();
 
-    // Overwrite the content script APIs with an empty object if the APIs objects are still
-    // defined in the content window (See Bug 1214658 for rationale).
-    if (this.isExtensionPage && !Cu.isDeadWrapper(this.contentWindow) &&
-        Cu.waiveXrays(this.contentWindow).browser === this.chromeObj) {
-      Cu.createObjectIn(this.contentWindow, {defineAs: "browser"});
-      Cu.createObjectIn(this.contentWindow, {defineAs: "chrome"});
+    if (this.contentWindow) {
+      for (let script of this.scripts) {
+        if (script.requiresCleanup) {
+          script.cleanup(this.contentWindow);
+        }
+      }
+
+      // Overwrite the content script APIs with an empty object if the APIs objects are still
+      // defined in the content window (bug 1214658).
+      if (this.isExtensionPage) {
+        Cu.createObjectIn(this.contentWindow, {defineAs: "browser"});
+        Cu.createObjectIn(this.contentWindow, {defineAs: "chrome"});
+      }
     }
     Cu.nukeSandbox(this.sandbox);
     this.sandbox = null;
@@ -507,11 +505,11 @@ DocumentManager = {
     let readyState = contentWindow.document.readyState;
     if (readyState == "complete") {
       return "document_idle";
-    } else if (readyState == "interactive") {
-      return "document_end";
-    } else {
-      return "document_start";
     }
+    if (readyState == "interactive") {
+      return "document_end";
+    }
+    return "document_start";
   },
 
   observe: function(subject, topic, data) {
@@ -607,7 +605,14 @@ DocumentManager = {
                         .filter(promise => promise);
 
     if (!promises.length) {
-      return Promise.reject({message: `No matching window`});
+      let details = {};
+      for (let key of ["all_frames", "frame_id", "matches_about_blank", "matchesHost"]) {
+        if (key in options) {
+          details[key] = options[key];
+        }
+      }
+
+      return Promise.reject({message: `No window matching ${JSON.stringify(details)}`});
     }
     if (options.all_frames) {
       return Promise.all(promises);
@@ -772,6 +777,10 @@ BrowserExtensionContent.prototype = {
 
   localize(...args) {
     return this.localeData.localize(...args);
+  },
+
+  hasPermission(perm) {
+    return this.permissions.has(perm);
   },
 };
 

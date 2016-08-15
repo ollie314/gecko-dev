@@ -51,7 +51,7 @@ import org.mozilla.gecko.TelemetryContract;
 import org.mozilla.gecko.db.BrowserDB;
 import org.mozilla.gecko.db.RemoteClient;
 import org.mozilla.gecko.restrictions.Restrictable;
-import org.mozilla.gecko.widget.DividerItemDecoration;
+import org.mozilla.gecko.widget.HistoryDividerItemDecoration;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -149,6 +149,7 @@ public class CombinedHistoryPanel extends HomeFragment implements RemoteClientsD
         mPanelFooterButton.setOnClickListener(new OnFooterButtonClickListener());
 
         mRecentTabsAdapter.startListeningForClosedTabs();
+        mRecentTabsAdapter.startListeningForHistorySanitize();
 
         if (mSavedRestoreBundle != null) {
             setPanelStateFromBundle(mSavedRestoreBundle);
@@ -171,7 +172,7 @@ public class CombinedHistoryPanel extends HomeFragment implements RemoteClientsD
         animator.setRemoveDuration(100);
         mRecyclerView.setLayoutManager(new LinearLayoutManager(getContext()));
         mRecyclerView.setItemAnimator(animator);
-        mRecyclerView.addItemDecoration(new DividerItemDecoration(getContext()));
+        mRecyclerView.addItemDecoration(new HistoryDividerItemDecoration(getContext()));
         mRecyclerView.setOnHistoryClickedListener(mUrlOpenListener);
         mRecyclerView.setOnPanelLevelChangeListener(new OnLevelChangeListener());
         mRecyclerView.setHiddenClientsDialogBuilder(new HiddenClientsHelper());
@@ -442,7 +443,6 @@ public class CombinedHistoryPanel extends HomeFragment implements RemoteClientsD
                             }
 
                             GeckoAppShell.notifyObservers("Sanitize:ClearData", json.toString());
-                    mRecentTabsAdapter.clearLastSessionData();
                             Telemetry.sendUIEvent(TelemetryContract.Event.SANITIZE, TelemetryContract.Method.BUTTON, "history");
                         }
                     });
@@ -654,11 +654,13 @@ public class CombinedHistoryPanel extends HomeFragment implements RemoteClientsD
         super.onDestroyView();
 
         mRecentTabsAdapter.stopListeningForClosedTabs();
+        mRecentTabsAdapter.stopListeningForHistorySanitize();
     }
 
     @Override
     public void onDestroy() {
         super.onDestroy();
+
         if (mSyncStatusListener != null) {
             FirefoxAccounts.removeSyncStatusListener(mSyncStatusListener);
             mSyncStatusListener = null;

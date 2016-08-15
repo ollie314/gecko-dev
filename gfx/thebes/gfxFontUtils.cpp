@@ -886,7 +886,7 @@ nsresult gfxFontUtils::MakeUniqueUserFontName(nsAString& aName)
             *p = '-';
     }
 
-    aName.AssignLiteral(MOZ_UTF16("uf"));
+    aName.AssignLiteral(u"uf");
     aName.AppendASCII(guidB64);
     return NS_OK;
 }
@@ -1497,19 +1497,22 @@ gfxFontUtils::ReadNames(const char *aNameData, uint32_t aDataLen,
         uint32_t platformID;
 
         // skip over unwanted nameID's
-        if (uint32_t(nameRecord->nameID) != aNameID)
+        if (uint32_t(nameRecord->nameID) != aNameID) {
             continue;
+        }
 
         // skip over unwanted platform data
         platformID = nameRecord->platformID;
-        if (aPlatformID != PLATFORM_ALL
-            && uint32_t(nameRecord->platformID) != PLATFORM_ID)
+        if (aPlatformID != PLATFORM_ALL &&
+            platformID != uint32_t(aPlatformID)) {
             continue;
+        }
 
         // skip over unwanted languages
-        if (aLangID != LANG_ALL
-              && uint32_t(nameRecord->languageID) != uint32_t(aLangID))
+        if (aLangID != LANG_ALL &&
+            uint32_t(nameRecord->languageID) != uint32_t(aLangID)) {
             continue;
+        }
 
         // add name to names array
 
@@ -1669,7 +1672,8 @@ gfxFontUtils::ValidateColorGlyphs(hb_blob_t* aCOLR, hb_blob_t* aCPAL)
             reinterpret_cast<const uint8_t*>(colr) + offsetLayerRecord);
 
     for (uint16_t i = 0; i < numLayerRecords; i++, layer++) {
-        if (uint16_t(layer->paletteEntryIndex) >= numPaletteEntries) {
+        if (uint16_t(layer->paletteEntryIndex) >= numPaletteEntries &&
+            uint16_t(layer->paletteEntryIndex) != 0xFFFF) {
             // CPAL palette entry record is overflow
             return false;
         }
@@ -1713,6 +1717,7 @@ bool
 gfxFontUtils::GetColorGlyphLayers(hb_blob_t* aCOLR,
                                   hb_blob_t* aCPAL,
                                   uint32_t aGlyphId,
+                                  const mozilla::gfx::Color& aDefaultColor,
                                   nsTArray<uint16_t>& aGlyphs,
                                   nsTArray<mozilla::gfx::Color>& aColors)
 {
@@ -1744,15 +1749,19 @@ gfxFontUtils::GetColorGlyphLayers(hb_blob_t* aCOLR,
 
     for (uint16_t layerIndex = 0; layerIndex < numLayers; layerIndex++) {
         aGlyphs.AppendElement(uint16_t(layer->glyphId));
-        const CPALColorRecord* color =
-            reinterpret_cast<const CPALColorRecord*>(
-                reinterpret_cast<const uint8_t*>(cpal) +
-                offsetFirstColorRecord +
-                sizeof(CPALColorRecord) * uint16_t(layer->paletteEntryIndex));
-        aColors.AppendElement(mozilla::gfx::Color(color->red / 255.0,
-                                                  color->green / 255.0,
-                                                  color->blue / 255.0,
-                                                  color->alpha / 255.0));
+        if (uint16_t(layer->paletteEntryIndex) == 0xFFFF) {
+            aColors.AppendElement(aDefaultColor);
+        } else {
+            const CPALColorRecord* color =
+                reinterpret_cast<const CPALColorRecord*>(
+                    reinterpret_cast<const uint8_t*>(cpal) +
+                    offsetFirstColorRecord +
+                    sizeof(CPALColorRecord) * uint16_t(layer->paletteEntryIndex));
+            aColors.AppendElement(mozilla::gfx::Color(color->red / 255.0,
+                                                      color->green / 255.0,
+                                                      color->blue / 255.0,
+                                                      color->alpha / 255.0));
+        }
         layer++;
     }
     return true;
@@ -1772,3 +1781,8 @@ gfxFontUtils::IsCffFont(const uint8_t* aFontData)
 
 #endif
 
+#undef acceptablePlatform
+#undef isSymbol
+#undef isUVSEncoding
+#undef LOG
+#undef LOG_ENABLED

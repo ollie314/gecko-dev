@@ -60,7 +60,7 @@ public:
         "SELECT b.id, b.guid, b.parent, b.lastModified, t.guid, t.parent "
         "FROM moz_bookmarks b "
         "JOIN moz_bookmarks t on t.id = b.parent "
-        "WHERE b.fk = (SELECT id FROM moz_places WHERE url = :page_url) "
+        "WHERE b.fk = (SELECT id FROM moz_places WHERE url_hash = hash(:page_url) AND url = :page_url) "
         "ORDER BY b.lastModified DESC, b.id DESC "
       );
       if (stmt) {
@@ -1853,7 +1853,7 @@ nsNavBookmarks::IsBookmarked(nsIURI* aURI, bool* aBookmarked)
   nsCOMPtr<mozIStorageStatement> stmt = mDB->GetStatement(
     "SELECT 1 FROM moz_bookmarks b "
     "JOIN moz_places h ON b.fk = h.id "
-    "WHERE h.url = :page_url"
+    "WHERE h.url_hash = hash(:page_url) AND h.url = :page_url"
   );
   NS_ENSURE_STATE(stmt);
   mozStorageStatementScoper scoper(stmt);
@@ -2059,7 +2059,7 @@ nsNavBookmarks::GetBookmarkIdsForURITArray(nsIURI* aURI,
     "SELECT b.id, b.guid, b.parent, b.lastModified, t.guid, t.parent "
     "FROM moz_bookmarks b "
     "JOIN moz_bookmarks t on t.id = b.parent "
-    "WHERE b.fk = (SELECT id FROM moz_places WHERE url = :page_url) "
+    "WHERE b.fk = (SELECT id FROM moz_places WHERE url_hash = hash(:page_url) AND url = :page_url) "
     "ORDER BY b.lastModified DESC, b.id DESC "
   );
   NS_ENSURE_STATE(stmt);
@@ -2103,7 +2103,7 @@ nsNavBookmarks::GetBookmarksForURI(nsIURI* aURI,
     "SELECT b.id, b.guid, b.parent, b.lastModified, t.guid, t.parent "
     "FROM moz_bookmarks b "
     "JOIN moz_bookmarks t on t.id = b.parent "
-    "WHERE b.fk = (SELECT id FROM moz_places WHERE url = :page_url) "
+    "WHERE b.fk = (SELECT id FROM moz_places WHERE url_hash = hash(:page_url) AND url = :page_url) "
     "ORDER BY b.lastModified DESC, b.id DESC "
   );
   NS_ENSURE_STATE(stmt);
@@ -2565,14 +2565,8 @@ nsNavBookmarks::GetObservers(uint32_t* _count,
   if (observers.Count() == 0)
     return NS_OK;
 
-  *_observers = static_cast<nsINavBookmarkObserver**>
-    (moz_xmalloc(observers.Count() * sizeof(nsINavBookmarkObserver*)));
-  NS_ENSURE_TRUE(*_observers, NS_ERROR_OUT_OF_MEMORY);
-
   *_count = observers.Count();
-  for (uint32_t i = 0; i < *_count; ++i) {
-    NS_ADDREF((*_observers)[i] = observers[i]);
-  }
+  observers.Forget(_observers);
 
   return NS_OK;
 }

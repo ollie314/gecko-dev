@@ -149,6 +149,7 @@ JsepCodecDescToCodecConfig(const JsepCodecDescription& aCodec,
   configRaw->mNackFbTypes = desc.mNackFbTypes;
   configRaw->mCcmFbTypes = desc.mCcmFbTypes;
   configRaw->mRembFbSet = desc.RtcpFbRembIsSet();
+  configRaw->mFECFbSet = desc.mFECEnabled;
 
   *aConfig = configRaw;
   return NS_OK;
@@ -463,10 +464,18 @@ MediaPipelineFactory::CreateOrUpdateMediaPipeline(
   }
 
   if (aTrack.GetActive()) {
-    auto error = conduit->StartTransmitting();
-    if (error) {
-      MOZ_MTLOG(ML_ERROR, "StartTransmitting failed: " << error);
-      return NS_ERROR_FAILURE;
+    if (receiving) {
+      auto error = conduit->StartReceiving();
+      if (error) {
+        MOZ_MTLOG(ML_ERROR, "StartReceiving failed: " << error);
+        return NS_ERROR_FAILURE;
+      }
+    } else {
+      auto error = conduit->StartTransmitting();
+      if (error) {
+        MOZ_MTLOG(ML_ERROR, "StartTransmitting failed: " << error);
+        return NS_ERROR_FAILURE;
+      }
     }
   }
 

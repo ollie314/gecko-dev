@@ -36,7 +36,6 @@
 #include "mozilla/layers/AsyncCompositionManager.h"
 #include "mozilla/layers/BasicCompositor.h"  // for BasicCompositor
 #include "mozilla/layers/Compositor.h"  // for Compositor
-#include "mozilla/layers/CompositorLRU.h"  // for CompositorLRU
 #include "mozilla/layers/CompositorOGL.h"  // for CompositorOGL
 #include "mozilla/layers/CompositorThread.h"
 #include "mozilla/layers/CompositorTypes.h"
@@ -61,7 +60,6 @@
 #include "nsTArray.h"                   // for nsTArray
 #include "nsThreadUtils.h"              // for NS_IsMainThread
 #include "nsXULAppAPI.h"                // for XRE_GetIOMessageLoop
-#include "nsIXULRuntime.h"              // for BrowserTabsRemoteAutostart
 #ifdef XP_WIN
 #include "mozilla/layers/CompositorD3D11.h"
 #include "mozilla/layers/CompositorD3D9.h"
@@ -72,18 +70,22 @@
 #include "mozilla/Hal.h"
 #include "mozilla/HalTypes.h"
 #include "mozilla/StaticPtr.h"
+#include "mozilla/Telemetry.h"
 #ifdef MOZ_ENABLE_PROFILER_SPS
 #include "ProfilerMarkers.h"
 #endif
 #include "mozilla/VsyncDispatcher.h"
+#if defined(XP_WIN) || defined(MOZ_WIDGET_GTK)
+#include "VsyncSource.h"
+#endif
+#include "mozilla/widget/CompositorWidget.h"
+#ifdef MOZ_WIDGET_SUPPORTS_OOP_COMPOSITING
+# include "mozilla/widget/CompositorWidgetParent.h"
+#endif
 
 #ifdef MOZ_WIDGET_GONK
 #include "GeckoTouchDispatcher.h"
 #include "nsScreenManagerGonk.h"
-#endif
-
-#ifdef MOZ_ANDROID_APZ
-#include "AndroidBridge.h"
 #endif
 
 #include "LayerScope.h"
@@ -152,8 +154,17 @@ CompositorBridgeParent::ForEachIndirectLayerTree(const Lambda& aCallback)
 typedef map<uint64_t,CompositorBridgeParent*> CompositorMap;
 static StaticAutoPtr<CompositorMap> sCompositorMap;
 
+#if defined(XP_WIN) || defined(MOZ_WIDGET_GTK)
+static TimeDuration
+GetGlobalVsyncRate()
+{
+  return gfxPlatform::GetPlatform()->GetHardwareVsync()->
+           GetGlobalDisplay().GetVsyncRate();
+}
+#endif
+
 void
-CompositorBridgeParent::Initialize()
+CompositorBridgeParent::Setup()
 {
   EnsureLayerTreeMapReady();
 
@@ -233,13 +244,13 @@ CompositorVsyncScheduler::Observer::Destroy()
 }
 
 CompositorVsyncScheduler::CompositorVsyncScheduler(CompositorBridgeParent* aCompositorBridgeParent,
-                                                   widget::CompositorWidgetProxy* aWidgetProxy)
+                                                   widget::CompositorWidget* aWidget)
   : mCompositorBridgeParent(aCompositorBridgeParent)
   , mLastCompose(TimeStamp::Now())
   , mIsObservingVsync(false)
   , mNeedsComposite(0)
   , mVsyncNotificationsSkipped(0)
-  , mCompositorVsyncDispatcher(aWidgetProxy->GetCompositorVsyncDispatcher())
+  , mWidget(aWidget)
   , mCurrentCompositeTaskMonitor("CurrentCompositeTaskMonitor")
   , mCurrentCompositeTask(nullptr)
   , mSetNeedsCompositeMonitor("SetNeedsCompositeMonitor")
@@ -252,7 +263,7 @@ CompositorVsyncScheduler::CompositorVsyncScheduler(CompositorBridgeParent* aComp
 #endif
 #endif
 {
-  MOZ_ASSERT(NS_IsMainThread());
+  MOZ_ASSERT(NS_IsMainThread() || XRE_GetProcessType() == GeckoProcessType_GPU);
   mVsyncObserver = new Observer(this);
 #ifdef MOZ_WIDGET_GONK
   GeckoTouchDispatcher::GetInstance()->SetCompositorVsyncScheduler(this);
@@ -351,7 +362,7 @@ CompositorVsyncScheduler::PostCompositeTask(TimeStamp aCompositeTimestamp)
 {
   // can be called from the compositor or vsync thread
   MonitorAutoLock lock(mCurrentCompositeTaskMonitor);
-  if (mCurrentCompositeTask == nullptr) {
+  if (mCurrentCompositeTask == nullptr && CompositorThreadHolder::Loop()) {
     RefPtr<CancelableRunnable> task =
       NewCancelableRunnableMethod<TimeStamp>(this, &CompositorVsyncScheduler::Composite,
                                              aCompositeTimestamp);
@@ -434,8 +445,10 @@ CompositorVsyncScheduler::SetNeedsComposite()
 bool
 CompositorVsyncScheduler::NotifyVsync(TimeStamp aVsyncTimestamp)
 {
-  // Called from the vsync dispatch thread
-  MOZ_ASSERT(!CompositorThreadHolder::IsInCompositorThread());
+  // Called from the vsync dispatch thread. When in the GPU Process, that's
+  // the same as the compositor thread.
+  MOZ_ASSERT_IF(XRE_IsParentProcess(), !CompositorThreadHolder::IsInCompositorThread());
+  MOZ_ASSERT_IF(XRE_GetProcessType() == GeckoProcessType_GPU, CompositorThreadHolder::IsInCompositorThread());
   MOZ_ASSERT(!NS_IsMainThread());
   PostCompositeTask(aVsyncTimestamp);
   return true;
@@ -522,7 +535,7 @@ void
 CompositorVsyncScheduler::ObserveVsync()
 {
   MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
-  mCompositorVsyncDispatcher->SetCompositorVsyncObserver(mVsyncObserver);
+  mWidget->ObserveVsync(mVsyncObserver);
   mIsObservingVsync = true;
 }
 
@@ -530,7 +543,7 @@ void
 CompositorVsyncScheduler::UnobserveVsync()
 {
   MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
-  mCompositorVsyncDispatcher->SetCompositorVsyncObserver(nullptr);
+  mWidget->ObserveVsync(nullptr);
   mIsObservingVsync = false;
 }
 
@@ -582,22 +595,22 @@ CompositorLoop()
   return CompositorThreadHolder::Loop();
 }
 
-CompositorBridgeParent::CompositorBridgeParent(widget::CompositorWidgetProxy* aWidget,
-                                               CSSToLayoutDeviceScale aScale,
-                                               bool aUseAPZ,
+CompositorBridgeParent::CompositorBridgeParent(CSSToLayoutDeviceScale aScale,
+                                               const TimeDuration& aVsyncRate,
                                                bool aUseExternalSurfaceSize,
-                                               int aSurfaceWidth, int aSurfaceHeight)
-  : CompositorBridgeParentIPCAllocator("CompositorBridgeParent")
-  , mWidgetProxy(aWidget)
+                                               const gfx::IntSize& aSurfaceSize)
+  : mWidget(nullptr)
+  , mScale(aScale)
+  , mVsyncRate(aVsyncRate)
   , mIsTesting(false)
   , mPendingTransaction(0)
   , mPaused(false)
   , mUseExternalSurfaceSize(aUseExternalSurfaceSize)
-  , mEGLSurfaceSize(aSurfaceWidth, aSurfaceHeight)
+  , mEGLSurfaceSize(aSurfaceSize)
   , mPauseCompositionMonitor("PauseCompositionMonitor")
   , mResumeCompositionMonitor("ResumeCompositionMonitor")
   , mResetCompositorMonitor("ResetCompositorMonitor")
-  , mRootLayerTreeID(AllocateLayerTreeId())
+  , mRootLayerTreeID(0)
   , mOverrideComposeReadiness(false)
   , mForceCompositionTask(nullptr)
   , mCompositorThreadHolder(CompositorThreadHolder::GetSingleton())
@@ -608,12 +621,52 @@ CompositorBridgeParent::CompositorBridgeParent(widget::CompositorWidgetProxy* aW
   , mPluginWindowsHidden(false)
 #endif
 {
+  // Always run destructor on the main thread
   MOZ_ASSERT(NS_IsMainThread());
+}
+
+void
+CompositorBridgeParent::InitSameProcess(widget::CompositorWidget* aWidget,
+                                        const uint64_t& aLayerTreeId,
+                                        bool aUseAPZ)
+{
+  mWidget = aWidget;
+  mRootLayerTreeID = aLayerTreeId;
+  if (aUseAPZ) {
+    mApzcTreeManager = new APZCTreeManager();
+  }
+
+  // IPDL initialization. mSelfRef is cleared in DeferredDestroy.
+  SetOtherProcessId(base::GetCurrentProcId());
+  mSelfRef = this;
+
+  Initialize();
+}
+
+bool
+CompositorBridgeParent::Bind(Endpoint<PCompositorBridgeParent>&& aEndpoint)
+{
+  if (!aEndpoint.Bind(this, nullptr)) {
+    return false;
+  }
+  mSelfRef = this;
+  return true;
+}
+
+bool
+CompositorBridgeParent::RecvInitialize(const uint64_t& aRootLayerTreeId)
+{
+  mRootLayerTreeID = aRootLayerTreeId;
+
+  Initialize();
+  return true;
+}
+
+void
+CompositorBridgeParent::Initialize()
+{
   MOZ_ASSERT(CompositorThread(),
              "The compositor thread must be Initialized before instanciating a CompositorBridgeParent.");
-
-  // Always run destructor on the main thread
-  SetMessageLoopToPostDestructionTo(MessageLoop::current());
 
   mCompositorID = 0;
   // FIXME: This holds on the the fact that right now the only thing that
@@ -631,27 +684,20 @@ CompositorBridgeParent::CompositorBridgeParent(widget::CompositorWidgetProxy* aW
     sIndirectLayerTrees[mRootLayerTreeID].mParent = this;
   }
 
-  if (aUseAPZ) {
-    mApzcTreeManager = new APZCTreeManager();
-  }
+  LayerScope::SetPixelScale(mScale.scale);
 
-  mCompositorScheduler = new CompositorVsyncScheduler(this, aWidget);
-  LayerScope::SetPixelScale(aScale.scale);
-
-  // mSelfRef is cleared in DeferredDestroy.
-  mSelfRef = this;
+  mCompositorScheduler = new CompositorVsyncScheduler(this, mWidget);
 }
 
 uint64_t
 CompositorBridgeParent::RootLayerTreeId()
 {
+  MOZ_ASSERT(mRootLayerTreeID);
   return mRootLayerTreeID;
 }
 
 CompositorBridgeParent::~CompositorBridgeParent()
 {
-  MOZ_ASSERT(NS_IsMainThread());
-
   InfallibleTArray<PTextureParent*> textures;
   ManagedPTextureParent(textures);
   // We expect all textures to be destroyed by now.
@@ -671,7 +717,6 @@ CompositorBridgeParent::ForceIsFirstPaint()
 void
 CompositorBridgeParent::StopAndClearResources()
 {
-  CancelCurrentCompositeTask();
   if (mForceCompositionTask) {
     mForceCompositionTask->Cancel();
     mForceCompositionTask = nullptr;
@@ -697,6 +742,15 @@ CompositorBridgeParent::StopAndClearResources()
     mCompositor->Destroy();
     mCompositor = nullptr;
   }
+
+  // This must be destroyed now since it accesses the widget.
+  if (mCompositorScheduler) {
+    mCompositorScheduler->Destroy();
+    mCompositorScheduler = nullptr;
+  }
+
+  // After this point, it is no longer legal to access the widget.
+  mWidget = nullptr;
 }
 
 bool
@@ -762,14 +816,6 @@ CompositorBridgeParent::RecvForcePresent()
   if (mLayerManager) {
     mLayerManager->ForcePresent();
   }
-  return true;
-}
-
-bool
-CompositorBridgeParent::RecvGetTileSize(int32_t* aWidth, int32_t* aHeight)
-{
-  *aWidth = gfxPlatform::GetPlatform()->GetTileWidth();
-  *aHeight = gfxPlatform::GetPlatform()->GetTileHeight();
   return true;
 }
 
@@ -867,8 +913,6 @@ CompositorBridgeParent::ActorDestroy(ActorDestroyReason why)
     mApzcTreeManager->ClearTree();
     mApzcTreeManager = nullptr;
   }
-
-  mCompositorScheduler->Destroy();
 
   { // scope lock
     MonitorAutoLock lock(*sIndirectLayerTreesLock);
@@ -1039,13 +1083,24 @@ CompositorBridgeParent::NotifyShadowTreeTransaction(uint64_t aId, bool aIsFirstP
     bool aScheduleComposite, uint32_t aPaintSequenceNumber,
     bool aIsRepeatTransaction, bool aHitTestUpdate)
 {
-  if (mApzcTreeManager &&
-      !aIsRepeatTransaction &&
+  if (!aIsRepeatTransaction &&
       mLayerManager &&
       mLayerManager->GetRoot()) {
-    AutoResolveRefLayers resolve(mCompositionManager);
+    // Process plugin data here to give time for them to update before the next
+    // composition.
+    bool pluginsUpdatedFlag = true;
+    AutoResolveRefLayers resolve(mCompositionManager, this, nullptr,
+                                 &pluginsUpdatedFlag);
 
-    if (aHitTestUpdate) {
+#if defined(XP_WIN) || defined(MOZ_WIDGET_GTK)
+    // If plugins haven't been updated, stop waiting.
+    if (!pluginsUpdatedFlag) {
+      mWaitForPluginsUntil = TimeStamp();
+      mHaveBlockedForPlugins = false;
+    }
+#endif
+
+    if (mApzcTreeManager && aHitTestUpdate) {
       mApzcTreeManager->UpdateHitTestingTree(this, mLayerManager->GetRoot(),
           aIsFirstPaint, aId, aPaintSequenceNumber);
     }
@@ -1122,6 +1177,15 @@ CompositorBridgeParent::CompositeToTarget(DrawTarget* aTarget, const gfx::IntRec
     return;
   }
 
+#if defined(XP_WIN) || defined(MOZ_WIDGET_GTK)
+  if (!mWaitForPluginsUntil.IsNull() &&
+      mWaitForPluginsUntil > start) {
+    mHaveBlockedForPlugins = true;
+    ScheduleComposition();
+    return;
+  }
+#endif
+
   /*
    * AutoResolveRefLayers handles two tasks related to Windows and Linux
    * plugin window management:
@@ -1144,9 +1208,9 @@ CompositorBridgeParent::CompositeToTarget(DrawTarget* aTarget, const gfx::IntRec
 #if defined(XP_WIN) || defined(MOZ_WIDGET_GTK)
   // We do not support plugins in local content. When switching tabs
   // to local pages, hide every plugin associated with the window.
-  if (!hasRemoteContent && BrowserTabsRemoteAutostart() &&
+  if (!hasRemoteContent && gfxVars::BrowserTabsRemoteAutostart() &&
       mCachedPluginData.Length()) {
-    Unused << SendHideAllPlugins(GetWidgetProxy()->GetWidgetKey());
+    Unused << SendHideAllPlugins(GetWidget()->GetWidgetKey());
     mCachedPluginData.Clear();
   }
 #endif
@@ -1171,9 +1235,17 @@ CompositorBridgeParent::CompositeToTarget(DrawTarget* aTarget, const gfx::IntRec
   mCompositionManager->ComputeRotation();
 
   TimeStamp time = mIsTesting ? mTestTime : mCompositorScheduler->GetLastComposeTime();
-  bool requestNextFrame = mCompositionManager->TransformShadowTree(time);
+  bool requestNextFrame = mCompositionManager->TransformShadowTree(time, mVsyncRate);
   if (requestNextFrame) {
     ScheduleComposition();
+#if defined(XP_WIN) || defined(MOZ_WIDGET_GTK)
+    // If we have visible windowed plugins then we need to wait for content (and
+    // then the plugins) to have been updated by the active animation.
+    if (!mPluginWindowsHidden && mCachedPluginData.Length()) {
+      mWaitForPluginsUntil = mCompositorScheduler->GetLastComposeTime()
+                             + (GetGlobalVsyncRate() * 2);
+    }
+#endif
   }
 
   RenderTraceLayers(mLayerManager->GetRoot(), "0000");
@@ -1231,7 +1303,13 @@ bool
 CompositorBridgeParent::RecvRemotePluginsReady()
 {
 #if defined(XP_WIN) || defined(MOZ_WIDGET_GTK)
-  ScheduleComposition();
+  mWaitForPluginsUntil = TimeStamp();
+  if (mHaveBlockedForPlugins) {
+    mHaveBlockedForPlugins = false;
+    ForceComposeToTarget(nullptr);
+  } else {
+    ScheduleComposition();
+  }
   return true;
 #else
   NS_NOTREACHED("CompositorBridgeParent::RecvRemotePluginsReady calls "
@@ -1352,7 +1430,7 @@ CompositorBridgeParent::SetTestSampleTime(LayerTransactionParent* aLayerTree,
   // Update but only if we were already scheduled to animate
   if (testComposite) {
     AutoResolveRefLayers resolve(mCompositionManager);
-    bool requestNextFrame = mCompositionManager->TransformShadowTree(aTime);
+    bool requestNextFrame = mCompositionManager->TransformShadowTree(aTime, mVsyncRate);
     if (!requestNextFrame) {
       CancelCurrentCompositeTask();
       // Pretend we composited in case someone is wating for this event.
@@ -1384,7 +1462,7 @@ CompositorBridgeParent::ApplyAsyncProperties(LayerTransactionParent* aLayerTree)
 
     TimeStamp time = mIsTesting ? mTestTime : mCompositorScheduler->GetLastComposeTime();
     bool requestNextFrame =
-      mCompositionManager->TransformShadowTree(time,
+      mCompositionManager->TransformShadowTree(time, mVsyncRate,
         AsyncCompositionManager::TransformsToSkip::APZ);
     if (!requestNextFrame) {
       CancelCurrentCompositeTask();
@@ -1492,31 +1570,61 @@ CompositorBridgeParent::NewCompositor(const nsTArray<LayersBackend>& aBackendHin
     RefPtr<Compositor> compositor;
     if (aBackendHints[i] == LayersBackend::LAYERS_OPENGL) {
       compositor = new CompositorOGL(this,
-                                     mWidgetProxy,
+                                     mWidget,
                                      mEGLSurfaceSize.width,
                                      mEGLSurfaceSize.height,
                                      mUseExternalSurfaceSize);
     } else if (aBackendHints[i] == LayersBackend::LAYERS_BASIC) {
 #ifdef MOZ_WIDGET_GTK
-      if (gfxPlatformGtk::GetPlatform()->UseXRender()) {
-        compositor = new X11BasicCompositor(this, mWidgetProxy);
+      if (gfxVars::UseXRender()) {
+        compositor = new X11BasicCompositor(this, mWidget);
       } else
 #endif
       {
-        compositor = new BasicCompositor(this, mWidgetProxy);
+        compositor = new BasicCompositor(this, mWidget);
       }
 #ifdef XP_WIN
     } else if (aBackendHints[i] == LayersBackend::LAYERS_D3D11) {
-      compositor = new CompositorD3D11(this, mWidgetProxy);
+      compositor = new CompositorD3D11(this, mWidget);
     } else if (aBackendHints[i] == LayersBackend::LAYERS_D3D9) {
-      compositor = new CompositorD3D9(this, mWidgetProxy);
+      compositor = new CompositorD3D9(this, mWidget);
 #endif
     }
+    nsCString failureReason;
+    if (compositor && compositor->Initialize(&failureReason)) {
+      if (failureReason.IsEmpty()){
+        failureReason = "SUCCESS";
+      }
 
-    if (compositor && compositor->Initialize()) {
+      // should only report success here
+      if (aBackendHints[i] == LayersBackend::LAYERS_OPENGL){
+        Telemetry::Accumulate(Telemetry::OPENGL_COMPOSITING_FAILURE_ID, failureReason);
+      }
+#ifdef XP_WIN
+      else if (aBackendHints[i] == LayersBackend::LAYERS_D3D9){
+        Telemetry::Accumulate(Telemetry::D3D9_COMPOSITING_FAILURE_ID, failureReason);
+      }
+      else if (aBackendHints[i] == LayersBackend::LAYERS_D3D11){
+        Telemetry::Accumulate(Telemetry::D3D11_COMPOSITING_FAILURE_ID, failureReason);
+      }
+#endif
+
       compositor->SetCompositorID(mCompositorID);
       return compositor;
     }
+
+    // report any failure reasons here
+    if (aBackendHints[i] == LayersBackend::LAYERS_OPENGL){
+      Telemetry::Accumulate(Telemetry::OPENGL_COMPOSITING_FAILURE_ID, failureReason);
+    }
+#ifdef XP_WIN
+    else if (aBackendHints[i] == LayersBackend::LAYERS_D3D9){
+      Telemetry::Accumulate(Telemetry::D3D9_COMPOSITING_FAILURE_ID, failureReason);
+    }
+    else if (aBackendHints[i] == LayersBackend::LAYERS_D3D11){
+      Telemetry::Accumulate(Telemetry::D3D11_COMPOSITING_FAILURE_ID, failureReason);
+    }
+#endif
   }
 
   return nullptr;
@@ -1582,6 +1690,28 @@ CompositorBridgeParent* CompositorBridgeParent::RemoveCompositor(uint64_t id)
   return retval;
 }
 
+void
+CompositorBridgeParent::NotifyVsync(const TimeStamp& aTimeStamp, const uint64_t& aLayersId)
+{
+  MOZ_ASSERT(XRE_GetProcessType() == GeckoProcessType_GPU);
+  MOZ_ASSERT(CompositorThreadHolder::IsInCompositorThread());
+
+  MonitorAutoLock lock(*sIndirectLayerTreesLock);
+  auto it = sIndirectLayerTrees.find(aLayersId);
+  if (it == sIndirectLayerTrees.end())
+    return;
+
+  CompositorBridgeParent* cbp = it->second.mParent;
+  if (!cbp || !cbp->mWidget)
+    return;
+
+  RefPtr<VsyncObserver> obs = cbp->mWidget->GetVsyncObserver();
+  if (!obs)
+    return;
+
+  obs->NotifyVsync(aTimeStamp);
+}
+
 bool
 CompositorBridgeParent::RecvNotifyChildCreated(const uint64_t& child)
 {
@@ -1644,15 +1774,6 @@ CompositorBridgeParent::RecvAdoptChild(const uint64_t& child)
     controller->ChildAdopted();
   }
   return true;
-}
-
-/*static*/ uint64_t
-CompositorBridgeParent::AllocateLayerTreeId()
-{
-  MOZ_ASSERT(CompositorLoop());
-  MOZ_ASSERT(NS_IsMainThread());
-  static uint64_t ids = 0;
-  return ++ids;
 }
 
 static void
@@ -1754,16 +1875,6 @@ CompositorBridgeParent::GetAPZCTreeManager(uint64_t aLayersId)
   return apzctm.forget();
 }
 
-float
-CompositorBridgeParent::ComputeRenderIntegrity()
-{
-  if (mLayerManager) {
-    return mLayerManager->ComputeRenderIntegrity();
-  }
-
-  return 1.0f;
-}
-
 static void
 InsertVsyncProfilerMarker(TimeStamp aVsyncTimestamp)
 {
@@ -1800,6 +1911,38 @@ CompositorBridgeParent::RequestNotifyLayerTreeCleared(uint64_t aLayersId, Compos
   sIndirectLayerTrees[aLayersId].mLayerTreeClearedObserver = aObserver;
 }
 
+widget::PCompositorWidgetParent*
+CompositorBridgeParent::AllocPCompositorWidgetParent(const CompositorWidgetInitData& aInitData)
+{
+#if defined(MOZ_WIDGET_SUPPORTS_OOP_COMPOSITING)
+  if (mWidget) {
+    // Should not create two widgets on the same compositor.
+    return nullptr;
+  }
+
+  widget::CompositorWidgetParent* widget =
+    new widget::CompositorWidgetParent(aInitData);
+  widget->AddRef();
+
+  // Sending the constructor acts as initialization as well.
+  mWidget = widget;
+  return widget;
+#else
+  return nullptr;
+#endif
+}
+
+bool
+CompositorBridgeParent::DeallocPCompositorWidgetParent(PCompositorWidgetParent* aActor)
+{
+#if defined(MOZ_WIDGET_SUPPORTS_OOP_COMPOSITING)
+  static_cast<widget::CompositorWidgetParent*>(aActor)->Release();
+  return true;
+#else
+  return false;
+#endif
+}
+
 /**
  * This class handles layer updates pushed directly from child processes to
  * the compositor thread. It's associated with a CompositorBridgeParent on the
@@ -1815,15 +1958,18 @@ class CrossProcessCompositorBridgeParent final : public PCompositorBridgeParent,
   friend class CompositorBridgeParent;
 
 public:
-  explicit CrossProcessCompositorBridgeParent(Transport* aTransport)
-    : CompositorBridgeParentIPCAllocator("CrossProcessCompositorBridgeParent")
-    , mTransport(aTransport)
-    , mNotifyAfterRemotePaint(false)
+  explicit CrossProcessCompositorBridgeParent()
+    : mNotifyAfterRemotePaint(false)
     , mDestroyCalled(false)
   {
     MOZ_ASSERT(NS_IsMainThread());
-    // Always run destructor on the main thread
-    SetMessageLoopToPostDestructionTo(MessageLoop::current());
+  }
+
+  void Bind(Endpoint<PCompositorBridgeParent>&& aEndpoint) {
+    if (!aEndpoint.Bind(this, nullptr)) {
+      return;
+    }
+    mSelfRef = this;
   }
 
   // IToplevelProtocol::CloneToplevel()
@@ -1835,12 +1981,11 @@ public:
   virtual void ActorDestroy(ActorDestroyReason aWhy) override;
 
   // FIXME/bug 774388: work out what shutdown protocol we need.
+  virtual bool RecvInitialize(const uint64_t& aRootLayerTreeId) override { return false; }
   virtual bool RecvRequestOverfill() override { return true; }
   virtual bool RecvWillClose() override { return true; }
   virtual bool RecvPause() override { return true; }
   virtual bool RecvResume() override { return true; }
-  virtual bool RecvNotifyHidden(const uint64_t& id) override;
-  virtual bool RecvNotifyVisible(const uint64_t& id) override;
   virtual bool RecvNotifyChildCreated(const uint64_t& child) override;
   virtual bool RecvAdoptChild(const uint64_t& child) override { return false; }
   virtual bool RecvMakeSnapshot(const SurfaceDescriptor& aInSnapshot,
@@ -1887,12 +2032,7 @@ public:
     return true;
   }
 
-  virtual bool RecvGetTileSize(int32_t* aWidth, int32_t* aHeight) override
-  {
-    *aWidth = gfxPlatform::GetPlatform()->GetTileWidth();
-    *aHeight = gfxPlatform::GetPlatform()->GetTileHeight();
-    return true;
-  }
+  virtual bool RecvAllPluginsCaptured() override { return true; }
 
   virtual bool RecvGetFrameUniformity(FrameUniformityData* aOutData) override
   {
@@ -1979,6 +2119,15 @@ public:
     Unused << SendParentAsyncMessages(aMessage);
   }
 
+  PCompositorWidgetParent* AllocPCompositorWidgetParent(const CompositorWidgetInitData& aInitData) override {
+    // Not allowed.
+    return nullptr;
+  }
+  bool DeallocPCompositorWidgetParent(PCompositorWidgetParent* aActor) override {
+    // Not allowed.
+    return false;
+  }
+
   virtual CompositorBridgeParentIPCAllocator* AsCompositorBridgeParentIPCAllocator() override { return this; }
 
 protected:
@@ -1995,7 +2144,6 @@ private:
   // reference to top-level actors.  So we hold a reference to
   // ourself.  This is released (deferred) in ActorDestroy().
   RefPtr<CrossProcessCompositorBridgeParent> mSelfRef;
-  Transport* mTransport;
 
   RefPtr<CompositorThreadHolder> mCompositorThreadHolder;
   // If true, we should send a RemotePaintIsReady message when the layer transaction
@@ -2146,29 +2294,22 @@ CompositorBridgeParent::ResetCompositorImpl(const nsTArray<LayersBackend>& aBack
 }
 
 static void
-OpenCompositor(CrossProcessCompositorBridgeParent* aCompositor,
-               Transport* aTransport, ProcessId aOtherPid,
-               MessageLoop* aIOLoop)
+OpenCompositor(RefPtr<CrossProcessCompositorBridgeParent> aCompositor,
+               Endpoint<PCompositorBridgeParent>&& aEndpoint)
 {
-  DebugOnly<bool> ok = aCompositor->Open(aTransport, aOtherPid, aIOLoop);
-  MOZ_ASSERT(ok);
+  aCompositor->Bind(Move(aEndpoint));
 }
 
-/*static*/ PCompositorBridgeParent*
-CompositorBridgeParent::Create(Transport* aTransport, ProcessId aOtherPid)
+/* static */ bool
+CompositorBridgeParent::CreateForContent(Endpoint<PCompositorBridgeParent>&& aEndpoint)
 {
   gfxPlatform::InitLayersIPC();
 
   RefPtr<CrossProcessCompositorBridgeParent> cpcp =
-    new CrossProcessCompositorBridgeParent(aTransport);
+    new CrossProcessCompositorBridgeParent();
 
-  cpcp->mSelfRef = cpcp;
-  CompositorLoop()->PostTask(
-    NewRunnableFunction(OpenCompositor, cpcp.get(),
-                        aTransport, aOtherPid, XRE_GetIOMessageLoop()));
-  // The return value is just compared to null for success checking,
-  // we're not sharing a ref.
-  return cpcp.get();
+  CompositorLoop()->PostTask(NewRunnableFunction(OpenCompositor, cpcp, Move(aEndpoint)));
+  return true;
 }
 
 static void
@@ -2241,22 +2382,6 @@ CompositorBridgeParent::IsSameProcess() const
 }
 
 bool
-CrossProcessCompositorBridgeParent::RecvNotifyHidden(const uint64_t& id)
-{
-  RefPtr<CompositorLRU> lru = CompositorLRU::GetSingleton();
-  lru->Add(this, id);
-  return true;
-}
-
-bool
-CrossProcessCompositorBridgeParent::RecvNotifyVisible(const uint64_t& id)
-{
-  RefPtr<CompositorLRU> lru = CompositorLRU::GetSingleton();
-  lru->Remove(this, id);
-  return true;
-}
-
-bool
 CrossProcessCompositorBridgeParent::RecvRequestNotifyAfterRemotePaint()
 {
   mNotifyAfterRemotePaint = true;
@@ -2266,9 +2391,6 @@ CrossProcessCompositorBridgeParent::RecvRequestNotifyAfterRemotePaint()
 void
 CrossProcessCompositorBridgeParent::ActorDestroy(ActorDestroyReason aWhy)
 {
-  RefPtr<CompositorLRU> lru = CompositorLRU::GetSingleton();
-  lru->Remove(this);
-
   // We must keep this object alive untill the code handling message
   // reception is finished on this thread.
   MessageLoop::current()->PostTask(NewRunnableMethod(this, &CrossProcessCompositorBridgeParent::DeferredDestroy));
@@ -2462,7 +2584,7 @@ CompositorBridgeParent::UpdatePluginWindowState(uint64_t aId)
       return false;
     }
 
-    uintptr_t parentWidget = GetWidgetProxy()->GetWidgetKey();
+    uintptr_t parentWidget = GetWidget()->GetWidgetKey();
 
     // We will pass through here in cases where the previous shadow layer
     // tree contained visible plugins and the new tree does not. All we need
@@ -2547,15 +2669,37 @@ CompositorBridgeParent::HideAllPluginWindows()
     return;
   }
 
-  uintptr_t parentWidget = GetWidgetProxy()->GetWidgetKey();
+  uintptr_t parentWidget = GetWidget()->GetWidgetKey();
 
   mDeferPluginWindows = true;
   mPluginWindowsHidden = true;
+
+#if defined(XP_WIN)
+  // We will get an async reply that this has happened and then send hide.
+  mWaitForPluginsUntil = TimeStamp::Now() + GetGlobalVsyncRate();
+  Unused << SendCaptureAllPlugins(parentWidget);
+#else
   Unused << SendHideAllPlugins(parentWidget);
   ScheduleComposition();
+#endif
 }
 #endif // #if defined(XP_WIN) || defined(MOZ_WIDGET_GTK)
 
+bool
+CompositorBridgeParent::RecvAllPluginsCaptured()
+{
+#if defined(XP_WIN)
+  mWaitForPluginsUntil = TimeStamp();
+  mHaveBlockedForPlugins = false;
+  ForceComposeToTarget(nullptr);
+  Unused << SendHideAllPlugins(GetWidget()->GetWidgetKey());
+  return true;
+#else
+  MOZ_ASSERT_UNREACHABLE(
+    "CompositorBridgeParent::RecvAllPluginsCaptured calls unexpected.");
+  return false;
+#endif
+}
 void
 CrossProcessCompositorBridgeParent::DidComposite(
   uint64_t aId,
@@ -2728,10 +2872,8 @@ CrossProcessCompositorBridgeParent::DeferredDestroy()
 
 CrossProcessCompositorBridgeParent::~CrossProcessCompositorBridgeParent()
 {
-  MOZ_ASSERT(NS_IsMainThread());
   MOZ_ASSERT(XRE_GetIOMessageLoop());
-  RefPtr<DeleteTask<Transport>> task = new DeleteTask<Transport>(mTransport);
-  XRE_GetIOMessageLoop()->PostTask(task.forget());
+  MOZ_ASSERT(IToplevelProtocol::GetTransport());
 }
 
 IToplevelProtocol*
@@ -2740,20 +2882,7 @@ CrossProcessCompositorBridgeParent::CloneToplevel(
   base::ProcessHandle aPeerProcess,
   mozilla::ipc::ProtocolCloneContext* aCtx)
 {
-  for (unsigned int i = 0; i < aFds.Length(); i++) {
-    if (aFds[i].protocolId() == (unsigned)GetProtocolId()) {
-      Transport* transport = OpenDescriptor(aFds[i].fd(),
-                                            Transport::MODE_SERVER);
-      PCompositorBridgeParent* compositor =
-        CompositorBridgeParent::Create(transport, base::GetProcId(aPeerProcess));
-      compositor->CloneManagees(this, aCtx);
-      compositor->IToplevelProtocol::SetTransport(transport);
-      // The reference to the compositor thread is held in OnChannelConnected().
-      // We need to do this for cloned actors, too.
-      compositor->OnChannelConnected(base::GetProcId(aPeerProcess));
-      return compositor;
-    }
-  }
+  MOZ_ASSERT_UNREACHABLE("Not supported");
   return nullptr;
 }
 

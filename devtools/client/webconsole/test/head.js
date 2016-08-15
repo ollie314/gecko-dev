@@ -9,7 +9,7 @@
 // shared-head.js handles imports, constants, and utility functions
 Services.scriptloader.loadSubScript("chrome://mochitests/content/browser/devtools/client/framework/test/shared-head.js", this);
 
-var {Utils: WebConsoleUtils} = require("devtools/shared/webconsole/utils");
+var {Utils: WebConsoleUtils} = require("devtools/client/webconsole/utils");
 var {Messages} = require("devtools/client/webconsole/console-output");
 const asyncStorage = require("devtools/shared/async-storage");
 const HUDService = require("devtools/client/webconsole/hudservice");
@@ -41,7 +41,11 @@ const WEBCONSOLE_STRINGS_URI = "chrome://devtools/locale/" +
                                "webconsole.properties";
 var WCUL10n = new WebConsoleUtils.L10n(WEBCONSOLE_STRINGS_URI);
 
-DevToolsUtils.testing = true;
+const DOCS_GA_PARAMS = "?utm_source=mozilla" +
+                       "&utm_medium=firefox-console-errors" +
+                       "&utm_campaign=default";
+
+flags.testing = true;
 
 function loadTab(url) {
   let deferred = promise.defer();
@@ -319,7 +323,7 @@ var finishTest = Task.async(function* () {
 });
 
 registerCleanupFunction(function* () {
-  DevToolsUtils.testing = false;
+  flags.testing = false;
 
   // Remove stored console commands in between tests
   yield asyncStorage.removeItem("webConsoleHistory");
@@ -1032,7 +1036,7 @@ function waitForMessages(options) {
       return false;
     }
 
-    if ("line" in rule.source && location.line === rule.source.line) {
+    if ("line" in rule.source && location.line != rule.source.line) {
       return false;
     }
 
@@ -1050,7 +1054,7 @@ function waitForMessages(options) {
 
   function checkStacktrace(rule, element) {
     let stack = rule.stacktrace;
-    let frames = element.querySelectorAll(".stacktrace > li");
+    let frames = element.querySelectorAll(".stacktrace > .stack-trace > .frame-link");
     if (!frames.length) {
       return false;
     }
@@ -1064,7 +1068,7 @@ function waitForMessages(options) {
       }
 
       if (expected.file) {
-        let url = getRenderedSource(frame).url;
+        let url = frame.getAttribute("data-url");
         if (!checkText(expected.file, url)) {
           ok(false, "frame #" + i + " does not match file name: " +
                     expected.file + " != " + url);
@@ -1074,7 +1078,7 @@ function waitForMessages(options) {
       }
 
       if (expected.fn) {
-        let fn = frame.querySelector(".function").textContent;
+        let fn = frame.querySelector(".frame-link-function-display-name").textContent;
         if (!checkText(expected.fn, fn)) {
           ok(false, "frame #" + i + " does not match the function name: " +
                     expected.fn + " != " + fn);
@@ -1084,7 +1088,7 @@ function waitForMessages(options) {
       }
 
       if (expected.line) {
-        let line = getRenderedSource(frame).line;
+        let line = frame.getAttribute("data-line");
         if (!checkText(expected.line, line)) {
           ok(false, "frame #" + i + " does not match the line number: " +
                     expected.line + " != " + line);

@@ -71,6 +71,7 @@ class MobileMessageManager;
 class MozIdleObserver;
 #ifdef MOZ_GAMEPAD
 class Gamepad;
+class GamepadServiceTest;
 #endif // MOZ_GAMEPAD
 class NavigatorUserMediaSuccessCallback;
 class NavigatorUserMediaErrorCallback;
@@ -145,9 +146,6 @@ public:
    * Called when the inner window navigates to a new page.
    */
   void OnNavigation();
-
-  // Helper to initialize mMessagesManager.
-  nsresult EnsureMessagesManager();
 
   // The XPCOM GetProduct is OK
   // The XPCOM GetLanguage is OK
@@ -250,11 +248,6 @@ public:
   network::Connection* GetConnection(ErrorResult& aRv);
   nsDOMCameraManager* GetMozCameras(ErrorResult& aRv);
   MediaDevices* GetMediaDevices(ErrorResult& aRv);
-  void MozSetMessageHandler(const nsAString& aType,
-                            systemMessageCallback* aCallback,
-                            ErrorResult& aRv);
-  bool MozHasPendingMessage(const nsAString& aType, ErrorResult& aRv);
-  void MozSetMessageHandlerPromise(Promise& aPromise, ErrorResult& aRv);
 
 #ifdef MOZ_B2G
   already_AddRefed<Promise> GetMobileIdAssertion(const MobileIdOptions& options,
@@ -265,6 +258,7 @@ public:
 #endif // MOZ_B2G_RIL
 #ifdef MOZ_GAMEPAD
   void GetGamepads(nsTArray<RefPtr<Gamepad> >& aGamepads, ErrorResult& aRv);
+  GamepadServiceTest* RequestGamepadServiceTest();
 #endif // MOZ_GAMEPAD
   already_AddRefed<Promise> GetVRDevices(ErrorResult& aRv);
   void NotifyVRDevicesUpdated();
@@ -391,14 +385,15 @@ private:
 #endif
   RefPtr<nsDOMCameraManager> mCameraManager;
   RefPtr<MediaDevices> mMediaDevices;
-  nsCOMPtr<nsIDOMNavigatorSystemMessages> mMessagesManager;
   nsTArray<nsWeakPtr> mDeviceStorageStores;
   RefPtr<time::TimeManager> mTimeManager;
   RefPtr<ServiceWorkerContainer> mServiceWorkerContainer;
   nsCOMPtr<nsPIDOMWindowInner> mWindow;
   RefPtr<DeviceStorageAreaListener> mDeviceStorageAreaListener;
   RefPtr<Presentation> mPresentation;
-
+#ifdef MOZ_GAMEPAD
+  RefPtr<GamepadServiceTest> mGamepadServiceTest;
+#endif
   nsTArray<RefPtr<Promise> > mVRGetDevicesPromises;
   nsTArray<uint32_t> mRequestedVibrationPattern;
 };

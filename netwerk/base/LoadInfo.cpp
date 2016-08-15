@@ -51,6 +51,7 @@ LoadInfo::LoadInfo(nsIPrincipal* aLoadingPrincipal,
   , mUpgradeInsecureRequests(false)
   , mVerifySignedContent(false)
   , mEnforceSRI(false)
+  , mForceInheritPrincipalDropped(false)
   , mInnerWindowID(0)
   , mOuterWindowID(0)
   , mParentOuterWindowID(0)
@@ -91,7 +92,7 @@ LoadInfo::LoadInfo(nsIPrincipal* aLoadingPrincipal,
   // if the load is sandboxed, we can not also inherit the principal
   if (mSecurityFlags & nsILoadInfo::SEC_SANDBOXED) {
     mSecurityFlags ^= nsILoadInfo::SEC_FORCE_INHERIT_PRINCIPAL;
-    mSecurityFlags |= nsILoadInfo::SEC_FORCE_INHERIT_PRINCIPAL_WAS_DROPPED;
+    mForceInheritPrincipalDropped = true;
   }
 
   if (aLoadingContext) {
@@ -150,14 +151,24 @@ LoadInfo::LoadInfo(nsIPrincipal* aLoadingPrincipal,
       // do not look into the CSP if already true:
       // a CSP saying that SRI isn't needed should not
       // overrule GetVerifySignedContent
-      nsCOMPtr<nsIContentSecurityPolicy> csp;
       if (aLoadingPrincipal) {
+        nsCOMPtr<nsIContentSecurityPolicy> csp;
         aLoadingPrincipal->GetCsp(getter_AddRefs(csp));
+        uint32_t externalType =
+          nsContentUtils::InternalContentPolicyTypeToExternal(aContentPolicyType);
         // csp could be null if loading principal is system principal
         if (csp) {
-          uint32_t loadType =
-            nsContentUtils::InternalContentPolicyTypeToExternal(aContentPolicyType);
-          csp->RequireSRIForType(loadType, &mEnforceSRI);
+          csp->RequireSRIForType(externalType, &mEnforceSRI);
+        }
+        // if CSP is delivered via a meta tag, it's speculatively available
+        // as 'preloadCSP'. If we are preloading a script or style, we have
+        // to apply that speculative 'preloadCSP' for such loads.
+        if (!mEnforceSRI && nsContentUtils::IsPreloadType(aContentPolicyType)) {
+          nsCOMPtr<nsIContentSecurityPolicy> preloadCSP;
+          aLoadingPrincipal->GetPreloadCsp(getter_AddRefs(preloadCSP));
+          if (preloadCSP) {
+            preloadCSP->RequireSRIForType(externalType, &mEnforceSRI);
+          }
         }
       }
     }
@@ -194,6 +205,7 @@ LoadInfo::LoadInfo(nsPIDOMWindowOuter* aOuterWindow,
   , mUpgradeInsecureRequests(false)
   , mVerifySignedContent(false)
   , mEnforceSRI(false)
+  , mForceInheritPrincipalDropped(false)
   , mInnerWindowID(0)
   , mOuterWindowID(0)
   , mParentOuterWindowID(0)
@@ -212,7 +224,7 @@ LoadInfo::LoadInfo(nsPIDOMWindowOuter* aOuterWindow,
   // if the load is sandboxed, we can not also inherit the principal
   if (mSecurityFlags & nsILoadInfo::SEC_SANDBOXED) {
     mSecurityFlags ^= nsILoadInfo::SEC_FORCE_INHERIT_PRINCIPAL;
-    mSecurityFlags |= nsILoadInfo::SEC_FORCE_INHERIT_PRINCIPAL_WAS_DROPPED;
+    mForceInheritPrincipalDropped = true;
   }
 
   // NB: Ignore the current inner window since we're navigating away from it.
@@ -241,6 +253,7 @@ LoadInfo::LoadInfo(const LoadInfo& rhs)
   , mUpgradeInsecureRequests(rhs.mUpgradeInsecureRequests)
   , mVerifySignedContent(rhs.mVerifySignedContent)
   , mEnforceSRI(rhs.mEnforceSRI)
+  , mForceInheritPrincipalDropped(rhs.mForceInheritPrincipalDropped)
   , mInnerWindowID(rhs.mInnerWindowID)
   , mOuterWindowID(rhs.mOuterWindowID)
   , mParentOuterWindowID(rhs.mParentOuterWindowID)
@@ -266,6 +279,7 @@ LoadInfo::LoadInfo(nsIPrincipal* aLoadingPrincipal,
                    bool aUpgradeInsecureRequests,
                    bool aVerifySignedContent,
                    bool aEnforceSRI,
+                   bool aForceInheritPrincipalDropped,
                    uint64_t aInnerWindowID,
                    uint64_t aOuterWindowID,
                    uint64_t aParentOuterWindowID,
@@ -287,6 +301,7 @@ LoadInfo::LoadInfo(nsIPrincipal* aLoadingPrincipal,
   , mUpgradeInsecureRequests(aUpgradeInsecureRequests)
   , mVerifySignedContent(aVerifySignedContent)
   , mEnforceSRI(aEnforceSRI)
+  , mForceInheritPrincipalDropped(aForceInheritPrincipalDropped)
   , mInnerWindowID(aInnerWindowID)
   , mOuterWindowID(aOuterWindowID)
   , mParentOuterWindowID(aParentOuterWindowID)
@@ -563,6 +578,13 @@ NS_IMETHODIMP
 LoadInfo::GetEnforceSRI(bool* aResult)
 {
   *aResult = mEnforceSRI;
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+LoadInfo::GetForceInheritPrincipalDropped(bool* aResult)
+{
+  *aResult = mForceInheritPrincipalDropped;
   return NS_OK;
 }
 

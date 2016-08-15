@@ -94,9 +94,6 @@ XPCOMUtils.defineLazyServiceGetter(this, "Profiler",
 XPCOMUtils.defineLazyModuleGetter(this, "SimpleServiceDiscovery",
                                   "resource://gre/modules/SimpleServiceDiscovery.jsm");
 
-XPCOMUtils.defineLazyModuleGetter(this, "ExtensionManagement",
-                                  "resource://gre/modules/ExtensionManagement.jsm");
-
 XPCOMUtils.defineLazyModuleGetter(this, "CharsetMenu",
                                   "resource://gre/modules/CharsetMenu.jsm");
 
@@ -133,7 +130,7 @@ var lazilyLoadedBrowserScripts = [
   ["CastingApps", "chrome://browser/content/CastingApps.js"],
   ["RemoteDebugger", "chrome://browser/content/RemoteDebugger.js"],
 ];
-if (AppConstants.NIGHTLY_BUILD) {
+if (!AppConstants.RELEASE_BUILD) {
   lazilyLoadedBrowserScripts.push(
     ["WebcompatReporter", "chrome://browser/content/WebcompatReporter.js"]);
 }
@@ -389,12 +386,6 @@ var BrowserApp = {
     Services.obs.addObserver(this, "Fonts:Reload", false);
     Services.obs.addObserver(this, "Vibration:Request", false);
 
-    // Register extension source files.
-    ExtensionManagement.registerScript("chrome://browser/content/ext-pageAction.js");
-
-    // Register extension schemas.
-    ExtensionManagement.registerSchema("chrome://browser/content/schemas/page_action.json");
-
     Messaging.addListener(this.getHistory.bind(this), "Session:GetHistory");
 
     function showFullScreenWarning() {
@@ -407,7 +398,7 @@ var BrowserApp = {
       });
     }, false);
 
-    window.addEventListener("fullscreenchange", function(e) {
+    window.addEventListener("fullscreenchange", (e) => {
       // This event gets fired on the document and its entire ancestor chain
       // of documents. When enabling fullscreen, it is fired on the top-level
       // document first and goes down; when disabling the order is reversed
@@ -419,8 +410,14 @@ var BrowserApp = {
         rootElement: doc.fullscreenElement == doc.documentElement
       });
 
-      if (doc.fullscreenElement)
+      if (doc.fullscreenElement) {
         showFullScreenWarning();
+      } else if (this.fullscreenTransitionTab) {
+        // Tab selection has changed during a fullscreen transition, handle it now.
+        let tab = this.fullscreenTransitionTab;
+        this.fullscreenTransitionTab = null;
+        this._handleTabSelected(tab);
+      }
     }, false);
 
     // When a restricted key is pressed in DOM full-screen mode, we should display
@@ -531,7 +528,7 @@ var BrowserApp = {
       InitLater(() => Services.obs.notifyObservers(window, "browser-delayed-startup-finished", ""));
       InitLater(() => Messaging.sendRequest({ type: "Gecko:DelayedStartup" }));
 
-      if (AppConstants.NIGHTLY_BUILD) {
+      if (!AppConstants.RELEASE_BUILD) {
         InitLater(() => WebcompatReporter.init());
       }
 
@@ -975,7 +972,7 @@ var BrowserApp = {
   },
 
   _migrateUI: function() {
-    const UI_VERSION = 2;
+    const UI_VERSION = 3;
     let currentUIVersion = 0;
     try {
       currentUIVersion = Services.prefs.getIntPref("browser.migration.version");
@@ -1037,6 +1034,20 @@ var BrowserApp = {
             Services.obs.notifyObservers(null, "default-search-engine-migrated", "");
           }
         });
+      }
+    }
+
+    if (currentUIVersion < 3) {
+      const kOldSafeBrowsingPref = "browser.safebrowsing.enabled";
+      // Default value is set to true, a user pref means that the pref was
+      // set to false.
+      if (Services.prefs.prefHasUserValue(kOldSafeBrowsingPref) &&
+          !Services.prefs.getBoolPref(kOldSafeBrowsingPref)) {
+        Services.prefs.setBoolPref("browser.safebrowsing.phishing.enabled",
+                                   false);
+        // Should just remove support for the pref entirely, even if it's
+        // only in about:config
+        Services.prefs.clearUserPref(kOldSafeBrowsingPref);
       }
     }
 
@@ -1275,7 +1286,13 @@ var BrowserApp = {
     if (aTab == this.selectedTab)
       return;
 
-    this.selectedBrowser.contentDocument.exitFullscreen();
+    let doc = this.selectedBrowser.contentDocument;
+    if (doc.fullscreenElement) {
+      // We'll finish the tab selection once the fullscreen transition has ended,
+      // remember the new tab for this.
+      this.fullscreenTransitionTab = aTab;
+      doc.exitFullscreen();
+    }
 
     let message = {
       type: "Tab:Select",
@@ -1337,6 +1354,11 @@ var BrowserApp = {
   // This method updates the state in BrowserApp after a tab has been selected
   // in the Java UI.
   _handleTabSelected: function _handleTabSelected(aTab) {
+    if (this.fullscreenTransitionTab) {
+      // Defer updating to "fullscreenchange" if tab selection happened during
+      // a fullscreen transition.
+      return;
+    }
     this.selectedTab = aTab;
 
     let evt = document.createEvent("UIEvents");
@@ -1353,6 +1375,8 @@ var BrowserApp = {
     if (cancelQuit.data) {
       return;
     }
+
+    Services.obs.notifyObservers(null, "quit-application-proceeding", null);
 
     // Tell session store to forget about this window
     if (aClear.dontSaveSession) {
@@ -1673,10 +1697,10 @@ var BrowserApp = {
         let flags = Ci.nsIWebNavigation.LOAD_FLAGS_ALLOW_THIRD_PARTY_FIXUP
                   | Ci.nsIWebNavigation.LOAD_FLAGS_FIXUP_SCHEME_TYPOS;
 
-        // Pass LOAD_FLAGS_DISALLOW_INHERIT_OWNER to prevent any loads from
+        // Pass LOAD_FLAGS_DISALLOW_INHERIT_PRINCIPAL to prevent any loads from
         // inheriting the currently loaded document's principal.
         if (data.userEntered) {
-          flags |= Ci.nsIWebNavigation.LOAD_FLAGS_DISALLOW_INHERIT_OWNER;
+          flags |= Ci.nsIWebNavigation.LOAD_FLAGS_DISALLOW_INHERIT_PRINCIPAL;
         }
 
         let delayLoad = ("delayLoad" in data) ? data.delayLoad : false;
@@ -2662,6 +2686,12 @@ var NativeWindow = {
         return;
       }
 
+      // If the event was already defaultPrevented by somebody (web content, or
+      // some other part of gecko), then don't do anything with it.
+      if (event.defaultPrevented) {
+        return;
+      }
+
       // Use the highlighted element for the context menu target. When accessibility is
       // enabled, elements may not be highlighted so use the event target instead.
       this._target = BrowserEventHandler._highlightElement || event.target;
@@ -3433,6 +3463,8 @@ Tab.prototype = {
     this.browser.setAttribute("type", "content-targetable");
     this.browser.setAttribute("messagemanagergroup", "browsers");
 
+    this.browser.permanentKey = {};
+
     // Make sure the previously selected panel remains selected. The selected panel of a deck is
     // not stable when panels are added.
     let selectedPanel = BrowserApp.deck.selectedPanel;
@@ -3529,6 +3561,7 @@ Tab.prototype = {
 
     this.browser.addEventListener("DOMContentLoaded", this, true);
     this.browser.addEventListener("DOMFormHasPassword", this, true);
+    this.browser.addEventListener("DOMInputPasswordAdded", this, true);
     this.browser.addEventListener("DOMLinkAdded", this, true);
     this.browser.addEventListener("DOMLinkChanged", this, true);
     this.browser.addEventListener("DOMMetaAdded", this, false);
@@ -3642,6 +3675,7 @@ Tab.prototype = {
 
     this.browser.removeEventListener("DOMContentLoaded", this, true);
     this.browser.removeEventListener("DOMFormHasPassword", this, true);
+    this.browser.removeEventListener("DOMInputPasswordAdded", this, true);
     this.browser.removeEventListener("DOMLinkAdded", this, true);
     this.browser.removeEventListener("DOMLinkChanged", this, true);
     this.browser.removeEventListener("DOMMetaAdded", this, false);
@@ -4111,6 +4145,11 @@ Tab.prototype = {
         break;
       }
 
+      case "DOMInputPasswordAdded": {
+        LoginManagerContent.onDOMInputPasswordAdded(aEvent,
+                                                    this.browser.contentWindow);
+      }
+
       case "DOMMetaAdded":
         let target = aEvent.originalTarget;
         let browser = BrowserApp.getBrowserForDocument(target.ownerDocument);
@@ -4153,7 +4192,7 @@ Tab.prototype = {
             return;
 
           jsonMessage = this.makeFeedMessage(target, type);
-        } else if (list.indexOf("[search]" != -1) && aEvent.type == "DOMLinkAdded") {
+        } else if (list.indexOf("[search]") != -1 && aEvent.type == "DOMLinkAdded") {
           this.sendOpenSearchMessage(target);
         }
         if (!jsonMessage)
@@ -4669,6 +4708,7 @@ var BrowserEventHandler = {
 
     BrowserApp.deck.addEventListener("DOMUpdatePageReport", PopupBlockerObserver.onUpdatePageReport, false);
     BrowserApp.deck.addEventListener("MozMouseHittest", this, true);
+    BrowserApp.deck.addEventListener("OpenMediaWithExternalApp", this, true);
 
     InitLater(() => BrowserApp.deck.addEventListener("click", InputWidgetHelper, true));
     InitLater(() => BrowserApp.deck.addEventListener("click", SelectHelper, true));
@@ -4692,6 +4732,21 @@ var BrowserEventHandler = {
       case 'MozMouseHittest':
         this._handleRetargetedTouchStart(aEvent);
         break;
+      case 'OpenMediaWithExternalApp': {
+        if (aEvent.target.moz_video_uuid) {
+          return;
+        }
+        let mediaSrc = aEvent.target.currentSrc || aEvent.target.src;
+        if (!aEvent.target.moz_video_uuid) {
+          aEvent.target.moz_video_uuid = uuidgen.generateUUID().toString();
+        }
+        Services.androidBridge.handleGeckoMessage({
+          type: "Video:Play",
+          uri: mediaSrc,
+          uuid: aEvent.target.moz_video_uuid
+        });
+        break;
+      }
     }
   },
 
@@ -5229,9 +5284,6 @@ var ErrorPageEventHandler = {
             // ....but add a notify bar as a reminder, so that they don't lose
             // track after, e.g., tab switching.
             NativeWindow.doorhanger.show(Strings.browser.GetStringFromName("safeBrowsingDoorhanger"), "safebrowsing-warning", [], BrowserApp.selectedTab.id);
-          } else if (target == errorDoc.getElementById("whyForbiddenButton")) {
-            // This is the "Why is this site blocked" button for family friendly browsing.
-            BrowserApp.selectedBrowser.loadURI("https://support.mozilla.org/kb/controlledaccess");
           }
         }
         break;
@@ -6759,7 +6811,7 @@ var SearchEngines = {
       }
     };
 
-    // Return valid, pre-sorted queryParams. 
+    // Return valid, pre-sorted queryParams.
     return formData.filter(a => a.name && a.value).sort((a, b) => {
       // nsIBrowserSearchService.hasEngineWithURL() ensures sort, but this helps.
       if (a.name > b.name) {

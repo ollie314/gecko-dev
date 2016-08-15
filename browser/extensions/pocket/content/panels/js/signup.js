@@ -48,12 +48,9 @@ var PKT_SIGNUP_OVERLAY = function (options)
         {
             return '';
         }
-        else
-        {
-            return String(s).replace(/[&<>"']/g, function (str) {
-                return sanitizeMap[str];
-            });
-        }
+        return String(s).replace(/[&<>"']/g, function (str) {
+            return sanitizeMap[str];
+        });
     };
     this.getTranslations = function()
     {
@@ -104,7 +101,7 @@ PKT_SIGNUP_OVERLAY.prototype = {
         this.dictJSON.variant = (this.variant ? this.variant : 'undefined');
         this.dictJSON.variant += this.fxasignedin ? '_fxa' : '_nonfxa';
         this.dictJSON.pockethost = this.pockethost;
-        this.dictJSON.showlearnmore = (this.variant.indexOf('_lm') > -1 || this.variant == 'storyboard' || this.variant == 'hero') ? 1 : 0;
+        this.dictJSON.showlearnmore = true;
 
         // extra modifier class for collapsed state
         if (this.inoverflowmenu)
@@ -119,13 +116,13 @@ PKT_SIGNUP_OVERLAY.prototype = {
         }
 
         // Create actual content
-        if (this.variant == 'storyboard' || this.variant == 'storyboard_lm' || this.variant == 'storyboard_nlm')
+        if (this.variant == 'overflow')
         {
-            $('body').append(Handlebars.templates.signupstoryboard_shell(this.dictJSON));
+            $('body').append(Handlebars.templates.signup_shell(this.dictJSON));
         }
         else
         {
-            $('body').append(Handlebars.templates.signup_shell(this.dictJSON));
+            $('body').append(Handlebars.templates.signupstoryboard_shell(this.dictJSON));
         }
 
 
@@ -170,7 +167,7 @@ PKT_SIGNUP.prototype = {
 
 $(function()
 {
-    if(!window.thePKT_SIGNUP){
+    if (!window.thePKT_SIGNUP) {
         var thePKT_SIGNUP = new PKT_SIGNUP();
         window.thePKT_SIGNUP = thePKT_SIGNUP;
         thePKT_SIGNUP.init();

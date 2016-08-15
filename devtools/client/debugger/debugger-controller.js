@@ -51,9 +51,9 @@ const EVENTS = {
   BREAKPOINT_HIDDEN_IN_EDITOR: "Debugger:BreakpointHiddenInEditor",
   BREAKPOINT_HIDDEN_IN_PANE: "Debugger:BreakpointHiddenInPane",
 
-  // When a conditional breakpoint's popup is showing or hiding.
-  CONDITIONAL_BREAKPOINT_POPUP_SHOWING: "Debugger:ConditionalBreakpointPopupShowing",
-  CONDITIONAL_BREAKPOINT_POPUP_HIDING: "Debugger:ConditionalBreakpointPopupHiding",
+  // When a conditional breakpoint's popup is shown/hidden.
+  CONDITIONAL_BREAKPOINT_POPUP_SHOWN: "Debugger:ConditionalBreakpointPopupShown",
+  CONDITIONAL_BREAKPOINT_POPUP_HIDDEN: "Debugger:ConditionalBreakpointPopupHidden",
 
   // When event listeners are fetched or event breakpoints are updated.
   EVENT_LISTENERS_FETCHED: "Debugger:EventListenersFetched",
@@ -231,7 +231,7 @@ var DebuggerController = {
       return;
     }
 
-    yield DebuggerView.initialize();
+    yield DebuggerView.initialize(this._target.isWorkerTarget);
     this._startup = true;
   }),
 
@@ -903,7 +903,8 @@ StackFrames.prototype = {
     // to contain all the values.
     if (this._syncedWatchExpressions && aDepth == 0) {
       let label = L10N.getStr("watchExpressionsScopeLabel");
-      let scope = DebuggerView.Variables.addScope(label);
+      let scope = DebuggerView.Variables.addScope(label,
+        "variables-view-watch-expressions");
 
       // Customize the scope for holding watch expressions evaluations.
       scope.descriptorTooltip = false;

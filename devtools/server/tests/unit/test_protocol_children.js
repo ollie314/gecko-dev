@@ -57,7 +57,6 @@ const childSpec = protocol.generateActorSpec({
     echo: {
       request: { str: Arg(0) },
       response: { str: RetVal("string") },
-      telemetry: "ECHO"
     },
     getDetail1: {
       // This also exercises return-value-as-packet.
@@ -89,7 +88,7 @@ const childSpec = protocol.generateActorSpec({
   }
 });
 
-var ChildActor = protocol.ActorClassWithSpec(childSpec, {
+var ChildActor = protocol.ActorClass(childSpec, {
   // Actors returned by this actor should be owned by the root actor.
   marshallPool: function () { return this.parent(); },
 
@@ -157,7 +156,7 @@ var ChildActor = protocol.ActorClassWithSpec(childSpec, {
   release: function () { },
 });
 
-var ChildFront = protocol.FrontClassWithSpec(childSpec, {
+var ChildFront = protocol.FrontClass(childSpec, {
   initialize: function (client, form) {
     protocol.Front.prototype.initialize.call(this, client, form);
   },
@@ -227,7 +226,7 @@ const rootSpec = protocol.generateActorSpec({
 });
 
 var rootActor = null;
-var RootActor = protocol.ActorClassWithSpec(rootSpec, {
+var RootActor = protocol.ActorClass(rootSpec, {
   toString: function () { return "[root actor]"; },
 
   initialize: function (conn) {
@@ -288,7 +287,7 @@ var RootActor = protocol.ActorClassWithSpec(rootSpec, {
   }
 });
 
-var RootFront = protocol.FrontClassWithSpec(rootSpec, {
+var RootFront = protocol.FrontClass(rootSpec, {
   toString: function () { return "[root front]"; },
   initialize: function (client) {
     this.actorID = "root";

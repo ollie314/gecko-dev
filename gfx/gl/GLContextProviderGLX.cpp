@@ -7,8 +7,6 @@
 #include <gdk/gdk.h>
 #include <gdk/gdkx.h>
 #define GET_NATIVE_WINDOW(aWidget) GDK_WINDOW_XID((GdkWindow*) aWidget->GetNativeData(NS_NATIVE_WINDOW))
-#elif defined(MOZ_WIDGET_QT)
-#define GET_NATIVE_WINDOW(aWidget) (Window)(aWidget->GetNativeData(NS_NATIVE_SHAREABLE_WINDOW))
 #endif
 
 #include <X11/Xlib.h>
@@ -16,6 +14,7 @@
 
 #include "mozilla/MathAlgorithms.h"
 #include "mozilla/StaticPtr.h"
+#include "mozilla/widget/CompositorWidget.h"
 
 #include "prenv.h"
 #include "GLContextProvider.h"
@@ -43,6 +42,7 @@ namespace mozilla {
 namespace gl {
 
 using namespace mozilla::gfx;
+using namespace mozilla::widget;
 
 GLXLibrary sGLXLibrary;
 
@@ -175,6 +175,11 @@ GLXLibrary::EnsureInitialized()
       { nullptr, { nullptr } }
     };
 
+    GLLibraryLoader::SymLoadStruct symbols_swapcontrol[] = {
+      { (PRFuncPtr*) &xSwapIntervalInternal, { "glXSwapIntervalEXT", nullptr } },
+      { nullptr, { nullptr } }
+    };
+
     if (!GLLibraryLoader::LoadSymbols(mOGLLibrary, &symbols[0])) {
         NS_WARNING("Couldn't find required entry point in OpenGL shared library");
         return false;
@@ -257,6 +262,12 @@ GLXLibrary::EnsureInitialized()
                                      (GLLibraryLoader::PlatformLookupFunction)&xGetProcAddress))
     {
         mHasVideoSync = true;
+    }
+
+    if (!(HasExtension(extensionsStr, "GLX_EXT_swap_control") &&
+          GLLibraryLoader::LoadSymbols(mOGLLibrary, symbols_swapcontrol)))
+    {
+        NS_WARNING("GLX_swap_control unsupported, ASAP mode may still block on buffer swaps.");
     }
 
     mIsATI = serverVendor && DoesStringMatch(serverVendor, "ATI");
@@ -778,6 +789,14 @@ GLXLibrary::xWaitVideoSync(int divisor, int remainder, unsigned int* count)
     return result;
 }
 
+void
+GLXLibrary::xSwapInterval(Display* display, GLXDrawable drawable, int interval)
+{
+    BEFORE_GLX_CALL;
+    xSwapIntervalInternal(display, drawable, interval);
+    AFTER_GLX_CALL;
+}
+
 already_AddRefed<GLContextGLX>
 GLContextGLX::CreateGLContext(CreateContextFlags flags, const SurfaceCaps& caps,
                               GLContextGLX* shareContext, bool isOffscreen,
@@ -923,6 +942,14 @@ GLContextGLX::MakeCurrentImpl(bool aForce)
     if (aForce || mGLX->xGetCurrentContext() != mContext) {
         succeeded = mGLX->xMakeCurrent(mDisplay, mDrawable, mContext);
         NS_ASSERTION(succeeded, "Failed to make GL context current!");
+
+        if (!IsOffscreen() && mGLX->SupportsSwapControl()) {
+            // Many GLX implementations default to blocking until the next
+            // VBlank when calling glXSwapBuffers. We want to run unthrottled
+            // in ASAP mode. See bug 1280744.
+            const bool isASAP = (gfxPrefs::LayoutFrameRate() == 0);
+            mGLX->xSwapInterval(mDisplay, mDrawable, isASAP ? 0 : 1);
+        }
     }
 
     return succeeded;
@@ -960,20 +987,6 @@ GLContextGLX::SwapBuffers()
     mGLX->xSwapBuffers(mDisplay, mDrawable);
     mGLX->xWaitGL();
     return true;
-}
-
-Maybe<gfx::IntSize>
-GLContextGLX::GetTargetSize()
-{
-    unsigned int width = 0, height = 0;
-    Window root;
-    int x, y;
-    unsigned int border, depth;
-    XGetGeometry(mDisplay, mDrawable, &root, &x, &y, &width, &height,
-                 &border, &depth);
-    Maybe<gfx::IntSize> size;
-    size.emplace(width, height);
-    return size;
 }
 
 bool
@@ -1077,6 +1090,12 @@ GLContextProviderGLX::CreateWrappingExisting(void* aContext, void* aSurface)
 }
 
 already_AddRefed<GLContext>
+GLContextProviderGLX::CreateForCompositorWidget(CompositorWidget* aCompositorWidget, bool aForceAccelerated)
+{
+    return CreateForWindow(aCompositorWidget->RealWidget(), aForceAccelerated);
+}
+
+already_AddRefed<GLContext>
 GLContextProviderGLX::CreateForWindow(nsIWidget* aWidget, bool aForceAccelerated)
 {
     if (!sGLXLibrary.EnsureInitialized()) {
@@ -1090,7 +1109,7 @@ GLContextProviderGLX::CreateForWindow(nsIWidget* aWidget, bool aForceAccelerated
     // performance might be suboptimal.  But using the existing visual
     // is a relatively safe intermediate step.
 
-    Display* display = (Display*)aWidget->GetNativeData(NS_NATIVE_DISPLAY);
+    Display* display = (Display*)aWidget->GetNativeData(NS_NATIVE_COMPOSITOR_DISPLAY);
     if (!display) {
         NS_ERROR("X Display required for GLX Context provider");
         return nullptr;

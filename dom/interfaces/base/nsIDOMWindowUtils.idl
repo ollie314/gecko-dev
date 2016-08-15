@@ -122,6 +122,11 @@ interface nsIDOMWindowUtils : nsISupports {
                        out boolean aAutoSize);
 
   /**
+   * Information about the window size in device pixels.
+   */
+  void getContentViewerSize(out uint32_t aDisplayWidth, out uint32_t aDisplayHeight);
+
+  /**
    * For any scrollable element, this allows you to override the
    * visible region and draw more than what is visible, which is
    * useful for asynchronous drawing. The "displayport" will be
@@ -224,10 +229,15 @@ interface nsIDOMWindowUtils : nsISupports {
 
   /**
    * Set a resolution on the presShell which is the "restored" from history.
+   * The display dimensions are compared to their current values and used
+   * to scale the resolution value if necessary, e.g. if the device was
+   * rotated between saving and restoring of the session data.
    * This resolution should be used when painting for the first time. Calling
    * this too late may have no effect.
    */
-  void setRestoreResolution(in float aResolution);
+  void setRestoreResolution(in float aResolution,
+                            in uint32_t aDisplayWidth,
+                            in uint32_t aDisplayHeight);
 
   /**
    * Whether the resolution has been set by the user.
@@ -302,9 +312,11 @@ interface nsIDOMWindowUtils : nsISupports {
    * @param aPressure touch input pressure: 0.0 -> 1.0
    * @param aInputSourceArg input source, see nsIDOMMouseEvent for values,
    *        defaults to mouse input.
-   * @param aIsSynthesized controls nsIDOMEvent.isSynthesized value
-   *                       that helps identifying test related events,
-   *                       defaults to true
+   * @param aIsDOMEventSynthesized controls nsIDOMEvent.isSynthesized value
+   *                               that helps identifying test related events,
+   *                               defaults to true
+   * @param aIsWidgetEventSynthesized controls WidgetMouseEvent.mReason value
+   *                                  defaults to false (WidgetMouseEvent::eReal)
    *
    * returns true if the page called prevent default on this event
    */
@@ -318,7 +330,8 @@ interface nsIDOMWindowUtils : nsISupports {
                          [optional] in boolean aIgnoreRootScrollFrame,
                          [optional] in float aPressure,
                          [optional] in unsigned short aInputSourceArg,
-                         [optional] in boolean aIsSynthesized);
+                         [optional] in boolean aIsDOMEventSynthesized,
+                         [optional] in boolean aIsWidgetEventSynthesized);
 
 
   /** Synthesize a pointer event. The event types supported are:
@@ -437,7 +450,8 @@ interface nsIDOMWindowUtils : nsISupports {
                               [optional] in boolean aIgnoreRootScrollFrame,
                               [optional] in float aPressure,
                               [optional] in unsigned short aInputSourceArg,
-                              [optional] in boolean aIsSynthesized);
+                              [optional] in boolean aIsDOMEventSynthesized,
+                              [optional] in boolean aIsWidgetEventSynthesized);
 
   /** The same as sendPointerEvent but ensures that the event
    *  is dispatched to this DOM window or one of its children.
@@ -1214,6 +1228,17 @@ interface nsIDOMWindowUtils : nsISupports {
   const unsigned long QUERY_CHARACTER_AT_POINT                  = 3208;
 
   /**
+   * QUERY_TEXT_RECT_ARRAY queries the rects per character
+   *
+   * @param aOffset   The first character's offset.  0 is the first character.
+   * @param aLength   The length of getting text.  If the aLength is too long,
+   *                  the extra length is ignored.
+   * @param aX        Not used.
+   * @param aY        Not used.
+   */
+  const unsigned long QUERY_TEXT_RECT_ARRAY                     = 3209;
+
+  /**
    * Called when the remote child frame has changed its fullscreen state,
    * when entering fullscreen, and when the origin which is fullscreen changes.
    * aFrameElement is the iframe element which contains the child-process
@@ -1378,6 +1403,11 @@ interface nsIDOMWindowUtils : nsISupports {
    * in hardware.
    */
   readonly attribute jsval supportsHardwareH264Decoding;
+
+  /**
+   * Returns the current audio backend as a free-form string.
+   */
+  readonly attribute AString currentAudioBackend;
 
   /**
    * Record (and return) frame-intervals for frames which were presented

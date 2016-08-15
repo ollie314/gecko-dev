@@ -8,6 +8,7 @@
 #include "Decoder.h"
 #include "DecoderFactory.h"
 #include "decoders/nsBMPDecoder.h"
+#include "IDecodingTask.h"
 #include "imgIContainer.h"
 #include "imgITools.h"
 #include "ImageFactory.h"
@@ -54,7 +55,7 @@ CheckDecoderState(const ImageTestCase& aTestCase, Decoder* aDecoder)
             bool(progress & FLAG_IS_ANIMATED));
 
   // The decoder should get the correct size.
-  IntSize size = aDecoder->GetSize();
+  IntSize size = aDecoder->Size();
   EXPECT_EQ(aTestCase.mSize.width, size.width);
   EXPECT_EQ(aTestCase.mSize.height, size.height);
 
@@ -103,7 +104,7 @@ void WithSingleChunkDecode(const ImageTestCase& aTestCase,
   ASSERT_TRUE(NS_SUCCEEDED(rv));
 
   // Write the data into a SourceBuffer.
-  RefPtr<SourceBuffer> sourceBuffer = new SourceBuffer();
+  NotNull<RefPtr<SourceBuffer>> sourceBuffer = WrapNotNull(new SourceBuffer());
   sourceBuffer->ExpectLength(length);
   rv = sourceBuffer->AppendFromInputStream(inputStream, length);
   ASSERT_TRUE(NS_SUCCEEDED(rv));
@@ -116,9 +117,10 @@ void WithSingleChunkDecode(const ImageTestCase& aTestCase,
     DecoderFactory::CreateAnonymousDecoder(decoderType, sourceBuffer, aOutputSize,
                                            DefaultSurfaceFlags());
   ASSERT_TRUE(decoder != nullptr);
+  RefPtr<IDecodingTask> task = new AnonymousDecodingTask(WrapNotNull(decoder));
 
   // Run the full decoder synchronously.
-  decoder->Decode();
+  task->Run();
 
   // Call the lambda to verify the expected results.
   aResultChecker(decoder);
@@ -132,16 +134,6 @@ CheckDecoderSingleChunk(const ImageTestCase& aTestCase)
   });
 }
 
-class NoResume : public IResumable
-{
-public:
-  NS_INLINE_DECL_REFCOUNTING(NoResume, override)
-  virtual void Resume() override { }
-
-private:
-  ~NoResume() { }
-};
-
 static void
 CheckDecoderMultiChunk(const ImageTestCase& aTestCase)
 {
@@ -154,7 +146,7 @@ CheckDecoderMultiChunk(const ImageTestCase& aTestCase)
   ASSERT_TRUE(NS_SUCCEEDED(rv));
 
   // Create a SourceBuffer and a decoder.
-  RefPtr<SourceBuffer> sourceBuffer = new SourceBuffer();
+  NotNull<RefPtr<SourceBuffer>> sourceBuffer = WrapNotNull(new SourceBuffer());
   sourceBuffer->ExpectLength(length);
   DecoderType decoderType =
     DecoderFactory::GetDecoderType(aTestCase.mMimeType);
@@ -162,11 +154,8 @@ CheckDecoderMultiChunk(const ImageTestCase& aTestCase)
     DecoderFactory::CreateAnonymousDecoder(decoderType, sourceBuffer, Nothing(),
                                            DefaultSurfaceFlags());
   ASSERT_TRUE(decoder != nullptr);
+  RefPtr<IDecodingTask> task = new AnonymousDecodingTask(WrapNotNull(decoder));
 
-  // Decode synchronously, using a |NoResume| IResumable so the Decoder doesn't
-  // attempt to schedule itself on a nonexistent DecodePool when we write more
-  // data into the SourceBuffer.
-  RefPtr<NoResume> noResume = new NoResume();
   for (uint64_t read = 0; read < length ; ++read) {
     uint64_t available = 0;
     rv = inputStream->Available(&available);
@@ -176,11 +165,11 @@ CheckDecoderMultiChunk(const ImageTestCase& aTestCase)
     rv = sourceBuffer->AppendFromInputStream(inputStream, 1);
     ASSERT_TRUE(NS_SUCCEEDED(rv));
 
-    decoder->Decode(noResume);
+    task->Run();
   }
 
   sourceBuffer->Complete(NS_OK);
-  decoder->Decode(noResume);
+  task->Run();
   
   CheckDecoderResults(aTestCase, decoder);
 }
@@ -208,22 +197,17 @@ CheckDownscaleDuringDecode(const ImageTestCase& aTestCase)
     // the transitions between colors, since the downscaler does not produce a
     // sharp boundary at these points. Even some of the rows we test need a
     // small amount of fuzz; this is just the nature of Lanczos downscaling.
-    EXPECT_TRUE(RowsAreSolidColor(surface, 0, 4, BGRAColor::Green(), /* aFuzz = */ 46));
-    EXPECT_TRUE(RowsAreSolidColor(surface, 6, 3, BGRAColor::Red(), /* aFuzz = */ 6));
+    EXPECT_TRUE(RowsAreSolidColor(surface, 0, 4, BGRAColor::Green(), /* aFuzz = */ 47));
+    EXPECT_TRUE(RowsAreSolidColor(surface, 6, 3, BGRAColor::Red(), /* aFuzz = */ 27));
     EXPECT_TRUE(RowsAreSolidColor(surface, 11, 3, BGRAColor::Green(), /* aFuzz = */ 47));
-    EXPECT_TRUE(RowsAreSolidColor(surface, 16, 4, BGRAColor::Red(), /* aFuzz = */ 6));
+    EXPECT_TRUE(RowsAreSolidColor(surface, 16, 4, BGRAColor::Red(), /* aFuzz = */ 27));
   });
 }
 
 class ImageDecoders : public ::testing::Test
 {
-  protected:
-  static void SetUpTestCase()
-  {
-    // Ensure that ImageLib services are initialized.
-    nsCOMPtr<imgITools> imgTools = do_CreateInstance("@mozilla.org/image/tools;1");
-    EXPECT_TRUE(imgTools != nullptr);
-  }
+protected:
+  AutoInitializeImageLib mInit;
 };
 
 TEST_F(ImageDecoders, PNGSingleChunk)
@@ -349,6 +333,16 @@ TEST_F(ImageDecoders, CorruptSingleChunk)
 TEST_F(ImageDecoders, CorruptMultiChunk)
 {
   CheckDecoderMultiChunk(CorruptTestCase());
+}
+
+TEST_F(ImageDecoders, CorruptBMPWithTruncatedHeaderSingleChunk)
+{
+  CheckDecoderSingleChunk(CorruptBMPWithTruncatedHeader());
+}
+
+TEST_F(ImageDecoders, CorruptBMPWithTruncatedHeaderMultiChunk)
+{
+  CheckDecoderMultiChunk(CorruptBMPWithTruncatedHeader());
 }
 
 TEST_F(ImageDecoders, CorruptICOWithBadBMPWidthSingleChunk)

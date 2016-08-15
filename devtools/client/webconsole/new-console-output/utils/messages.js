@@ -6,89 +6,140 @@
 
 "use strict";
 
-const {
-  CATEGORY_CLASS_FRAGMENTS,
-  CATEGORY_JS,
-  CATEGORY_WEBDEV,
-  CATEGORY_OUTPUT,
-  LEVELS,
-  SEVERITY_CLASS_FRAGMENTS,
-  SEVERITY_ERROR,
-  SEVERITY_WARNING,
-  SEVERITY_LOG,
-} = require("../constants");
-const WebConsoleUtils = require("devtools/shared/webconsole/utils").Utils;
-const STRINGS_URI = "chrome://devtools/locale/webconsole.properties";
-const l10n = new WebConsoleUtils.L10n(STRINGS_URI);
-
-function prepareMessage(packet) {
-  // @TODO turn this into an Immutable Record.
-  let allowRepeating;
-  let category;
-  let data;
-  let messageType;
-  let repeat;
-  let repeatId;
-  let severity;
-
-  switch (packet.type) {
-    case "consoleAPICall":
-      data = Object.assign({}, packet.message);
-
-      if (data.level === "clear") {
-        data.arguments = [l10n.getStr("consoleCleared")];
-      }
-
-      allowRepeating = true;
-      category = CATEGORY_CLASS_FRAGMENTS[CATEGORY_WEBDEV];
-      messageType = "ConsoleApiCall";
-      repeat = 1;
-      repeatId = getRepeatId(data);
-      severity = SEVERITY_CLASS_FRAGMENTS[LEVELS[data.level]];
-      break;
-    case "pageError":
-      data = Object.assign({}, packet.pageError);
-      allowRepeating = true;
-      category = CATEGORY_CLASS_FRAGMENTS[CATEGORY_JS];
-      messageType = "PageError";
-      repeat = 1;
-      repeatId = getRepeatId(data);
-
-      severity = SEVERITY_CLASS_FRAGMENTS[SEVERITY_ERROR];
-      if (data.warning || data.strict) {
-        severity = SEVERITY_CLASS_FRAGMENTS[SEVERITY_WARNING];
-      } else if (data.info) {
-        severity = SEVERITY_CLASS_FRAGMENTS[SEVERITY_LOG];
-      }
-      break;
-    case "evaluationResult":
-    default:
-      data = Object.assign({}, packet.result);
-      allowRepeating = true;
-      category = CATEGORY_CLASS_FRAGMENTS[CATEGORY_OUTPUT];
-      messageType = "EvaluationResult";
-      repeat = 1;
-      repeatId = getRepeatId(data);
-      severity = SEVERITY_CLASS_FRAGMENTS[SEVERITY_LOG];
-      break;
-  }
-
-  return {
-    allowRepeating,
-    category,
-    data,
-    messageType,
-    repeat,
-    repeatId,
-    severity
-  };
+let l10n;
+try {
+  const WebConsoleUtils = require("devtools/shared/webconsole/utils").Utils;
+  const STRINGS_URI = "chrome://devtools/locale/webconsole.properties";
+  l10n = new WebConsoleUtils.L10n(STRINGS_URI);
+} catch (e) {
+  l10n = require("devtools/client/webconsole/new-console-output/test/fixtures/l10n");
 }
 
+const {
+  MESSAGE_SOURCE,
+  MESSAGE_TYPE,
+  MESSAGE_LEVEL,
+  // Legacy
+  CATEGORY_JS,
+  CATEGORY_OUTPUT,
+  CATEGORY_WEBDEV,
+  LEVELS,
+  SEVERITY_LOG,
+} = require("../constants");
+const { ConsoleMessage } = require("../types");
+
+function prepareMessage(packet, idGenerator) {
+  // This packet is already in the expected packet structure. Simply return.
+  if (!packet.source) {
+    packet = transformPacket(packet);
+  }
+
+  if (packet.allowRepeating) {
+    packet = packet.set("repeatId", getRepeatId(packet));
+  }
+  return packet.set("id", idGenerator.getNextId());
+}
+
+/**
+ * Transforms a packet from Firefox RDP structure to Chrome RDP structure.
+ */
+function transformPacket(packet) {
+  if (packet._type) {
+    packet = convertCachedPacket(packet);
+  }
+
+  switch (packet.type) {
+    case "consoleAPICall": {
+      let { message } = packet;
+
+      let parameters = message.arguments;
+      let type = message.level;
+      let level = LEVELS[type] || MESSAGE_TYPE.LOG;
+      let messageText = null;
+
+      // Special per-type conversion.
+      switch (type) {
+        case "clear":
+          // We show a message to users when calls console.clear() is called.
+          parameters = [l10n.getStr("consoleCleared")];
+          break;
+        case "count":
+          // Chrome RDP doesn't have a special type for count.
+          type = MESSAGE_TYPE.LOG;
+          level = MESSAGE_LEVEL.DEBUG;
+          let {counter} = message;
+          let label = counter.label ? counter.label : l10n.getStr("noCounterLabel");
+          messageText = `${label}: ${counter.count}`;
+          parameters = null;
+          break;
+      }
+
+      return new ConsoleMessage({
+        source: MESSAGE_SOURCE.CONSOLE_API,
+        type,
+        level,
+        parameters,
+        messageText,
+        category: CATEGORY_WEBDEV,
+        severity: level,
+      });
+    }
+
+    case "pageError": {
+      let { pageError } = packet;
+      let level = MESSAGE_LEVEL.ERROR;
+      if (pageError.warning || pageError.strict) {
+        level = MESSAGE_LEVEL.WARN;
+      } else if (pageError.info) {
+        level = MESSAGE_LEVEL.INFO;
+      }
+
+      return new ConsoleMessage({
+        source: MESSAGE_SOURCE.JAVASCRIPT,
+        type: MESSAGE_TYPE.LOG,
+        messageText: pageError.errorMessage,
+        category: CATEGORY_JS,
+        severity: level,
+      });
+    }
+
+    case "evaluationResult":
+    default: {
+      let { result } = packet;
+
+      return new ConsoleMessage({
+        source: MESSAGE_SOURCE.JAVASCRIPT,
+        type: MESSAGE_TYPE.RESULT,
+        level: MESSAGE_LEVEL.LOG,
+        parameters: result,
+        category: CATEGORY_OUTPUT,
+        severity: SEVERITY_LOG,
+      });
+    }
+  }
+}
+
+// Helpers
 function getRepeatId(message) {
-  let clonedMessage = JSON.parse(JSON.stringify(message));
-  delete clonedMessage.timeStamp;
-  delete clonedMessage.uniqueID;
-  return JSON.stringify(clonedMessage);
+  message = message.toJS();
+  delete message.repeat;
+  return JSON.stringify(message);
+}
+
+function convertCachedPacket(packet) {
+  // The devtools server provides cached message packets in a different shape
+  // from those of consoleApiCalls, so we prepare them for preparation here.
+  let convertPacket = {};
+  if (packet._type === "ConsoleAPI") {
+    convertPacket.message = packet;
+    convertPacket.type = "consoleAPICall";
+  } else if (packet._type === "PageError") {
+    convertPacket.pageError = packet;
+    convertPacket.type = "pageError";
+  } else {
+    throw new Error("Unexpected packet type");
+  }
+  return convertPacket;
 }
 
 exports.prepareMessage = prepareMessage;

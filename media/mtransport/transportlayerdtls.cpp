@@ -368,6 +368,7 @@ static const struct PRIOMethods TransportLayerMethods = {
 };
 
 TransportLayerDtls::~TransportLayerDtls() {
+  nspr_io_adapter_->SetEnabled(false);
   if (timer_) {
     timer_->Cancel();
   }
@@ -886,7 +887,9 @@ void TransportLayerDtls::Handshake() {
         }
         break;
       default:
-        MOZ_MTLOG(ML_ERROR, LAYER_INFO << "SSL handshake error "<< err);
+        const char *err_msg = PR_ErrorToName(err);
+        MOZ_MTLOG(ML_ERROR, LAYER_INFO << "DTLS handshake error " << err << " ("
+                  << err_msg << ")");
         TL_SET_STATE(TS_ERROR);
         break;
     }
@@ -926,6 +929,10 @@ bool TransportLayerDtls::CheckAlpn() {
       // This only happens if there is a custom NPN/ALPN callback installed and
       // that callback doesn't properly handle ALPN.
       MOZ_MTLOG(ML_ERROR, LAYER_INFO << "error in ALPN selection callback");
+      return false;
+
+    case SSL_NEXT_PROTO_EARLY_VALUE:
+      MOZ_CRASH("Unexpected 0-RTT ALPN value");
       return false;
   }
 

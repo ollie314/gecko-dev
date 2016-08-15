@@ -11,6 +11,7 @@
 var { utils: Cu } = Components;
 var { Services } = Cu.import("resource://gre/modules/Services.jsm", {});
 var { Loader, descriptor, resolveURI } = Cu.import("resource://gre/modules/commonjs/toolkit/loader.js", {});
+var { requireRawId } = Cu.import("resource://devtools/shared/loader-plugin-raw.jsm", {});
 
 this.EXPORTED_SYMBOLS = ["DevToolsLoader", "devtools", "BuiltinProvider",
                          "require", "loader"];
@@ -59,6 +60,12 @@ BuiltinProvider.prototype = {
       invisibleToDebugger: this.invisibleToDebugger,
       sharedGlobal: true,
       sharedGlobalBlocklist,
+      requireHook: (id, require) => {
+        if (id.startsWith("raw!")) {
+          return requireRawId(id, require);
+        }
+        return require(id);
+      },
     });
   },
 
@@ -82,6 +89,15 @@ this.DevToolsLoader = function DevToolsLoader() {
 };
 
 DevToolsLoader.prototype = {
+  destroy: function (reason = "shutdown") {
+    Services.obs.removeObserver(this, "devtools-unload");
+
+    if (this._provider) {
+      this._provider.unload(reason);
+      delete this._provider;
+    }
+  },
+
   get provider() {
     if (!this._provider) {
       this._loadProvider();
@@ -109,6 +125,14 @@ DevToolsLoader.prototype = {
       this._loadProvider();
     }
     return this.require.apply(this, arguments);
+  },
+
+  /**
+   * Return true if |id| refers to something requiring help from a
+   * loader plugin.
+   */
+  isLoaderPluginId: function (id) {
+    return id.startsWith("raw!");
   },
 
   /**
@@ -177,12 +201,7 @@ DevToolsLoader.prototype = {
     if (topic != "devtools-unload") {
       return;
     }
-    Services.obs.removeObserver(this, "devtools-unload");
-
-    if (this._provider) {
-      this._provider.unload(data);
-      delete this._provider;
-    }
+    this.destroy(data);
   },
 
   /**

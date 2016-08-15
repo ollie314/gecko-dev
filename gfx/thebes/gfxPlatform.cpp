@@ -8,6 +8,7 @@
 #include "mozilla/layers/ImageBridgeChild.h"
 #include "mozilla/layers/SharedBufferManagerChild.h"
 #include "mozilla/layers/ISurfaceAllocator.h"     // for GfxMemoryImageReporter
+#include "mozilla/gfx/gfxVars.h"
 #include "mozilla/gfx/GPUProcessManager.h"
 #include "mozilla/ClearOnShutdown.h"
 #include "mozilla/Telemetry.h"
@@ -43,8 +44,6 @@
 #include "gfxQuartzSurface.h"
 #elif defined(MOZ_WIDGET_GTK)
 #include "gfxPlatformGtk.h"
-#elif defined(MOZ_WIDGET_QT)
-#include "gfxQtPlatform.h"
 #elif defined(ANDROID)
 #include "gfxAndroidPlatform.h"
 #endif
@@ -113,6 +112,9 @@
 #  include "skia/include/gpu/GrContext.h"
 #  include "skia/include/gpu/gl/GrGLInterface.h"
 #  include "SkiaGLGlue.h"
+# endif
+# ifdef MOZ_ENABLE_FREETYPE
+#  include "skia/include/ports/SkTypeface_cairo.h"
 # endif
 # ifdef __GNUC__
 #  pragma GCC diagnostic pop // -Wshadow
@@ -417,7 +419,7 @@ SRGBOverrideObserver::Observe(nsISupports *aSubject,
                               const char16_t* someData)
 {
     NS_ASSERTION(NS_strcmp(someData,
-                           MOZ_UTF16(GFX_PREF_CMS_FORCE_SRGB)) == 0,
+                           (u"" GFX_PREF_CMS_FORCE_SRGB)) == 0,
                  "Restarting CMS on wrong pref!");
     ShutdownCMS();
     // Update current cms profile.
@@ -482,10 +484,9 @@ MemoryPressureObserver::Observe(nsISupports *aSubject,
 }
 
 gfxPlatform::gfxPlatform()
-  : mTileWidth(-1)
-  , mTileHeight(-1)
-  , mAzureCanvasBackendCollector(this, &gfxPlatform::GetAzureBackendInfo)
+  : mAzureCanvasBackendCollector(this, &gfxPlatform::GetAzureBackendInfo)
   , mApzSupportCollector(this, &gfxPlatform::GetApzSupportInfo)
+  , mTilesInfoCollector(this, &gfxPlatform::GetTilesSupportInfo)
   , mCompositorBackend(layers::LayersBackend::LAYERS_NONE)
   , mScreenDepth(0)
   , mDeviceCounter(0)
@@ -591,6 +592,7 @@ gfxPlatform::Init()
     // Initialize the preferences by creating the singleton.
     gfxPrefs::GetSingleton();
     MediaPrefs::GetSingleton();
+    gfxVars::Initialize();
 
     gfxConfig::Init();
 
@@ -664,8 +666,6 @@ gfxPlatform::Init()
     gPlatform = new gfxPlatformMac;
 #elif defined(MOZ_WIDGET_GTK)
     gPlatform = new gfxPlatformGtk;
-#elif defined(MOZ_WIDGET_QT)
-    gPlatform = new gfxQtPlatform;
 #elif defined(ANDROID)
     gPlatform = new gfxAndroidPlatform;
 #else
@@ -675,6 +675,9 @@ gfxPlatform::Init()
 
 #ifdef USE_SKIA
     SkGraphics::Init();
+#  ifdef MOZ_ENABLE_FREETYPE
+    SkInitCairoFT(gPlatform->FontHintingEnabled());
+#  endif
 #endif
 
 #ifdef MOZ_GL_DEBUG
@@ -691,8 +694,6 @@ gfxPlatform::Init()
     bool usePlatformFontList = true;
 #if defined(MOZ_WIDGET_GTK)
     usePlatformFontList = gfxPlatformGtk::UseFcFontList();
-#elif defined(MOZ_WIDGET_QT)
-    usePlatformFontList = false;
 #endif
 
     if (usePlatformFontList) {
@@ -774,8 +775,8 @@ gfxPlatform::Init()
     }
 #endif
 
-    ScrollMetadata::sNullMetadata = new ScrollMetadata();
-    ClearOnShutdown(&ScrollMetadata::sNullMetadata);
+    InitNullMetadata();
+    InitOpenGLConfig();
 
     if (obs) {
       obs->NotifyObservers(nullptr, "gfx-features-ready", nullptr);
@@ -783,6 +784,13 @@ gfxPlatform::Init()
 }
 
 static bool sLayersIPCIsUp = false;
+
+/* static */ void
+gfxPlatform::InitNullMetadata()
+{
+  ScrollMetadata::sNullMetadata = new ScrollMetadata();
+  ClearOnShutdown(&ScrollMetadata::sNullMetadata);
+}
 
 void
 gfxPlatform::Shutdown()
@@ -864,6 +872,7 @@ gfxPlatform::Shutdown()
 
     delete gGfxPlatformPrefsLock;
 
+    gfxVars::Shutdown();
     gfxPrefs::DestroySingleton();
     gfxFont::DestroySingletons();
 
@@ -887,8 +896,6 @@ gfxPlatform::InitLayersIPC()
 #ifdef MOZ_WIDGET_GONK
         SharedBufferManagerChild::StartUp();
 #endif
-        mozilla::layers::ImageBridgeChild::StartUp();
-        gfx::VRManagerChild::StartUpSameProcess();
     }
 }
 
@@ -901,16 +908,13 @@ gfxPlatform::ShutdownLayersIPC()
     sLayersIPCIsUp = false;
 
     if (XRE_IsContentProcess()) {
-
         gfx::VRManagerChild::ShutDown();
         // cf bug 1215265.
         if (gfxPrefs::ChildProcessShutdown()) {
           layers::CompositorBridgeChild::ShutDown();
           layers::ImageBridgeChild::ShutDown();
         }
-
     } else if (XRE_IsParentProcess()) {
-
         gfx::VRManagerChild::ShutDown();
         layers::CompositorBridgeChild::ShutDown();
         layers::ImageBridgeChild::ShutDown();
@@ -1002,7 +1006,9 @@ gfxPlatform::ClearSourceSurfaceForSurface(gfxASurface *aSurface)
 }
 
 /* static */ already_AddRefed<SourceSurface>
-gfxPlatform::GetSourceSurfaceForSurface(DrawTarget *aTarget, gfxASurface *aSurface)
+gfxPlatform::GetSourceSurfaceForSurface(DrawTarget *aTarget,
+                                        gfxASurface *aSurface,
+                                        bool aIsPlugin)
 {
   if (!aSurface->CairoSurface() || aSurface->CairoStatus()) {
     return nullptr;
@@ -1060,7 +1066,9 @@ gfxPlatform::GetSourceSurfaceForSurface(DrawTarget *aTarget, gfxASurface *aSurfa
     // the same data, then optimize it for aTarget:
     RefPtr<DataSourceSurface> surf = GetWrappedDataSourceSurface(aSurface);
     if (surf) {
-      srcBuffer = aTarget->OptimizeSourceSurface(surf);
+      srcBuffer = aIsPlugin ? aTarget->OptimizeSourceSurfaceForUnknownAlpha(surf)
+                            : aTarget->OptimizeSourceSurface(surf);
+
       if (srcBuffer == surf) {
         // GetWrappedDataSourceSurface returns a SourceSurface that holds a
         // strong reference to aSurface since it wraps aSurface's data and
@@ -1155,32 +1163,6 @@ gfxPlatform::GetScaledFontForFont(DrawTarget* aTarget, gfxFont *aFont)
                                                 aFont->GetAdjustedSize());
 }
 
-int
-gfxPlatform::GetTileWidth()
-{
-  MOZ_ASSERT(mTileWidth != -1);
-  return mTileWidth;
-}
-
-int
-gfxPlatform::GetTileHeight()
-{
-  MOZ_ASSERT(mTileHeight != -1);
-  return mTileHeight;
-}
-
-void
-gfxPlatform::SetTileSize(int aWidth, int aHeight)
-{
-  // Don't allow changing the tile size after we've set it.
-  // Right now the code assumes that the tile size doesn't change.
-  MOZ_ASSERT((mTileWidth == -1 && mTileHeight == -1) ||
-    (mTileWidth == aWidth && mTileHeight == aHeight));
-
-  mTileWidth = aWidth;
-  mTileHeight = aHeight;
-}
-
 void
 gfxPlatform::ComputeTileSize()
 {
@@ -1199,7 +1181,7 @@ gfxPlatform::ComputeTileSize()
       // Choose a size so that there are between 2 and 4 tiles per screen width.
       // FIXME: we should probably make sure this is within the max texture size,
       // but I think everything should at least support 1024
-      w = h = clamped(NextPowerOfTwo(screenSize.width) / 4, 256, 1024);
+      w = h = clamped(int32_t(RoundUpPow2(screenSize.width)) / 4, 256, 1024);
     }
 
 #ifdef MOZ_WIDGET_GONK
@@ -1215,7 +1197,12 @@ gfxPlatform::ComputeTileSize()
 #endif
   }
 
-  SetTileSize(w, h);
+  // Don't allow changing the tile size after we've set it.
+  // Right now the code assumes that the tile size doesn't change.
+  MOZ_ASSERT(gfxVars::TileSize().width == -1 &&
+             gfxVars::TileSize().height == -1);
+
+  gfxVars::SetTileSize(IntSize(w, h));
 }
 
 void
@@ -1421,6 +1408,22 @@ gfxPlatform::CreateOffscreenContentDrawTarget(const IntSize& aSize, SurfaceForma
 {
   NS_ASSERTION(mPreferredCanvasBackend != BackendType::NONE, "No backend.");
   return CreateDrawTargetForBackend(mContentBackend, aSize, aFormat);
+}
+
+already_AddRefed<DrawTarget>
+gfxPlatform::CreateSimilarSoftwareDrawTarget(DrawTarget* aDT,
+                                             const IntSize& aSize,
+                                             SurfaceFormat aFormat)
+{
+  RefPtr<DrawTarget> dt;
+
+  if (Factory::DoesBackendSupportDataDrawtarget(aDT->GetBackendType())) {
+    dt = aDT->CreateSimilarDrawTarget(aSize, aFormat);
+  } else {
+    dt = Factory::CreateDrawTarget(BackendType::SKIA, aSize, aFormat);
+  }
+
+  return dt.forget();
 }
 
 already_AddRefed<DrawTarget>
@@ -1632,6 +1635,10 @@ gfxPlatform::InitBackendPrefs(uint32_t aCanvasBitmask, BackendType aCanvasDefaul
         // backends so we need to add the default if we are using it and
         // overriding the prefs.
         mContentBackendBitmask |= BackendTypeBit(aContentDefault);
+    }
+
+    if (XRE_IsParentProcess()) {
+        gfxVars::SetContentBackend(mContentBackend);
     }
 }
 
@@ -2076,7 +2083,6 @@ gfxPlatform::OptimalFormatForContent(gfxContentType aContent)
 static mozilla::Atomic<bool> sLayersSupportsHardwareVideoDecoding(false);
 static bool sLayersHardwareVideoDecodingFailed = false;
 static bool sBufferRotationCheckPref = true;
-static bool sPrefBrowserTabsRemoteAutostart = false;
 
 static mozilla::Atomic<bool> sLayersAccelerationPrefsInitialized(false);
 
@@ -2096,7 +2102,10 @@ gfxPlatform::InitAcceleration()
   MOZ_ASSERT(NS_IsMainThread(), "can only initialize prefs on the main thread");
 
   gfxPrefs::GetSingleton();
-  sPrefBrowserTabsRemoteAutostart = BrowserTabsRemoteAutostart();
+
+  if (XRE_IsParentProcess()) {
+    gfxVars::SetBrowserTabsRemoteAutostart(BrowserTabsRemoteAutostart());
+  }
 
   nsCOMPtr<nsIGfxInfo> gfxInfo = services::GetGfxInfo();
   nsCString discardFailureId;
@@ -2238,7 +2247,7 @@ gfxPlatform::UsesOffMainThreadCompositing()
   if (firstTime) {
     MOZ_ASSERT(sLayersAccelerationPrefsInitialized);
     result =
-      sPrefBrowserTabsRemoteAutostart ||
+      gfxVars::BrowserTabsRemoteAutostart() ||
       !gfxPrefs::LayersOffMainThreadCompositionForceDisabled();
 #if defined(MOZ_WIDGET_GTK)
     // Linux users who chose OpenGL are being grandfathered in to OMTC
@@ -2261,7 +2270,6 @@ gfxPlatform::UsesOffMainThreadCompositing()
 already_AddRefed<mozilla::gfx::VsyncSource>
 gfxPlatform::CreateHardwareVsyncSource()
 {
-  NS_WARNING("Hardware Vsync support not yet implemented. Falling back to software timers");
   RefPtr<mozilla::gfx::VsyncSource> softwareVsync = new SoftwareVsyncSource();
   return softwareVsync.forget();
 }
@@ -2274,20 +2282,19 @@ gfxPlatform::IsInLayoutAsapMode()
   // the second is that the compositor goes ASAP and the refresh driver
   // goes at whatever the configurated rate is. This only checks the version
   // talos uses, which is the refresh driver and compositor are in lockstep.
-  return Preferences::GetInt("layout.frame_rate", -1) == 0;
+  return gfxPrefs::LayoutFrameRate() == 0;
 }
 
 /* static */ bool
 gfxPlatform::ForceSoftwareVsync()
 {
-  return Preferences::GetInt("layout.frame_rate", -1) > 0;
+  return gfxPrefs::LayoutFrameRate() > 0;
 }
 
 /* static */ int
 gfxPlatform::GetSoftwareVsyncRate()
 {
-  int preferenceRate = Preferences::GetInt("layout.frame_rate",
-                                           gfxPlatform::GetDefaultFrameRate());
+  int preferenceRate = gfxPrefs::LayoutFrameRate();
   if (preferenceRate <= 0) {
     return gfxPlatform::GetDefaultFrameRate();
   }
@@ -2318,6 +2325,18 @@ gfxPlatform::GetApzSupportInfo(mozilla::widget::InfoObject& aObj)
   if (SupportsApzDragInput()) {
     aObj.DefineProperty("ApzDragInput", 1);
   }
+}
+
+void
+gfxPlatform::GetTilesSupportInfo(mozilla::widget::InfoObject& aObj)
+{
+  if (!gfxPrefs::LayersTilesEnabled()) {
+    return;
+  }
+
+  IntSize tileSize = gfxVars::TileSize();
+  aObj.DefineProperty("TileHeight", tileSize.height);
+  aObj.DefineProperty("TileWidth", tileSize.width);
 }
 
 /*static*/ bool
@@ -2351,42 +2370,13 @@ gfxPlatform::PerfWarnings()
   return gfxPrefs::PerfWarnings();
 }
 
-static inline bool
-AllowOpenGL(bool* aWhitelisted)
-{
-  nsCOMPtr<nsIGfxInfo> gfxInfo = do_GetService("@mozilla.org/gfx/info;1");
-  if (gfxInfo) {
-    // bug 655578: on X11 at least, we must always call GetData (even if we don't need that information)
-    // as that's what causes GfxInfo initialization which kills the zombie 'glxtest' process.
-    // initially we relied on the fact that GetFeatureStatus calls GetData for us, but bug 681026 showed
-    // that assumption to be unsafe.
-    gfxInfo->GetData();
-
-    int32_t status;
-    nsCString discardFailureId;
-    if (NS_SUCCEEDED(gfxInfo->GetFeatureStatus(nsIGfxInfo::FEATURE_OPENGL_LAYERS, discardFailureId, &status))) {
-      if (status == nsIGfxInfo::FEATURE_STATUS_OK) {
-        *aWhitelisted = true;
-        return true;
-      }
-    }
-  }
-
-  return gfxConfig::IsForcedOnByUser(Feature::HW_COMPOSITING);
-}
-
 void
 gfxPlatform::GetAcceleratedCompositorBackends(nsTArray<LayersBackend>& aBackends)
 {
-  // Being whitelisted is not enough to accelerate, but not being whitelisted is
-  // enough not to:
-  bool whitelisted = false;
-
-  if (AllowOpenGL(&whitelisted)) {
+  if (gfxConfig::IsEnabled(Feature::OPENGL_COMPOSITING)) {
     aBackends.AppendElement(LayersBackend::LAYERS_OPENGL);
   }
-
-  if (!whitelisted) {
+  else {
     static int tell_me_once = 0;
     if (!tell_me_once) {
       NS_WARNING("OpenGL-accelerated layers are not supported on this system");
@@ -2470,4 +2460,66 @@ void
 gfxPlatform::BumpDeviceCounter()
 {
   mDeviceCounter++;
+}
+
+void
+gfxPlatform::InitOpenGLConfig()
+{
+  #ifdef XP_WIN
+  // Don't enable by default on Windows, since it could show up in about:support even
+  // though it'll never get used. Only attempt if user enables the pref
+  if (!Preferences::GetBool("layers.prefer-opengl")){
+    return;
+  }
+  #endif
+
+  FeatureState& openGLFeature = gfxConfig::GetFeature(Feature::OPENGL_COMPOSITING);
+
+  // Check to see hw comp supported
+  if (!gfxConfig::IsEnabled(Feature::HW_COMPOSITING)) {
+    openGLFeature.DisableByDefault(FeatureStatus::Unavailable, "Hardware compositing is disabled",
+                           NS_LITERAL_CSTRING("FEATURE_FAILURE_OPENGL_NEED_HWCOMP"));
+    return;
+  }
+
+  #ifdef XP_WIN
+  openGLFeature.SetDefaultFromPref(
+    gfxPrefs::GetLayersPreferOpenGLPrefName(),
+    true,
+    gfxPrefs::GetLayersPreferOpenGLPrefDefault());
+  #else
+    openGLFeature.EnableByDefault();
+  #endif
+
+  nsCString message;
+  nsCString failureId;
+  if (!IsGfxInfoStatusOkay(nsIGfxInfo::FEATURE_OPENGL_LAYERS, &message, failureId)) {
+    openGLFeature.Disable(FeatureStatus::Blacklisted, message.get(), failureId);
+  }
+
+  // Ensure that an accelerated compositor backend is available when layers
+  // acceleration is force-enabled.
+  if (gfxPrefs::LayersAccelerationForceEnabledDoNotUseDirectly()) {
+    openGLFeature.UserForceEnable("Force-enabled by pref");
+  }
+}
+
+bool
+gfxPlatform::IsGfxInfoStatusOkay(int32_t aFeature, nsCString* aOutMessage, nsCString& aFailureId)
+{
+  nsCOMPtr<nsIGfxInfo> gfxInfo = services::GetGfxInfo();
+  if (!gfxInfo) {
+    return true;
+  }
+
+  int32_t status;
+  if (NS_SUCCEEDED(gfxInfo->GetFeatureStatus(aFeature, aFailureId, &status)) &&
+      status != nsIGfxInfo::FEATURE_STATUS_OK)
+  {
+    aOutMessage->AssignLiteral("#BLOCKLIST_");
+    aOutMessage->AppendASCII(aFailureId.get());
+    return false;
+  }
+
+  return true;
 }

@@ -57,10 +57,9 @@
 #include "GLTextureImage.h"
 #include "GLContextProvider.h"
 #include "GLContextCGL.h"
-#include "GLUploadHelpers.h"
 #include "ScopedGLHelpers.h"
 #include "HeapCopyOfStackArray.h"
-#include "mozilla/layers/APZCTreeManager.h"
+#include "mozilla/layers/IAPZCTreeManager.h"
 #include "mozilla/layers/APZThreadUtils.h"
 #include "mozilla/layers/GLManager.h"
 #include "mozilla/layers/CompositorOGL.h"
@@ -71,6 +70,7 @@
 #include "gfxPrefs.h"
 #include "mozilla/gfx/2D.h"
 #include "mozilla/gfx/BorrowedContext.h"
+#include "mozilla/gfx/MacIOSurface.h"
 #ifdef ACCESSIBILITY
 #include "nsAccessibilityService.h"
 #include "mozilla/a11y/Platform.h"
@@ -91,6 +91,7 @@
 #include "mozilla/layers/ChromeProcessController.h"
 #include "nsLayoutUtils.h"
 #include "InputData.h"
+#include "RectTextureImage.h"
 #include "SwipeTracker.h"
 #include "VibrancyManager.h"
 #include "nsNativeThemeCocoa.h"
@@ -177,6 +178,8 @@ static uint32_t gNumberOfWidgetsNeedingEventThread = 0;
 - (CGFloat)cornerRadius;
 - (void)clearCorners;
 
+-(void)setFullscreen:(BOOL)aFullscreen;
+
 // Overlay drawing functions for traditional CGContext drawing
 - (void)drawTitleString;
 - (void)drawTitlebarHighlight;
@@ -197,7 +200,7 @@ static uint32_t gNumberOfWidgetsNeedingEventThread = 0;
 #endif
 
 - (LayoutDeviceIntPoint)convertWindowCoordinates:(NSPoint)aPoint;
-- (APZCTreeManager*)apzctm;
+- (IAPZCTreeManager*)apzctm;
 
 - (BOOL)inactiveWindowAcceptsMouseEvent:(NSEvent*)aEvent;
 - (void)updateWindowDraggableState;
@@ -267,69 +270,6 @@ void EnsureLogInitialized()
 
 namespace {
 
-// Manages a texture which can resize dynamically, binds to the
-// LOCAL_GL_TEXTURE_RECTANGLE_ARB texture target and is automatically backed
-// by a power-of-two size GL texture. The latter two features are used for
-// compatibility with older Mac hardware which we block GL layers on.
-// RectTextureImages are used both for accelerated GL layers drawing and for
-// OMTC BasicLayers drawing.
-class RectTextureImage {
-public:
-  explicit RectTextureImage(GLContext* aGLContext)
-   : mGLContext(aGLContext)
-   , mTexture(0)
-   , mInUpdate(false)
-  {}
-
-  virtual ~RectTextureImage();
-
-  already_AddRefed<gfx::DrawTarget>
-    BeginUpdate(const LayoutDeviceIntSize& aNewSize,
-                const LayoutDeviceIntRegion& aDirtyRegion =
-                  LayoutDeviceIntRegion());
-  void EndUpdate(bool aKeepSurface = false);
-
-  void UpdateIfNeeded(const LayoutDeviceIntSize& aNewSize,
-                      const LayoutDeviceIntRegion& aDirtyRegion,
-                      void (^aCallback)(gfx::DrawTarget*,
-                                        const LayoutDeviceIntRegion&))
-  {
-    RefPtr<gfx::DrawTarget> drawTarget = BeginUpdate(aNewSize, aDirtyRegion);
-    if (drawTarget) {
-      aCallback(drawTarget, GetUpdateRegion());
-      EndUpdate();
-    }
-  }
-
-  void UpdateFromCGContext(const LayoutDeviceIntSize& aNewSize,
-                           const LayoutDeviceIntRegion& aDirtyRegion,
-                           CGContextRef aCGContext);
-
-  LayoutDeviceIntRegion GetUpdateRegion() {
-    MOZ_ASSERT(mInUpdate, "update region only valid during update");
-    return mUpdateRegion;
-  }
-
-  void Draw(mozilla::layers::GLManager* aManager,
-            const LayoutDeviceIntPoint& aLocation,
-            const Matrix4x4& aTransform = Matrix4x4());
-
-  static LayoutDeviceIntSize TextureSizeForSize(
-    const LayoutDeviceIntSize& aSize);
-
-protected:
-
-  RefPtr<gfx::DrawTarget> mUpdateDrawTarget;
-  UniquePtr<unsigned char[]> mUpdateDrawTargetData;
-  GLContext* mGLContext;
-  LayoutDeviceIntRegion mUpdateRegion;
-  LayoutDeviceIntSize mUsedSize;
-  LayoutDeviceIntSize mBufferSize;
-  LayoutDeviceIntSize mTextureSize;
-  GLuint mTexture;
-  bool mInUpdate;
-};
-
 // Used for OpenGL drawing from the compositor thread for OMTC BasicLayers.
 // We need to use OpenGL for this because there seems to be no other robust
 // way of drawing from a secondary thread without locking, which would cause
@@ -337,12 +277,12 @@ protected:
 class GLPresenter : public GLManager
 {
 public:
-  static GLPresenter* CreateForWindow(nsIWidget* aWindow)
+  static mozilla::UniquePtr<GLPresenter> CreateForWindow(nsIWidget* aWindow)
   {
     // Contrary to CompositorOGL, we allow unaccelerated OpenGL contexts to be
     // used. BasicCompositor only requires very basic GL functionality.
     RefPtr<GLContext> context = gl::GLContextProvider::CreateForWindow(aWindow, false);
-    return context ? new GLPresenter(context) : nullptr;
+    return context ? MakeUnique<GLPresenter>(context) : nullptr;
   }
 
   explicit GLPresenter(GLContext* aContext);
@@ -353,7 +293,7 @@ public:
   {
     MOZ_ASSERT(aTarget == LOCAL_GL_TEXTURE_RECTANGLE_ARB);
     MOZ_ASSERT(aFormat == gfx::SurfaceFormat::R8G8B8A8);
-    return mRGBARectProgram;
+    return mRGBARectProgram.get();
   }
   virtual const gfx::Matrix4x4& GetProjMatrix() const override
   {
@@ -377,7 +317,7 @@ public:
 
 protected:
   RefPtr<mozilla::gl::GLContext> mGLContext;
-  nsAutoPtr<mozilla::layers::ShaderProgramOGL> mRGBARectProgram;
+  mozilla::UniquePtr<mozilla::layers::ShaderProgramOGL> mRGBARectProgram;
   gfx::Matrix4x4 mProjMatrix;
   GLuint mQuadVBO;
 };
@@ -1246,6 +1186,37 @@ nsresult nsChildView::SynthesizeNativeMouseScrollEvent(mozilla::LayoutDeviceIntP
   NS_OBJC_END_TRY_ABORT_BLOCK_NSRESULT;
 }
 
+nsresult nsChildView::SynthesizeNativeTouchPoint(uint32_t aPointerId,
+                                                 TouchPointerState aPointerState,
+                                                 mozilla::LayoutDeviceIntPoint aPoint,
+                                                 double aPointerPressure,
+                                                 uint32_t aPointerOrientation,
+                                                 nsIObserver* aObserver)
+{
+  NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT;
+
+  AutoObserverNotifier notifier(aObserver, "touchpoint");
+
+  MOZ_ASSERT(NS_IsMainThread());
+  if (aPointerState == TOUCH_HOVER) {
+    return NS_ERROR_UNEXPECTED;
+  }
+
+  if (!mSynthesizedTouchInput) {
+    mSynthesizedTouchInput = MakeUnique<MultiTouchInput>();
+  }
+
+  LayoutDeviceIntPoint pointInWindow = aPoint - WidgetToScreenOffset();
+  MultiTouchInput inputToDispatch = UpdateSynthesizedTouchState(
+      mSynthesizedTouchInput.get(), PR_IntervalNow(), TimeStamp::Now(),
+      aPointerId, aPointerState, pointInWindow, aPointerPressure,
+      aPointerOrientation);
+  DispatchTouchInput(inputToDispatch);
+  return NS_OK;
+
+  NS_OBJC_END_TRY_ABORT_BLOCK_NSRESULT;
+}
+
 // First argument has to be an NSMenu representing the application's top-level
 // menu bar. The returned item is *not* retained.
 static NSMenuItem* NativeMenuItemWithLocation(NSMenu* menubar, NSString* locationString)
@@ -1934,11 +1905,10 @@ nsChildView::ExecuteNativeKeyBinding(NativeKeyBindingsType aType,
 nsIMEUpdatePreference
 nsChildView::GetIMEUpdatePreference()
 {
-  // While a plugin has focus, IMEInputHandler doesn't need any notifications.
-  if (mInputContext.mIMEState.mEnabled == IMEState::PLUGIN) {
-    return nsIMEUpdatePreference();
-  }
-  return nsIMEUpdatePreference(nsIMEUpdatePreference::NOTIFY_SELECTION_CHANGE);
+  // XXX Shouldn't we move floating window which shows composition string
+  //     when plugin has focus and its parent is scrolled or the window is
+  //     moved?
+  return nsIMEUpdatePreference();
 }
 
 NSView<mozView>* nsChildView::GetEditorView()
@@ -2024,17 +1994,26 @@ nsChildView::PrepareWindowEffects()
 {
   NS_OBJC_BEGIN_TRY_ABORT_BLOCK;
 
-  MutexAutoLock lock(mEffectsLock);
-  mShowsResizeIndicator = ShowsResizeIndicator(&mResizeIndicatorRect);
-  mHasRoundedBottomCorners = [(ChildView*)mView hasRoundedBottomCorners];
-  CGFloat cornerRadius = [(ChildView*)mView cornerRadius];
-  mDevPixelCornerRadius = cornerRadius * BackingScaleFactor();
-  mIsCoveringTitlebar = [(ChildView*)mView isCoveringTitlebar];
-  NSInteger styleMask = [[mView window] styleMask];
-  mIsFullscreen = (styleMask & NSFullScreenWindowMask) || !(styleMask & NSTitledWindowMask);
-  if (mIsCoveringTitlebar) {
-    mTitlebarRect = RectContainingTitlebarControls();
-    UpdateTitlebarCGContext();
+  bool isFullscreen;
+  {
+    MutexAutoLock lock(mEffectsLock);
+    mShowsResizeIndicator = ShowsResizeIndicator(&mResizeIndicatorRect);
+    mHasRoundedBottomCorners = [(ChildView*)mView hasRoundedBottomCorners];
+    CGFloat cornerRadius = [(ChildView*)mView cornerRadius];
+    mDevPixelCornerRadius = cornerRadius * BackingScaleFactor();
+    mIsCoveringTitlebar = [(ChildView*)mView isCoveringTitlebar];
+    NSInteger styleMask = [[mView window] styleMask];
+    isFullscreen = (styleMask & NSFullScreenWindowMask) || !(styleMask & NSTitledWindowMask);
+    if (mIsCoveringTitlebar) {
+      mTitlebarRect = RectContainingTitlebarControls();
+      UpdateTitlebarCGContext();
+    }
+  }
+
+  // If we've just transitioned into or out of full screen then update the opacity on our GLContext.
+  if (isFullscreen != mIsFullscreen) {
+    mIsFullscreen = isFullscreen;
+    [(ChildView*)mView setFullscreen:isFullscreen];
   }
 
   NS_OBJC_END_TRY_ABORT_BLOCK;
@@ -2051,7 +2030,7 @@ nsChildView::CleanupWindowEffects()
 bool
 nsChildView::PreRender(LayerManagerComposite* aManager)
 {
-  nsAutoPtr<GLManager> manager(GLManager::CreateGLManager(aManager));
+  UniquePtr<GLManager> manager(GLManager::CreateGLManager(aManager));
   if (!manager) {
     return true;
   }
@@ -2073,7 +2052,7 @@ nsChildView::PreRender(LayerManagerComposite* aManager)
 void
 nsChildView::PostRender(LayerManagerComposite* aManager)
 {
-  nsAutoPtr<GLManager> manager(GLManager::CreateGLManager(aManager));
+  UniquePtr<GLManager> manager(GLManager::CreateGLManager(aManager));
   if (!manager) {
     return;
   }
@@ -2086,9 +2065,9 @@ void
 nsChildView::DrawWindowOverlay(LayerManagerComposite* aManager,
                                LayoutDeviceIntRect aRect)
 {
-  nsAutoPtr<GLManager> manager(GLManager::CreateGLManager(aManager));
+  mozilla::UniquePtr<GLManager> manager(GLManager::CreateGLManager(aManager));
   if (manager) {
-    DrawWindowOverlay(manager, aRect);
+    DrawWindowOverlay(manager.get(), aRect);
   }
 }
 
@@ -2153,7 +2132,7 @@ nsChildView::MaybeDrawResizeIndicator(GLManager* aManager)
   }
 
   if (!mResizerImage) {
-    mResizerImage = MakeUnique<RectTextureImage>(aManager->gl());
+    mResizerImage = MakeUnique<RectTextureImage>();
   }
 
   LayoutDeviceIntSize size = mResizeIndicatorRect.Size();
@@ -2220,6 +2199,13 @@ CreateCGContext(const LayoutDeviceIntSize& aSize)
   return ctx;
 }
 
+LayoutDeviceIntSize
+TextureSizeForSize(const LayoutDeviceIntSize& aSize)
+{
+  return LayoutDeviceIntSize(RoundUpPow2(aSize.width),
+                             RoundUpPow2(aSize.height));
+}
+
 // When this method is entered, mEffectsLock is already being held.
 void
 nsChildView::UpdateTitlebarCGContext()
@@ -2233,8 +2219,7 @@ nsChildView::UpdateTitlebarCGContext()
   NSRect dirtyRect = [mView convertRect:[(BaseWindow*)[mView window] getAndResetNativeDirtyRect] fromView:nil];
   NSRect dirtyTitlebarRect = NSIntersectionRect(titlebarRect, dirtyRect);
 
-  LayoutDeviceIntSize texSize =
-    RectTextureImage::TextureSizeForSize(mTitlebarRect.Size());
+  LayoutDeviceIntSize texSize = TextureSizeForSize(mTitlebarRect.Size());
   if (!mTitlebarCGContext ||
       CGBitmapContextGetWidth(mTitlebarCGContext) != size_t(texSize.width) ||
       CGBitmapContextGetHeight(mTitlebarCGContext) != size_t(texSize.height)) {
@@ -2367,7 +2352,7 @@ nsChildView::MaybeDrawTitlebar(GLManager* aManager)
   mUpdatedTitlebarRegion.SetEmpty();
 
   if (!mTitlebarImage) {
-    mTitlebarImage = MakeUnique<RectTextureImage>(aManager->gl());
+    mTitlebarImage = MakeUnique<RectTextureImage>();
   }
 
   mTitlebarImage->UpdateFromCGContext(mTitlebarRect.Size(),
@@ -2391,7 +2376,7 @@ nsChildView::MaybeDrawRoundedCorners(GLManager* aManager,
   MutexAutoLock lock(mEffectsLock);
 
   if (!mCornerMaskImage) {
-    mCornerMaskImage = MakeUnique<RectTextureImage>(aManager->gl());
+    mCornerMaskImage = MakeUnique<RectTextureImage>();
   }
 
   LayoutDeviceIntSize size(mDevPixelCornerRadius, mDevPixelCornerRadius);
@@ -2718,7 +2703,7 @@ nsChildView::StartRemoteDrawingInRegion(LayoutDeviceIntRegion& aInvalidRegion,
   LayoutDeviceIntSize renderSize = mBounds.Size();
 
   if (!mBasicCompositorImage) {
-    mBasicCompositorImage = MakeUnique<RectTextureImage>(mGLPresenter->gl());
+    mBasicCompositorImage = MakeUnique<RectTextureImage>();
   }
 
   RefPtr<gfx::DrawTarget> drawTarget =
@@ -2739,7 +2724,7 @@ nsChildView::StartRemoteDrawingInRegion(LayoutDeviceIntRegion& aInvalidRegion,
 void
 nsChildView::EndRemoteDrawing()
 {
-  mBasicCompositorImage->EndUpdate(true);
+  mBasicCompositorImage->EndUpdate();
   DoRemoteComposition(mBounds);
 }
 
@@ -2775,23 +2760,52 @@ nsChildView::DoRemoteComposition(const LayoutDeviceIntRect& aRenderRect)
   mGLPresenter->BeginFrame(aRenderRect.Size());
 
   // Draw the result from the basic compositor.
-  mBasicCompositorImage->Draw(mGLPresenter, LayoutDeviceIntPoint(0, 0));
+  mBasicCompositorImage->Draw(mGLPresenter.get(), LayoutDeviceIntPoint(0, 0));
 
   // DrawWindowOverlay doesn't do anything for non-GL, so it didn't paint
   // anything during the basic compositor transaction. Draw the overlay now.
-  DrawWindowOverlay(mGLPresenter, aRenderRect);
+  DrawWindowOverlay(mGLPresenter.get(), aRenderRect);
 
   mGLPresenter->EndFrame();
 
   [(ChildView*)mView postRender:mGLPresenter->GetNSOpenGLContext()];
 }
 
+@interface NonDraggableView : NSView
+@end
+
+@implementation NonDraggableView
+- (BOOL)mouseDownCanMoveWindow { return NO; }
+- (NSView*)hitTest:(NSPoint)aPoint { return nil; }
+@end
+
 void
 nsChildView::UpdateWindowDraggingRegion(const LayoutDeviceIntRegion& aRegion)
 {
-  if (mDraggableRegion != aRegion) {
-    mDraggableRegion = aRegion;
-    [(ChildView*)mView updateWindowDraggableState];
+  // mView returns YES from mouseDownCanMoveWindow, so we need to put NSViews
+  // that return NO from mouseDownCanMoveWindow in the places that shouldn't
+  // be draggable. We can't do it the other way round because returning
+  // YES from mouseDownCanMoveWindow doesn't have any effect if there's a
+  // superview that returns NO.
+  LayoutDeviceIntRegion nonDraggable;
+  nonDraggable.Sub(LayoutDeviceIntRect(0, 0, mBounds.width, mBounds.height), aRegion);
+
+  __block bool changed = false;
+
+  // Suppress calls to setNeedsDisplay during NSView geometry changes.
+  ManipulateViewWithoutNeedingDisplay(mView, ^() {
+    changed = mNonDraggableRegion.UpdateRegion(nonDraggable, *this, mView, ^() {
+      return [[NonDraggableView alloc] initWithFrame:NSZeroRect];
+    });
+  });
+
+  if (changed) {
+    // Trigger an update to the window server. This will call
+    // mouseDownCanMoveWindow.
+    // Doing this manually is only necessary because we're suppressing
+    // setNeedsDisplay calls above.
+    [[mView window] setMovableByWindowBackground:NO];
+    [[mView window] setMovableByWindowBackground:YES];
   }
 }
 
@@ -3028,160 +3042,6 @@ nsChildView::GetDocumentAccessible()
 }
 #endif
 
-// RectTextureImage implementation
-
-RectTextureImage::~RectTextureImage()
-{
-  if (mTexture) {
-    mGLContext->MakeCurrent();
-    mGLContext->fDeleteTextures(1, &mTexture);
-    mTexture = 0;
-  }
-}
-
-LayoutDeviceIntSize
-RectTextureImage::TextureSizeForSize(const LayoutDeviceIntSize& aSize)
-{
-  return LayoutDeviceIntSize(gfx::NextPowerOfTwo(aSize.width),
-                             gfx::NextPowerOfTwo(aSize.height));
-}
-
-already_AddRefed<gfx::DrawTarget>
-RectTextureImage::BeginUpdate(const LayoutDeviceIntSize& aNewSize,
-                              const LayoutDeviceIntRegion& aDirtyRegion)
-{
-  MOZ_ASSERT(!mInUpdate, "Beginning update during update!");
-  mUpdateRegion = aDirtyRegion;
-  if (aNewSize != mUsedSize) {
-    mUsedSize = aNewSize;
-    mUpdateRegion =
-      LayoutDeviceIntRect(LayoutDeviceIntPoint(0, 0), aNewSize);
-  }
-
-  if (mUpdateRegion.IsEmpty()) {
-    return nullptr;
-  }
-
-  LayoutDeviceIntSize neededBufferSize = TextureSizeForSize(mUsedSize);
-  if (!mUpdateDrawTarget || mBufferSize != neededBufferSize) {
-    gfx::IntSize size(neededBufferSize.width, neededBufferSize.height);
-    mUpdateDrawTarget = nullptr;
-    mUpdateDrawTargetData = nullptr;
-    gfx::SurfaceFormat format = gfx::SurfaceFormat::B8G8R8A8;
-    int32_t stride = size.width * gfx::BytesPerPixel(format);
-    mUpdateDrawTargetData = MakeUnique<unsigned char[]>(stride * size.height);
-    mUpdateDrawTarget =
-      gfx::Factory::CreateDrawTargetForData(gfx::BackendType::SKIA,
-                                            mUpdateDrawTargetData.get(), size,
-                                            stride, format);
-    mBufferSize = neededBufferSize;
-  }
-
-  mInUpdate = true;
-
-  RefPtr<gfx::DrawTarget> drawTarget = mUpdateDrawTarget;
-  return drawTarget.forget();
-}
-
-#define NSFoundationVersionWithProperStrideSupportForSubtextureUpload NSFoundationVersionNumber10_6_3
-
-static bool
-CanUploadSubtextures()
-{
-  return NSFoundationVersionNumber >= NSFoundationVersionWithProperStrideSupportForSubtextureUpload;
-}
-
-void
-RectTextureImage::EndUpdate(bool aKeepSurface)
-{
-  MOZ_ASSERT(mInUpdate, "Ending update while not in update");
-
-  bool needInit = !mTexture;
-  LayoutDeviceIntRegion updateRegion = mUpdateRegion;
-  if (mTextureSize != mBufferSize) {
-    mTextureSize = mBufferSize;
-    needInit = true;
-  }
-
-  if (needInit || !CanUploadSubtextures()) {
-    updateRegion =
-      LayoutDeviceIntRect(LayoutDeviceIntPoint(0, 0), mTextureSize);
-  }
-
-  gfx::IntPoint srcPoint = updateRegion.GetBounds().TopLeft().ToUnknownPoint();
-  gfx::SurfaceFormat format = mUpdateDrawTarget->GetFormat();
-  int bpp = gfx::BytesPerPixel(format);
-  int32_t stride = mBufferSize.width * bpp;
-  unsigned char* data = mUpdateDrawTargetData.get();
-  data += srcPoint.y * stride + srcPoint.x * bpp;
-
-  UploadImageDataToTexture(mGLContext, data, stride, format,
-                           updateRegion.ToUnknownRegion(), mTexture, nullptr,
-                           needInit, /* aPixelBuffer = */ false,
-                           LOCAL_GL_TEXTURE0,
-                           LOCAL_GL_TEXTURE_RECTANGLE_ARB);
-
-
-
-  if (!aKeepSurface) {
-    mUpdateDrawTarget = nullptr;
-    mUpdateDrawTargetData = nullptr;
-  }
-
-  mInUpdate = false;
-}
-
-void
-RectTextureImage::UpdateFromCGContext(const LayoutDeviceIntSize& aNewSize,
-                                      const LayoutDeviceIntRegion& aDirtyRegion,
-                                      CGContextRef aCGContext)
-{
-  gfx::IntSize size = gfx::IntSize(CGBitmapContextGetWidth(aCGContext),
-                                   CGBitmapContextGetHeight(aCGContext));
-  mBufferSize.SizeTo(size.width, size.height);
-  RefPtr<gfx::DrawTarget> dt = BeginUpdate(aNewSize, aDirtyRegion);
-  if (dt) {
-    gfx::Rect rect(0, 0, size.width, size.height);
-    gfxUtils::ClipToRegion(dt, GetUpdateRegion().ToUnknownRegion());
-    RefPtr<gfx::SourceSurface> sourceSurface =
-      dt->CreateSourceSurfaceFromData(static_cast<uint8_t *>(CGBitmapContextGetData(aCGContext)),
-                                      size,
-                                      CGBitmapContextGetBytesPerRow(aCGContext),
-                                      gfx::SurfaceFormat::B8G8R8A8);
-    dt->DrawSurface(sourceSurface, rect, rect,
-                    gfx::DrawSurfaceOptions(),
-                    gfx::DrawOptions(1.0, gfx::CompositionOp::OP_SOURCE));
-    dt->PopClip();
-    EndUpdate();
-  }
-}
-
-void
-RectTextureImage::Draw(GLManager* aManager,
-                       const LayoutDeviceIntPoint& aLocation,
-                       const Matrix4x4& aTransform)
-{
-  ShaderProgramOGL* program = aManager->GetProgram(LOCAL_GL_TEXTURE_RECTANGLE_ARB,
-                                                   gfx::SurfaceFormat::R8G8B8A8);
-
-  aManager->gl()->fActiveTexture(LOCAL_GL_TEXTURE0);
-  aManager->gl()->fBindTexture(LOCAL_GL_TEXTURE_RECTANGLE_ARB, mTexture);
-
-  aManager->ActivateProgram(program);
-  program->SetProjectionMatrix(aManager->GetProjMatrix());
-  program->SetLayerTransform(Matrix4x4(aTransform).PostTranslate(aLocation.x, aLocation.y, 0));
-  program->SetTextureTransform(gfx::Matrix4x4());
-  program->SetRenderOffset(nsIntPoint(0, 0));
-  program->SetTexCoordMultiplier(mUsedSize.width, mUsedSize.height);
-  program->SetTextureUnit(0);
-
-  aManager->BindAndDrawQuad(program,
-                            gfx::Rect(0.0, 0.0, mUsedSize.width, mUsedSize.height),
-                            gfx::Rect(0.0, 0.0, 1.0f, 1.0f));
-
-  aManager->gl()->fBindTexture(LOCAL_GL_TEXTURE_RECTANGLE_ARB, 0);
-}
-
 // GLPresenter implementation
 
 GLPresenter::GLPresenter(GLContext* aContext)
@@ -3190,7 +3050,7 @@ GLPresenter::GLPresenter(GLContext* aContext)
   mGLContext->MakeCurrent();
   ShaderConfigOGL config;
   config.SetTextureTarget(LOCAL_GL_TEXTURE_RECTANGLE_ARB);
-  mRGBARectProgram = new ShaderProgramOGL(mGLContext,
+  mRGBARectProgram = MakeUnique<ShaderProgramOGL>(mGLContext,
     ProgramProfileOGL::GetProfileFor(config));
 
   // Create mQuadVBO.
@@ -3713,8 +3573,10 @@ NSEvent* gLastDragMouseDownEvent = nil;
 
 - (BOOL)mouseDownCanMoveWindow
 {
-  // Return YES so that _regionForOpaqueDescendants gets called, where the
-  // actual draggable region will be assembled.
+  // Return YES so that parts of this view can be draggable. The non-draggable
+  // parts will be covered by NSViews that return NO from
+  // mouseDownCanMoveWindow and thus override draggability from the inside.
+  // These views are assembled in nsChildView::UpdateWindowDraggingRegion.
   return YES;
 }
 
@@ -3878,7 +3740,7 @@ NSEvent* gLastDragMouseDownEvent = nil;
   CGContextScaleCTM(aContext, 1.0 / scale, 1.0 / scale);
 
   NSSize viewSize = [self bounds].size;
-  nsIntSize backingSize(viewSize.width * scale, viewSize.height * scale);
+  gfx::IntSize backingSize = gfx::IntSize::Truncate(viewSize.width * scale, viewSize.height * scale);
   LayoutDeviceIntRegion region = [self nativeDirtyRegionWithBoundingRect:aRect];
 
   bool painted = mGeckoChild->PaintWindowInContext(aContext, region, backingSize);
@@ -3977,6 +3839,16 @@ NSEvent* gLastDragMouseDownEvent = nil;
   if (!frameView || ![frameView respondsToSelector:@selector(roundedCornerRadius)])
     return 4.0f;
   return [frameView roundedCornerRadius];
+}
+
+-(void)setFullscreen:(BOOL)aFullscreen
+{
+  CGLLockContext((CGLContextObj)[mGLContext CGLContextObj]);
+  // Make the context opaque for fullscreen (since it performs better), and transparent
+  // for windowed (since we need it for rounded corners).
+  GLint opaque = aFullscreen ? 1 : 0;
+  [mGLContext setValues:&opaque forParameter:NSOpenGLCPSurfaceOpacity];
+  CGLUnlockContext((CGLContextObj)[mGLContext CGLContextObj]);
 }
 
 // Accelerated windows have two NSSurfaces:
@@ -4258,7 +4130,7 @@ NSEvent* gLastDragMouseDownEvent = nil;
         if ([theEvent type] == NSLeftMouseDown) {
           NSPoint point = [NSEvent mouseLocation];
           FlipCocoaScreenCoordinate(point);
-          nsIntPoint pos(point.x, point.y);
+          gfx::IntPoint pos = gfx::IntPoint::Truncate(point.x, point.y);
           consumeEvent = (BOOL)rollupListener->Rollup(popupsToRollup, true, &pos, nullptr);
         }
         else {
@@ -4657,7 +4529,7 @@ NSEvent* gLastDragMouseDownEvent = nil;
   CGFloat locationInTitlebar = [[self window] frame].size.height - [theEvent locationInWindow].y;
   LayoutDeviceIntPoint pos = geckoEvent.mRefPoint;
   if (!defaultPrevented && [theEvent clickCount] == 2 &&
-      mGeckoChild->GetDraggableRegion().Contains(pos.x, pos.y) &&
+      !mGeckoChild->GetNonDraggableRegion().Contains(pos.x, pos.y) &&
       [[self window] isKindOfClass:[ToolbarWindow class]] &&
       (locationInTitlebar < [(ToolbarWindow*)[self window] titlebarHeight] ||
        locationInTitlebar < [(ToolbarWindow*)[self window] unifiedToolbarHeight])) {
@@ -4690,75 +4562,6 @@ NSEvent* gLastDragMouseDownEvent = nil;
 
   nsEventStatus status; // ignored
   mGeckoChild->DispatchEvent(&event, status);
-}
-
-- (void)updateWindowDraggableState
-{
-  // Trigger update to the window server.
-  [[self window] setMovableByWindowBackground:NO];
-  [[self window] setMovableByWindowBackground:YES];
-}
-
-// aRect is in view coordinates relative to this NSView.
-- (CGRect)convertToFlippedWindowCoordinates:(NSRect)aRect
-{
-  // First, convert the rect to regular window coordinates...
-  NSRect inWindowCoords = [self convertRect:aRect toView:nil];
-  // ... and then flip it again because window coordinates have their origin
-  // in the bottom left corner, and we need it to be in the top left corner.
-  inWindowCoords.origin.y = [[self window] frame].size.height - NSMaxY(inWindowCoords);
-  return NSRectToCGRect(inWindowCoords);
-}
-
-static CGSRegionObj
-NewCGSRegionFromRegion(const LayoutDeviceIntRegion& aRegion,
-                       CGRect (^aRectConverter)(const LayoutDeviceIntRect&))
-{
-  nsTArray<CGRect> rects;
-  for (auto iter = aRegion.RectIter(); !iter.Done(); iter.Next()) {
-    rects.AppendElement(aRectConverter(iter.Get()));
-  }
-
-  CGSRegionObj region;
-  CGSNewRegionWithRectList(rects.Elements(), rects.Length(), &region);
-  return region;
-}
-
-// This function is called with forMove:YES to calculate the draggable region
-// of the window which will be submitted to the window server. Window dragging
-// is handled on the window server without calling back into our process, so it
-// also works while our app is unresponsive.
-- (CGSRegionObj)_regionForOpaqueDescendants:(NSRect)aRect forMove:(BOOL)aForMove
-{
-  if (!aForMove || !mGeckoChild) {
-    return [super _regionForOpaqueDescendants:aRect forMove:aForMove];
-  }
-
-  LayoutDeviceIntRect boundingRect = mGeckoChild->CocoaPointsToDevPixels(aRect);
-
-  LayoutDeviceIntRegion opaqueRegion;
-  opaqueRegion.Sub(boundingRect, mGeckoChild->GetDraggableRegion());
-
-  return NewCGSRegionFromRegion(opaqueRegion, ^(const LayoutDeviceIntRect& r) {
-    return [self convertToFlippedWindowCoordinates:mGeckoChild->DevPixelsToCocoaPoints(r)];
-  });
-}
-
-// Starting with 10.10, in addition to the traditional
-// -[NSView _regionForOpaqueDescendants:forMove:] method, there's a new form with
-// an additional forUnderTitlebar argument, which is sometimes called instead of
-// the old form. We need to override the new variant as well.
-- (CGSRegionObj)_regionForOpaqueDescendants:(NSRect)aRect
-                                    forMove:(BOOL)aForMove
-                           forUnderTitlebar:(BOOL)aForUnderTitlebar
-{
-  if (!aForMove || !mGeckoChild) {
-    return [super _regionForOpaqueDescendants:aRect
-                                      forMove:aForMove
-                             forUnderTitlebar:aForUnderTitlebar];
-  }
-
-  return [self _regionForOpaqueDescendants:aRect forMove:aForMove];
 }
 
 - (void)handleMouseMoved:(NSEvent*)theEvent
@@ -5119,7 +4922,7 @@ PanGestureTypeForEvent(NSEvent* aEvent)
 
 - (void)handleAsyncScrollEvent:(CGEventRef)cgEvent ofType:(CGEventType)type
 {
-  APZCTreeManager* apzctm = [self apzctm];
+  IAPZCTreeManager* apzctm = [self apzctm];
   if (!apzctm) {
     return;
   }
@@ -5767,7 +5570,7 @@ PanGestureTypeForEvent(NSEvent* aEvent)
   return mGeckoChild->CocoaPointsToDevPixels(localPoint);
 }
 
-- (APZCTreeManager*)apzctm
+- (IAPZCTreeManager*)apzctm
 {
   return mGeckoChild ? mGeckoChild->APZCTM() : nullptr;
 }
@@ -5971,7 +5774,7 @@ PanGestureTypeForEvent(NSEvent* aEvent)
     nsDragService* dragService = static_cast<nsDragService *>(mDragService);
     NSPoint pnt = [NSEvent mouseLocation];
     FlipCocoaScreenCoordinate(pnt);
-    dragService->SetDragEndPoint(nsIntPoint(NSToIntRound(pnt.x), NSToIntRound(pnt.y)));
+    dragService->SetDragEndPoint(gfx::IntPoint::Round(pnt.x, pnt.y));
 
     // XXX: dropEffect should be updated per |operation|.
     // As things stand though, |operation| isn't well handled within "our"

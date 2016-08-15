@@ -143,7 +143,7 @@ Narrator.prototype = {
   _speakInner: function() {
     this._win.speechSynthesis.cancel();
     let tw = this._treeWalker;
-    let paragraph = tw.nextNode();
+    let paragraph = tw.currentNode;
     if (!paragraph) {
       tw.currentNode = tw.root;
       return Promise.resolve();
@@ -193,6 +193,7 @@ Narrator.prototype = {
           // User pressed stopped.
           resolve();
         } else {
+          tw.nextNode();
           this._speakInner().then(resolve, reject);
         }
       });
@@ -216,10 +217,14 @@ Narrator.prototype = {
       let tw = this._treeWalker;
       if (!this._isParagraphInView(tw.currentNode)) {
         tw.currentNode = tw.root;
-        while (tw.nextNode() && !this._isParagraphInView(tw.currentNode)) {}
-        // _speakInner will advance to the next node for us, so we need
-        // to have it one paragraph back from the first visible one.
-        tw.previousNode();
+        while (tw.nextNode()) {
+          if (this._isParagraphInView(tw.currentNode)) {
+            break;
+          }
+        }
+      }
+      if (tw.currentNode == tw.root) {
+        tw.nextNode();
       }
 
       return this._speakInner();
@@ -236,25 +241,28 @@ Narrator.prototype = {
   },
 
   skipPrevious: function() {
-    let tw = this._treeWalker;
-    tw.previousNode();
-    if (this._timeIntoParagraph < PREV_THRESHOLD) {
-      tw.previousNode();
-    }
-    this._win.speechSynthesis.cancel();
+    this._goBackParagraphs(this._timeIntoParagraph < PREV_THRESHOLD ? 2 : 1);
   },
 
   setRate: function(rate) {
     this._speechOptions.rate = rate;
     /* repeat current paragraph */
-    this._treeWalker.previousNode();
-    this._win.speechSynthesis.cancel();
+    this._goBackParagraphs(1);
   },
 
   setVoice: function(voice) {
     this._speechOptions.voice = this._getVoice(voice);
     /* repeat current paragraph */
-    this._treeWalker.previousNode();
+    this._goBackParagraphs(1);
+  },
+
+  _goBackParagraphs: function(count) {
+    let tw = this._treeWalker;
+    for (let i = 0; i < count; i++) {
+      if (!tw.previousNode()) {
+        tw.currentNode = tw.root;
+      }
+    }
     this._win.speechSynthesis.cancel();
   }
 };

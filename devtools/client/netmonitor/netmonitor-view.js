@@ -25,11 +25,12 @@ const {ToolSidebar} = require("devtools/client/framework/sidebar");
 const {HTMLTooltip} = require("devtools/client/shared/widgets/HTMLTooltip");
 const {setImageTooltip, getImageDimensions} =
   require("devtools/client/shared/widgets/tooltip/ImageTooltipHelper");
-const DevToolsUtils = require("devtools/shared/DevToolsUtils");
+const { testing: isTesting } = require("devtools/shared/flags");
 const {LocalizationHelper} = require("devtools/client/shared/l10n");
 const {PrefsHelper} = require("devtools/client/shared/prefs");
 const {ViewHelpers, Heritage, WidgetMethods, setNamedTimeout} =
   require("devtools/client/shared/widgets/view-helpers");
+const {gDevTools} = require("devtools/client/framework/devtools");
 
 /**
  * Localization convenience methods.
@@ -47,7 +48,7 @@ const WDA_DEFAULT_VERIFY_INTERVAL = 50;
 // be at least equal to the general mochitest timeout of 45 seconds so that this
 // never gets hit during testing.
 // ms
-const WDA_DEFAULT_GIVE_UP_TIMEOUT = DevToolsUtils.testing ? 45000 : 2000;
+const WDA_DEFAULT_GIVE_UP_TIMEOUT = isTesting ? 45000 : 2000;
 
 /**
  * Shortcuts for accessing various network monitor preferences.
@@ -137,6 +138,11 @@ const LOAD_CAUSE_STRINGS = {
   [Ci.nsIContentPolicy.TYPE_IMAGESET]: "imageset",
   [Ci.nsIContentPolicy.TYPE_WEB_MANIFEST]: "webManifest"
 };
+
+function loadCauseString(causeType) {
+  return LOAD_CAUSE_STRINGS[causeType] || "unknown";
+}
+
 const DEFAULT_EDITOR_CONFIG = {
   mode: Editor.modes.text,
   readOnly: true,
@@ -244,7 +250,7 @@ var NetMonitorView = {
    * @return boolean
    */
   get detailsPaneHidden() {
-    return this._detailsPane.hasAttribute("pane-collapsed");
+    return this._detailsPane.classList.contains("pane-collapsed");
   },
 
   /**
@@ -266,12 +272,12 @@ var NetMonitorView = {
     ViewHelpers.togglePane(flags, pane);
 
     if (flags.visible) {
-      this._body.removeAttribute("pane-collapsed");
-      button.removeAttribute("pane-collapsed");
+      this._body.classList.remove("pane-collapsed");
+      button.classList.remove("pane-collapsed");
       button.setAttribute("tooltiptext", this._collapsePaneString);
     } else {
-      this._body.setAttribute("pane-collapsed", "");
-      button.setAttribute("pane-collapsed", "");
+      this._body.classList.add("pane-collapsed");
+      button.classList.add("pane-collapsed");
       button.setAttribute("tooltiptext", this._expandPaneString);
     }
 
@@ -336,7 +342,7 @@ var NetMonitorView = {
         ]);
       } catch (ex) {
         // Timed out while waiting for data. Continue with what we have.
-        DevToolsUtils.reportException("showNetworkStatisticsView", ex);
+        console.error(ex);
       }
 
       statisticsView.createPrimedCacheChart(requestsView.items);
@@ -487,7 +493,10 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
     window.addEventListener("resize", this._onResize, false);
 
     this.requestsMenuSortEvent = getKeyWithEvent(this.sortBy.bind(this));
+    this.requestsMenuSortKeyboardEvent = getKeyWithEvent(this.sortBy.bind(this), true);
     this.requestsMenuFilterEvent = getKeyWithEvent(this.filterOn.bind(this));
+    this.requestsMenuFilterKeyboardEvent = getKeyWithEvent(
+      this.filterOn.bind(this), true);
     this.reqeustsMenuClearEvent = this.clear.bind(this);
     this._onContextShowing = this._onContextShowing.bind(this);
     this._onContextNewTabCommand = this.openRequestInTab.bind(this);
@@ -519,8 +528,12 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
 
     $("#toolbar-labels").addEventListener("click",
       this.requestsMenuSortEvent, false);
+    $("#toolbar-labels").addEventListener("keydown",
+      this.requestsMenuSortKeyboardEvent, false);
     $("#requests-menu-filter-buttons").addEventListener("click",
       this.requestsMenuFilterEvent, false);
+    $("#requests-menu-filter-buttons").addEventListener("keydown",
+      this.requestsMenuFilterKeyboardEvent, false);
     $("#requests-menu-clear-button").addEventListener("click",
       this.reqeustsMenuClearEvent, false);
     $("#network-request-popup").addEventListener("popupshowing",
@@ -599,8 +612,12 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
 
     $("#toolbar-labels").removeEventListener("click",
       this.requestsMenuSortEvent, false);
+    $("#toolbar-labels").removeEventListener("keydown",
+      this.requestsMenuSortKeyboardEvent, false);
     $("#requests-menu-filter-buttons").removeEventListener("click",
       this.requestsMenuFilterEvent, false);
+    $("#requests-menu-filter-buttons").removeEventListener("keydown",
+      this.requestsMenuFilterKeyboardEvent, false);
     $("#requests-menu-clear-button").removeEventListener("click",
       this.reqeustsMenuClearEvent, false);
     this.freetextFilterBox.removeEventListener("input",
@@ -714,7 +731,7 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
    * Opens selected item in a new tab.
    */
   openRequestInTab: function () {
-    let win = Services.wm.getMostRecentWindow("navigator:browser");
+    let win = Services.wm.getMostRecentWindow(gDevTools.chromeWindowType);
     let selected = this.selectedItem.attachment;
     win.openUILinkIn(selected.url, "tab", { relatedToCurrent: true });
   },
@@ -1227,6 +1244,13 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
           this.sortContents((a, b) => !this._byDomain(a, b));
         }
         break;
+      case "cause":
+        if (direction == "ascending") {
+          this.sortContents(this._byCause);
+        } else {
+          this.sortContents((a, b) => !this._byCause(a, b));
+        }
+        break;
       case "type":
         if (direction == "ascending") {
           this.sortContents(this._byType);
@@ -1438,10 +1462,18 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
       : firstDomain > secondDomain;
   },
 
+  _byCause: function ({ attachment: first }, { attachment: second }) {
+    let firstCause = loadCauseString(first.cause.type);
+    let secondCause = loadCauseString(second.cause.type);
+
+    return firstCause == secondCause
+      ? first.startedMillis > second.startedMillis
+      : firstCause > secondCause;
+  },
+
   _byType: function ({ attachment: first }, { attachment: second }) {
     let firstType = this._getAbbreviatedMimeType(first.mimeType).toLowerCase();
-    let secondType = this._getAbbreviatedMimeType(second.mimeType)
-      .toLowerCase();
+    let secondType = this._getAbbreviatedMimeType(second.mimeType).toLowerCase();
 
     return firstType == secondType
       ? first.startedMillis > second.startedMillis
@@ -1939,8 +1971,7 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
       }
       case "cause": {
         let labelNode = $(".requests-menu-cause-label", target);
-        let text = LOAD_CAUSE_STRINGS[value.type] || "unknown";
-        labelNode.setAttribute("value", text);
+        labelNode.setAttribute("value", loadCauseString(value.type));
         if (value.loadingDocumentUri) {
           labelNode.setAttribute("tooltiptext", value.loadingDocumentUri);
         }
@@ -2368,13 +2399,17 @@ RequestsMenuView.prototype = Heritage.extend(WidgetMethods, {
       sourceEl.className = "stack-frame-source-name";
       frameEl.appendChild(sourceEl);
 
-      sourceEl.textContent = sourceUrl;
-      sourceEl.title = sourceUrl;
+      let sourceInnerEl = doc.createElementNS(HTML_NS, "span");
+      sourceInnerEl.className = "stack-frame-source-name-inner";
+      sourceEl.appendChild(sourceInnerEl);
+
+      sourceInnerEl.textContent = sourceUrl;
+      sourceInnerEl.title = sourceUrl;
 
       let lineEl = doc.createElementNS(HTML_NS, "span");
       lineEl.className = "stack-frame-line";
       lineEl.textContent = `:${lineNumber}:${columnNumber}`;
-      sourceEl.appendChild(lineEl);
+      sourceInnerEl.appendChild(lineEl);
 
       frameEl.addEventListener("click", () => {
         // hide the tooltip immediately, not after delay
@@ -3997,13 +4032,19 @@ function responseIsFresh({ responseHeaders, status }) {
  * @param function callback
  *          Function to execute execute when data-key
  *          is present in event.target.
+ * @param bool onlySpaceOrReturn
+ *          Flag to indicate if callback should only be called
+            when the space or return button is pressed
  * @return function
- *          Wrapped function with the target data-key as the first argument.
+ *          Wrapped function with the target data-key as the first argument
+ *          and the event as the second argument.
  */
-function getKeyWithEvent(callback) {
+function getKeyWithEvent(callback, onlySpaceOrReturn) {
   return function (event) {
     let key = event.target.getAttribute("data-key");
-    if (key) {
+    let filterKeyboardEvent = onlySpaceOrReturn
+       ? ViewHelpers.isSpaceOrReturn(event) : true;
+    if (key && filterKeyboardEvent) {
       callback.call(null, key);
     }
   };

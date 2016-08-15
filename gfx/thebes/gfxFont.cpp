@@ -9,6 +9,7 @@
 #include "mozilla/DebugOnly.h"
 #include "mozilla/gfx/2D.h"
 #include "mozilla/MathAlgorithms.h"
+#include "mozilla/SVGContextPaint.h"
 
 #include "mozilla/Logging.h"
 
@@ -1591,6 +1592,13 @@ private:
         return &mGlyphBuffer[mNumGlyphs++];
     }
 
+    static DrawMode
+    GetStrokeMode(DrawMode aMode)
+    {
+        return aMode & (DrawMode::GLYPH_STROKE |
+                        DrawMode::GLYPH_STROKE_UNDERNEATH);
+    }
+
     // Render the buffered glyphs to the draw target and clear the buffer.
     // This actually flushes the glyphs only if the buffer is full, or if the
     // aFinish parameter is true; otherwise it simply returns.
@@ -1679,12 +1687,50 @@ private:
                                           mFontParams.renderingOptions);
             }
         }
-        if ((mRunParams.drawMode &
-             (DrawMode::GLYPH_STROKE | DrawMode::GLYPH_STROKE_UNDERNEATH)) ==
-            DrawMode::GLYPH_STROKE) {
-            state.color = gfx::Color::FromABGR(mRunParams.textStrokeColor);
-            state.strokeOptions.mLineWidth = mRunParams.textStrokeWidth;
-            FlushStroke(buf, state);
+        if (GetStrokeMode(mRunParams.drawMode) == DrawMode::GLYPH_STROKE &&
+            mRunParams.strokeOpts) {
+            Pattern *pat;
+            if (mRunParams.textStrokePattern) {
+                pat = mRunParams.textStrokePattern->GetPattern(
+                  mRunParams.dt, state.patternTransformChanged
+                                   ? &state.patternTransform
+                                   : nullptr);
+
+                if (pat) {
+                    Matrix saved;
+                    Matrix *mat = nullptr;
+                    if (mFontParams.passedInvMatrix) {
+                        // The brush matrix needs to be multiplied with the
+                        // inverted matrix as well, to move the brush into the
+                        // space of the glyphs.
+
+                        // This relies on the returned Pattern not to be reused
+                        // by others, but regenerated on GetPattern calls. This
+                        // is true!
+                        if (pat->GetType() == PatternType::LINEAR_GRADIENT) {
+                            mat = &static_cast<LinearGradientPattern*>(pat)->mMatrix;
+                        } else if (pat->GetType() == PatternType::RADIAL_GRADIENT) {
+                            mat = &static_cast<RadialGradientPattern*>(pat)->mMatrix;
+                        } else if (pat->GetType() == PatternType::SURFACE) {
+                            mat = &static_cast<SurfacePattern*>(pat)->mMatrix;
+                        }
+
+                        if (mat) {
+                            saved = *mat;
+                            *mat = (*mat) * (*mFontParams.passedInvMatrix);
+                        }
+                    }
+                    FlushStroke(buf, *pat);
+
+                    if (mat) {
+                        *mat = saved;
+                    }
+                }
+            } else {
+                FlushStroke(buf,
+                            ColorPattern(
+                              Color::FromABGR(mRunParams.textStrokeColor)));
+            }
         }
         if (mRunParams.drawMode & DrawMode::GLYPH_PATH) {
             mRunParams.context->EnsurePathBuilder();
@@ -1697,13 +1743,13 @@ private:
         mNumGlyphs = 0;
     }
 
-    void FlushStroke(gfx::GlyphBuffer& aBuf, gfxContext::AzureState& aState)
+    void FlushStroke(gfx::GlyphBuffer& aBuf, const Pattern& aPattern)
     {
         RefPtr<Path> path =
             mFontParams.scaledFont->GetPathForGlyphs(aBuf, mRunParams.dt);
-        mRunParams.dt->Stroke(path,
-                              ColorPattern(aState.color),
-                              aState.strokeOptions);
+        mRunParams.dt->Stroke(path, aPattern, *mRunParams.strokeOpts,
+                              (mRunParams.drawOpts) ? *mRunParams.drawOpts
+                                                    : DrawOptions());
     }
 
     Glyph        mGlyphBuffer[GLYPH_BUFFER_SIZE];
@@ -1786,7 +1832,7 @@ gfxFont::DrawOneGlyph(uint32_t aGlyphID, double aAdvance, gfxPoint *aPt,
     }
 
     if (fontParams.haveColorGlyphs &&
-        RenderColorGlyph(runParams.dt,
+        RenderColorGlyph(runParams.dt, runParams.context,
                          fontParams.scaledFont, fontParams.renderingOptions,
                          fontParams.drawOptions,
                          fontParams.matInv * gfx::Point(devPt.x, devPt.y),
@@ -1812,7 +1858,7 @@ gfxFont::DrawOneGlyph(uint32_t aGlyphID, double aAdvance, gfxPoint *aPt,
 // Draw a run of CharacterGlyph records from the given offset in aShapedText.
 // Returns true if glyph paths were actually emitted.
 bool
-gfxFont::DrawGlyphs(gfxShapedText            *aShapedText,
+gfxFont::DrawGlyphs(const gfxShapedText      *aShapedText,
                     uint32_t                  aOffset, // offset in the textrun
                     uint32_t                  aCount, // length of run to draw
                     gfxPoint                 *aPt,
@@ -1924,7 +1970,7 @@ gfxFont::DrawGlyphs(gfxShapedText            *aShapedText,
 
 // This method is mostly parallel to DrawGlyphs.
 void
-gfxFont::DrawEmphasisMarks(gfxTextRun* aShapedText, gfxPoint* aPt,
+gfxFont::DrawEmphasisMarks(const gfxTextRun* aShapedText, gfxPoint* aPt,
                            uint32_t aOffset, uint32_t aCount,
                            const EmphasisMarkDrawParams& aParams)
 {
@@ -1963,7 +2009,7 @@ gfxFont::DrawEmphasisMarks(gfxTextRun* aShapedText, gfxPoint* aPt,
 }
 
 void
-gfxFont::Draw(gfxTextRun *aTextRun, uint32_t aStart, uint32_t aEnd,
+gfxFont::Draw(const gfxTextRun *aTextRun, uint32_t aStart, uint32_t aEnd,
               gfxPoint *aPt, const TextRunDrawParams& aRunParams,
               uint16_t aOrientation)
 {
@@ -2025,7 +2071,7 @@ gfxFont::Draw(gfxTextRun *aTextRun, uint32_t aStart, uint32_t aEnd,
         aRunParams.context->SetMatrix(mat);
     }
 
-    UniquePtr<gfxTextContextPaint> contextPaint;
+    UniquePtr<SVGContextPaint> contextPaint;
     if (fontParams.haveSVGGlyphs && !fontParams.contextPaint) {
         // If no pattern is specified for fill, use the current pattern
         NS_ASSERTION((int(aRunParams.drawMode) & int(DrawMode::GLYPH_STROKE)) == 0,
@@ -2131,7 +2177,7 @@ gfxFont::Draw(gfxTextRun *aTextRun, uint32_t aStart, uint32_t aEnd,
 
 bool
 gfxFont::RenderSVGGlyph(gfxContext *aContext, gfxPoint aPoint,
-                        uint32_t aGlyphId, gfxTextContextPaint *aContextPaint) const
+                        uint32_t aGlyphId, SVGContextPaint* aContextPaint) const
 {
     if (!GetFontEntry()->HasSVGGlyph(aGlyphId)) {
         return false;
@@ -2157,7 +2203,7 @@ gfxFont::RenderSVGGlyph(gfxContext *aContext, gfxPoint aPoint,
 
 bool
 gfxFont::RenderSVGGlyph(gfxContext *aContext, gfxPoint aPoint,
-                        uint32_t aGlyphId, gfxTextContextPaint *aContextPaint,
+                        uint32_t aGlyphId, SVGContextPaint* aContextPaint,
                         gfxTextRunDrawCallbacks *aCallbacks,
                         bool& aEmittedGlyphs) const
 {
@@ -2170,6 +2216,7 @@ gfxFont::RenderSVGGlyph(gfxContext *aContext, gfxPoint aPoint,
 
 bool
 gfxFont::RenderColorGlyph(DrawTarget* aDrawTarget,
+                          gfxContext* aContext,
                           mozilla::gfx::ScaledFont* scaledFont,
                           GlyphRenderingOptions* aRenderingOptions,
                           mozilla::gfx::DrawOptions aDrawOptions,
@@ -2179,7 +2226,12 @@ gfxFont::RenderColorGlyph(DrawTarget* aDrawTarget,
     AutoTArray<uint16_t, 8> layerGlyphs;
     AutoTArray<mozilla::gfx::Color, 8> layerColors;
 
-    if (!GetFontEntry()->GetColorLayersInfo(aGlyphId, layerGlyphs, layerColors)) {
+    mozilla::gfx::Color defaultColor;
+    if (!aContext->GetDeviceColor(defaultColor)) {
+        defaultColor = mozilla::gfx::Color(0, 0, 0);
+    }
+    if (!GetFontEntry()->GetColorLayersInfo(aGlyphId, defaultColor,
+                                            layerGlyphs, layerColors)) {
         return false;
     }
 
@@ -2211,14 +2263,15 @@ UnionRange(gfxFloat aX, gfxFloat* aDestMin, gfxFloat* aDestMax)
 // if the font is a user font --- in which case the author may be relying
 // on overflowing glyphs.
 static bool
-NeedsGlyphExtents(gfxFont *aFont, gfxTextRun *aTextRun)
+NeedsGlyphExtents(gfxFont *aFont, const gfxTextRun *aTextRun)
 {
     return (aTextRun->GetFlags() & gfxTextRunFactory::TEXT_NEED_BOUNDING_BOX) ||
         aFont->GetFontEntry()->IsUserFont();
 }
 
 bool
-gfxFont::IsSpaceGlyphInvisible(DrawTarget* aRefDrawTarget, gfxTextRun* aTextRun)
+gfxFont::IsSpaceGlyphInvisible(DrawTarget* aRefDrawTarget,
+                               const gfxTextRun* aTextRun)
 {
     if (!mFontEntry->mSpaceGlyphIsInvisibleInitialized &&
         GetAdjustedSize() >= 1.0) {
@@ -2235,7 +2288,7 @@ gfxFont::IsSpaceGlyphInvisible(DrawTarget* aRefDrawTarget, gfxTextRun* aTextRun)
 }
 
 gfxFont::RunMetrics
-gfxFont::Measure(gfxTextRun *aTextRun,
+gfxFont::Measure(const gfxTextRun *aTextRun,
                  uint32_t aStart, uint32_t aEnd,
                  BoundingBoxType aBoundingBoxType,
                  DrawTarget* aRefDrawTarget,

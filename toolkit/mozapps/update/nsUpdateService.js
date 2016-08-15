@@ -994,10 +994,9 @@ function shouldUseService() {
 
         if (0 !== GetVersionEx(winVer.address())) {
           return winVer.wServicePackMajor >= 3;
-        } else {
-          Cu.reportError("Unknown failure in GetVersionEX (returned 0)");
-          return false;
         }
+        Cu.reportError("Unknown failure in GetVersionEX (returned 0)");
+        return false;
       } catch (e) {
         Cu.reportError("Error getting service pack information. Exception: " + e);
         return false;
@@ -1027,7 +1026,7 @@ function isServiceInstalled() {
                wrk.ACCESS_READ | wrk.WOW64_64);
       installed = wrk.readIntValue("Installed");
       wrk.close();
-    } catch(e) {
+    } catch (e) {
     }
     installed = installed == 1;  // convert to bool
     LOG("isServiceInstalled = " + installed);
@@ -1284,10 +1283,8 @@ function handleUpdateFailure(update, errorCode) {
                         update.state = STATE_PENDING_ELEVATE);
       }
       update.statusText = gUpdateBundle.GetStringFromName("elevationFailure");
-      let oldType = update.selectedPatch ? update.selectedPatch.type
-                                         : "complete";
       update.QueryInterface(Ci.nsIWritablePropertyBag);
-      update.setProperty("patchingFailed", oldType);
+      update.setProperty("patchingFailed", "elevationFailure");
       let prompter = Cc["@mozilla.org/updates/update-prompt;1"].
                  createInstance(Ci.nsIUpdatePrompt);
       prompter.showUpdateError(update);
@@ -1654,7 +1651,7 @@ function Update(update) {
     } else if (attr.name == "showPrompt") {
       this.showPrompt = attr.value == "true";
     } else if (attr.name == "promptWaitTime") {
-      if(!isNaN(attr.value)) {
+      if (!isNaN(attr.value)) {
         this.promptWaitTime = parseInt(attr.value);
       }
     } else if (attr.name == "unsupported") {
@@ -2435,7 +2432,7 @@ UpdateService.prototype = {
 
     if (this._downloader && this._downloader.patchIsStaged) {
       let readState = readStatusFile(getUpdatesDir());
-      if (readState == STATE_PENDING || readState == STATE_PENDING_SVC ||
+      if (readState == STATE_PENDING || readState == STATE_PENDING_SERVICE ||
           readState == STATE_PENDING_ELEVATE) {
         AUSTLMY.pingCheckCode(this._pingSuffix, AUSTLMY.CHK_IS_DOWNLOADED);
       } else {
@@ -4211,13 +4208,15 @@ Downloader.prototype = {
                                  AUSTLMY.DWNLD_RETRY_OFFLINE);
         shouldRegisterOnlineObserver = true;
         deleteActiveUpdate = false;
-      // Each of NS_ERROR_NET_TIMEOUT, ERROR_CONNECTION_REFUSED, and
-      // NS_ERROR_NET_RESET can be returned when disconnecting the internet while
-      // a download of a MAR is in progress.  There may be others but I have not
-      // encountered them during testing.
+      // Each of NS_ERROR_NET_TIMEOUT, ERROR_CONNECTION_REFUSED,
+      // NS_ERROR_NET_RESET and NS_ERROR_DOCUMENT_NOT_CACHED can be returned
+      // when disconnecting the internet while a download of a MAR is in
+      // progress.  There may be others but I have not encountered them during
+      // testing.
       } else if ((status == Cr.NS_ERROR_NET_TIMEOUT ||
                   status == Cr.NS_ERROR_CONNECTION_REFUSED ||
-                  status == Cr.NS_ERROR_NET_RESET) &&
+                  status == Cr.NS_ERROR_NET_RESET ||
+                  status == Cr.NS_ERROR_DOCUMENT_NOT_CACHED) &&
                  this.updateService._consecutiveSocketErrors < maxFail) {
         LOG("Downloader:onStopRequest - socket error, shouldRetrySoon: true");
         let dwnldCode = AUSTLMY.DWNLD_RETRY_CONNECTION_REFUSED;
@@ -4225,18 +4224,17 @@ Downloader.prototype = {
           dwnldCode = AUSTLMY.DWNLD_RETRY_NET_TIMEOUT;
         } else if (status == Cr.NS_ERROR_NET_RESET) {
           dwnldCode = AUSTLMY.DWNLD_RETRY_NET_RESET;
+        } else if (status == Cr.NS_ERROR_DOCUMENT_NOT_CACHED) {
+          dwnldCode = AUSTLMY.DWNLD_ERR_DOCUMENT_NOT_CACHED;
         }
         AUSTLMY.pingDownloadCode(this.isCompleteUpdate, dwnldCode);
         shouldRetrySoon = true;
         deleteActiveUpdate = false;
       } else if (status != Cr.NS_BINDING_ABORTED &&
-                 status != Cr.NS_ERROR_ABORT &&
-                 status != Cr.NS_ERROR_DOCUMENT_NOT_CACHED) {
+                 status != Cr.NS_ERROR_ABORT) {
         LOG("Downloader:onStopRequest - non-verification failure");
-        let dwnldCode = AUSTLMY.DWNLD_ERR_DOCUMENT_NOT_CACHED;
-        if (status == Cr.NS_BINDING_ABORTED) {
-          dwnldCode = AUSTLMY.DWNLD_ERR_BINDING_ABORTED;
-        } else if (status == Cr.NS_ERROR_ABORT) {
+        let dwnldCode = AUSTLMY.DWNLD_ERR_BINDING_ABORTED;
+        if (status == Cr.NS_ERROR_ABORT) {
           dwnldCode = AUSTLMY.DWNLD_ERR_ABORT;
         }
         AUSTLMY.pingDownloadCode(this.isCompleteUpdate, dwnldCode);

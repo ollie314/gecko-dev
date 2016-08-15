@@ -483,7 +483,7 @@ class Type extends Entry {
   // |baseType| (one of the possible getValueBaseType results) is
   // valid for this type. It returns true or false. It's used to fill
   // in optional arguments to functions before actually type checking
-  // the arguments.
+
   checkBaseType(baseType) {
     return false;
   }
@@ -946,10 +946,11 @@ class ArrayType extends Type {
 }
 
 class FunctionType extends Type {
-  constructor(schema, parameters, isAsync) {
+  constructor(schema, parameters, isAsync, hasAsyncCallback) {
     super(schema);
     this.parameters = parameters;
     this.isAsync = isAsync;
+    this.hasAsyncCallback = hasAsyncCallback;
   }
 
   normalize(value, context) {
@@ -1122,25 +1123,23 @@ class CallEntry extends Entry {
       // When this option is set, it's up to the implementation to
       // parse arguments.
       return args;
-    } else {
-      let success = check(0, 0);
-      if (!success) {
-        this.throwError(context, "Incorrect argument types");
-      }
+    }
+    let success = check(0, 0);
+    if (!success) {
+      this.throwError(context, "Incorrect argument types");
     }
 
     // Now we normalize (and fully type check) all non-omitted arguments.
     fixedArgs = fixedArgs.map((arg, parameterIndex) => {
       if (arg === null) {
         return null;
-      } else {
-        let parameter = this.parameters[parameterIndex];
-        let r = parameter.type.normalize(arg, context);
-        if (r.error) {
-          this.throwError(context, `Type error for parameter ${parameter.name} (${r.error})`);
-        }
-        return r.value;
       }
+      let parameter = this.parameters[parameterIndex];
+      let r = parameter.type.normalize(arg, context);
+      if (r.error) {
+        this.throwError(context, `Type error for parameter ${parameter.name} (${r.error})`);
+      }
+      return r.value;
     });
 
     return fixedArgs;
@@ -1156,6 +1155,7 @@ class FunctionEntry extends CallEntry {
     this.permissions = permissions;
 
     this.isAsync = type.isAsync;
+    this.hasAsyncCallback = type.hasAsyncCallback;
   }
 
   inject(path, name, dest, context) {
@@ -1172,7 +1172,10 @@ class FunctionEntry extends CallEntry {
       stub = (...args) => {
         this.checkDeprecated(context);
         let actuals = this.checkParameters(args, context);
-        let callback = actuals.pop();
+        let callback = null;
+        if (this.hasAsyncCallback) {
+          callback = actuals.pop();
+        }
         return context.callAsyncFunction(path, name, actuals, callback);
       };
     } else if (!this.returns) {
@@ -1244,9 +1247,6 @@ class Event extends CallEntry {
 this.Schemas = {
   initialized: false,
 
-  // Set of URLs that we have loaded via the load() method.
-  loadedUrls: new Set(),
-
   // Maps a schema URL to the JSON contained in that schema file. This
   // is useful for sending the JSON across processes.
   schemaJSON: new Map(),
@@ -1312,9 +1312,8 @@ this.Schemas = {
         enumeration = enumeration.map(e => {
           if (typeof(e) == "object") {
             return e.name;
-          } else {
-            return e;
           }
+          return e;
         });
       }
 
@@ -1403,8 +1402,7 @@ this.Schemas = {
       checkTypeProperties();
       return new BooleanType(type);
     } else if (type.type == "function") {
-      let isAsync = typeof(type.async) == "string";
-
+      let isAsync = !!type.async;
       let parameters = null;
       if ("parameters" in type) {
         parameters = [];
@@ -1421,9 +1419,10 @@ this.Schemas = {
         }
       }
 
+      let hasAsyncCallback = false;
       if (isAsync) {
-        if (!parameters || !parameters.length || parameters[parameters.length - 1].name != type.async) {
-          throw new Error(`Internal error: "async" property must name the last parameter of the function.`);
+        if (parameters && parameters.length && parameters[parameters.length - 1].name == type.async) {
+          hasAsyncCallback = true;
         }
         if (type.returns || type.allowAmbiguousOptionalArguments) {
           throw new Error(`Internal error: Async functions must not have return values or ambiguous arguments.`);
@@ -1431,14 +1430,13 @@ this.Schemas = {
       }
 
       checkTypeProperties("parameters", "async", "returns");
-      return new FunctionType(type, parameters, isAsync);
+      return new FunctionType(type, parameters, isAsync, hasAsyncCallback);
     } else if (type.type == "any") {
       // Need to see what minimum and maximum are supposed to do here.
       checkTypeProperties("minimum", "maximum");
       return new AnyType(type);
-    } else {
-      throw new Error(`Unexpected type ${type.type}`);
     }
+    throw new Error(`Unexpected type ${type.type}`);
   },
 
   parseFunction(path, fun) {
@@ -1544,48 +1542,75 @@ this.Schemas = {
       }
       Services.cpmm.addMessageListener("Schema:Add", this);
     }
+
+    this.flushSchemas();
   },
 
   receiveMessage(msg) {
     switch (msg.name) {
       case "Schema:Add":
         this.schemaJSON.set(msg.data.url, msg.data.schema);
+        this.flushSchemas();
+        break;
+
+      case "Schema:Delete":
+        this.schemaJSON.delete(msg.data.url);
+        this.flushSchemas();
         break;
     }
   },
 
-  load(url) {
-    let loadFromJSON = json => {
-      for (let namespace of json) {
-        let name = namespace.namespace;
+  flushSchemas() {
+    XPCOMUtils.defineLazyGetter(this, "namespaces",
+                                () => this.parseSchemas());
+  },
 
-        let types = namespace.types || [];
-        for (let type of types) {
-          this.loadType(name, type);
-        }
+  parseSchemas() {
+    Object.defineProperty(this, "namespaces", {
+      enumerable: true,
+      configurable: true,
+      value: new Map(),
+    });
 
-        let properties = namespace.properties || {};
-        for (let propertyName of Object.keys(properties)) {
-          this.loadProperty(name, propertyName, properties[propertyName]);
-        }
+    for (let json of this.schemaJSON.values()) {
+      this.parseSchema(json);
+    }
 
-        let functions = namespace.functions || [];
-        for (let fun of functions) {
-          this.loadFunction(name, fun);
-        }
+    return this.namespaces;
+  },
 
-        let events = namespace.events || [];
-        for (let event of events) {
-          this.loadEvent(name, event);
-        }
+  parseSchema(json) {
+    for (let namespace of json) {
+      let name = namespace.namespace;
 
-        if (namespace.permissions) {
-          let ns = this.namespaces.get(name);
-          ns.permissions = namespace.permissions;
-        }
+      let types = namespace.types || [];
+      for (let type of types) {
+        this.loadType(name, type);
       }
-    };
 
+      let properties = namespace.properties || {};
+      for (let propertyName of Object.keys(properties)) {
+        this.loadProperty(name, propertyName, properties[propertyName]);
+      }
+
+      let functions = namespace.functions || [];
+      for (let fun of functions) {
+        this.loadFunction(name, fun);
+      }
+
+      let events = namespace.events || [];
+      for (let event of events) {
+        this.loadEvent(name, event);
+      }
+
+      if (namespace.permissions) {
+        let ns = this.namespaces.get(name);
+        ns.permissions = namespace.permissions;
+      }
+    }
+  },
+
+  load(url) {
     if (Services.appinfo.processType != Services.appinfo.PROCESS_TYPE_CONTENT) {
       return readJSON(url).then(json => {
         this.schemaJSON.set(url, json);
@@ -1595,17 +1620,20 @@ this.Schemas = {
 
         Services.ppmm.broadcastAsyncMessage("Schema:Add", {url, schema: json});
 
-        loadFromJSON(json);
+        this.flushSchemas();
       });
-    } else {
-      if (this.loadedUrls.has(url)) {
-        return;
-      }
-      this.loadedUrls.add(url);
-
-      let schema = this.schemaJSON.get(url);
-      loadFromJSON(schema);
     }
+  },
+
+  unload(url) {
+    this.schemaJSON.delete(url);
+
+    let data = Services.ppmm.initialProcessData;
+    data["Extension:Schemas"] = this.schemaJSON;
+
+    Services.ppmm.broadcastAsyncMessage("Schema:Delete", {url});
+
+    this.flushSchemas();
   },
 
   inject(dest, wrapperFuncs) {

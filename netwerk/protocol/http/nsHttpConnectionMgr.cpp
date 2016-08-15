@@ -204,7 +204,7 @@ public:
         , mIParam(iparam)
         , mVParam(vparam) {}
 
-    NS_IMETHOD Run()
+    NS_IMETHOD Run() override
     {
         (mMgr->*mHandler)(mIParam, mVParam);
         return NS_OK;
@@ -1861,6 +1861,8 @@ nsHttpConnectionMgr::ProcessNewTransaction(nsHttpTransaction *trans)
 
     Http2PushedStream *pushedStream = trans->GetPushedStream();
     if (pushedStream) {
+        LOG(("  ProcessNewTransaction %p tied to h2 session push %p\n",
+             trans, pushedStream->Session()));
         return pushedStream->Session()->
             AddStream(trans, trans->Priority(), false, nullptr) ?
             NS_OK : NS_ERROR_UNEXPECTED;

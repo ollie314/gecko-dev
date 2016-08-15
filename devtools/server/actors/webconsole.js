@@ -33,9 +33,9 @@ for (let name of ["WebConsoleUtils", "ConsoleServiceListener",
         prop = "Utils";
       }
       if (isWorker) {
-        return require("devtools/shared/webconsole/worker-utils")[prop];
+        return require("devtools/server/actors/utils/webconsole-worker-utils")[prop];
       } else {
-        return require("devtools/shared/webconsole/utils")[prop];
+        return require("devtools/server/actors/utils/webconsole-utils")[prop];
       }
     }.bind(null, name),
     configurable: true,
@@ -87,8 +87,6 @@ function WebConsoleActor(aConnection, aParentActor)
     selectedObjectActor: true, // 44+
   };
 }
-
-WebConsoleActor.l10n = new WebConsoleUtils.L10n("chrome://global/locale/console.properties");
 
 WebConsoleActor.prototype =
 {
@@ -220,8 +218,7 @@ WebConsoleActor.prototype =
   {
     if (window) {
       if (this._hadChromeWindow) {
-        let contextChangedMsg = WebConsoleActor.l10n.getStr("evaluationContextChanged");
-        Services.console.logStringMessage(contextChangedMsg);
+        Services.console.logStringMessage('Webconsole context has changed');
       }
       this._lastChromeWindow = Cu.getWeakReference(window);
       this._hadChromeWindow = true;
@@ -355,6 +352,10 @@ WebConsoleActor.prototype =
     if (this.networkMonitorChild) {
       this.networkMonitorChild.destroy();
       this.networkMonitorChild = null;
+    }
+    if (this.stackTraceCollector) {
+      this.stackTraceCollector.destroy();
+      this.stackTraceCollector = null;
     }
     if (this.consoleProgressListener) {
       this.consoleProgressListener.destroy();
@@ -591,8 +592,11 @@ WebConsoleActor.prototype =
           break;
         case "ConsoleAPI":
           if (!this.consoleAPIListener) {
+            // Create the consoleAPIListener (and apply the filtering options defined
+            // in the parent actor).
             this.consoleAPIListener =
-              new ConsoleAPIListener(window, this);
+              new ConsoleAPIListener(window, this,
+                                     this.parentActor.consoleAPIListenerOptions);
             this.consoleAPIListener.init();
           }
           startedListeners.push(listener);
@@ -605,7 +609,9 @@ WebConsoleActor.prototype =
             this.stackTraceCollector = new StackTraceCollector({ window, appId });
             this.stackTraceCollector.init();
 
-            if (appId || messageManager) {
+            let processBoundary = Services.appinfo.processType !=
+                                  Ci.nsIXULRuntime.PROCESS_TYPE_DEFAULT;
+            if ((appId || messageManager) && processBoundary) {
               // Start a network monitor in the parent process to listen to
               // most requests than happen in parent
               this.networkMonitor =
@@ -903,7 +909,7 @@ WebConsoleActor.prototype =
           // It is possible that we won't have permission to unwrap an
           // object and retrieve its errorMessageName.
         try {
-          errorDocURL = ErrorDocs.GetURL(error && error.errorMessageName);
+          errorDocURL = ErrorDocs.GetURL(error);
         } catch (ex) {}
       }
     }
@@ -1291,7 +1297,19 @@ WebConsoleActor.prototype =
       evalOptions = { url: aOptions.url };
     }
 
+    // If the debugger object is changed from the last evaluation,
+    // adopt this._lastConsoleInputEvaluation value in the new debugger,
+    // to prevents "Debugger.Object belongs to a different Debugger" exceptions
+    // related to the $_ bindings.
+    if (this._lastConsoleInputEvaluation &&
+        this._lastConsoleInputEvaluation.global !== dbgWindow) {
+      this._lastConsoleInputEvaluation = dbg.adoptDebuggeeValue(
+        this._lastConsoleInputEvaluation
+      );
+    }
+
     let result;
+
     if (frame) {
       result = frame.evalWithBindings(aString, bindings, evalOptions);
     }
@@ -1449,6 +1467,7 @@ WebConsoleActor.prototype =
     return {
       errorMessage: this._createStringGrip(aPageError.errorMessage),
       errorMessageName: aPageError.errorMessageName,
+      exceptionDocURL: ErrorDocs.GetURL(aPageError),
       sourceName: aPageError.sourceName,
       lineText: lineText,
       lineNumber: aPageError.lineNumber,
@@ -1492,15 +1511,13 @@ WebConsoleActor.prototype =
    *
    * @param object aEvent
    *        The initial network request event information.
-   * @param nsIHttpChannel aChannel
-   *        The network request nsIHttpChannel object.
    * @return object
    *         A new NetworkEventActor is returned. This is used for tracking the
    *         network request and response.
    */
-  onNetworkEvent: function WCA_onNetworkEvent(aEvent, aChannel)
+  onNetworkEvent: function WCA_onNetworkEvent(aEvent)
   {
-    let actor = this.getNetworkEventActor(aChannel);
+    let actor = this.getNetworkEventActor(aEvent.channelId);
     actor.init(aEvent);
 
     let packet = {
@@ -1515,24 +1532,23 @@ WebConsoleActor.prototype =
   },
 
   /**
-   * Get the NetworkEventActor for a nsIChannel, if it exists,
+   * Get the NetworkEventActor for a nsIHttpChannel, if it exists,
    * otherwise create a new one.
    *
-   * @param nsIHttpChannel aChannel
-   *        The channel for the network event.
+   * @param string channelId
+   *        The id of the channel for the network event.
    * @return object
    *         The NetworkEventActor for the given channel.
    */
-  getNetworkEventActor: function WCA_getNetworkEventActor(aChannel) {
-    let actor = this._netEvents.get(aChannel);
+  getNetworkEventActor: function WCA_getNetworkEventActor(channelId) {
+    let actor = this._netEvents.get(channelId);
     if (actor) {
       // delete from map as we should only need to do this check once
-      this._netEvents.delete(aChannel);
-      actor.channel = null;
+      this._netEvents.delete(channelId);
       return actor;
     }
 
-    actor = new NetworkEventActor(aChannel, this);
+    actor = new NetworkEventActor(this);
     this._actorPool.addActor(actor);
     return actor;
   },
@@ -1556,10 +1572,11 @@ WebConsoleActor.prototype =
     }
     request.send(details.body);
 
-    let actor = this.getNetworkEventActor(request.channel);
+    let channel = request.channel.QueryInterface(Ci.nsIHttpChannel);
+    let actor = this.getNetworkEventActor(channel.channelId);
 
     // map channel to actor so we can associate future events with it
-    this._netEvents.set(request.channel, actor);
+    this._netEvents.set(channel.channelId, actor);
 
     return {
       from: this.actorID,
@@ -1783,16 +1800,12 @@ exports.WebConsoleActor = WebConsoleActor;
  * Creates an actor for a network event.
  *
  * @constructor
- * @param object aChannel
- *        The nsIChannel associated with this event.
- * @param object aWebConsoleActor
+ * @param object webConsoleActor
  *        The parent WebConsoleActor instance for this object.
  */
-function NetworkEventActor(aChannel, aWebConsoleActor)
-{
-  this.parent = aWebConsoleActor;
+function NetworkEventActor(webConsoleActor) {
+  this.parent = webConsoleActor;
   this.conn = this.parent.conn;
-  this.channel = aChannel;
 
   this._request = {
     method: null,
